@@ -663,8 +663,12 @@ mod tests {
         let atomic = AtomicLogicalAddress::new(LogicalAddress::ZERO);
         let new_addr = LogicalAddress::new(Page(1), Offset(0));
 
-        let result =
-            atomic.compare_exchange(LogicalAddress::ZERO, new_addr, Ordering::AcqRel, Ordering::Acquire);
+        let result = atomic.compare_exchange(
+            LogicalAddress::ZERO,
+            new_addr,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
 
         assert_eq!(result, Ok(LogicalAddress::ZERO));
         assert_eq!(atomic.load(Ordering::Acquire), new_addr);
@@ -677,8 +681,12 @@ mod tests {
         let atomic = AtomicLogicalAddress::new(addr_a);
 
         // Try to CAS from ZERO → addr_b, but actual is addr_a
-        let result =
-            atomic.compare_exchange(LogicalAddress::ZERO, addr_b, Ordering::AcqRel, Ordering::Acquire);
+        let result = atomic.compare_exchange(
+            LogicalAddress::ZERO,
+            addr_b,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
 
         assert_eq!(result, Err(addr_a));
         // Value unchanged

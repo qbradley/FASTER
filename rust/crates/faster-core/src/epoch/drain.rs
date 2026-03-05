@@ -82,8 +82,8 @@ impl DrainList {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
     fn push_and_drain_single() {
@@ -91,9 +91,12 @@ mod tests {
         let counter = Arc::new(AtomicU64::new(0));
         let c = Arc::clone(&counter);
 
-        list.push(5, Box::new(move || {
-            c.fetch_add(1, Ordering::Relaxed);
-        }));
+        list.push(
+            5,
+            Box::new(move || {
+                c.fetch_add(1, Ordering::Relaxed);
+            }),
+        );
 
         assert_eq!(list.pending_count(), 1);
 
@@ -115,9 +118,12 @@ mod tests {
 
         for epoch in 1..=5 {
             let c = Arc::clone(&counter);
-            list.push(epoch, Box::new(move || {
-                c.fetch_add(epoch, Ordering::Relaxed);
-            }));
+            list.push(
+                epoch,
+                Box::new(move || {
+                    c.fetch_add(epoch, Ordering::Relaxed);
+                }),
+            );
         }
 
         // Drain up to epoch 3: actions 1, 2, 3 fire
@@ -144,14 +150,20 @@ mod tests {
         let data = Arc::new(Mutex::new(Vec::new()));
         let d = Arc::clone(&data);
 
-        list.push(1, Box::new(move || {
-            d.lock().unwrap().push("first");
-        }));
+        list.push(
+            1,
+            Box::new(move || {
+                d.lock().unwrap().push("first");
+            }),
+        );
 
         let d = Arc::clone(&data);
-        list.push(1, Box::new(move || {
-            d.lock().unwrap().push("second");
-        }));
+        list.push(
+            1,
+            Box::new(move || {
+                d.lock().unwrap().push("second");
+            }),
+        );
 
         list.drain_up_to(1);
         let result = data.lock().unwrap();

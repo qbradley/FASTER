@@ -101,9 +101,10 @@ impl OverflowBucketPool {
         // allocation itself and the subsequent cache miss for the bucket.
         let bucket = self.allocator.get(addr);
         for i in 0..crate::hash_bucket::BUCKET_NUM_ENTRIES {
-            bucket
-                .entry(i)
-                .store(crate::hash_bucket::HashBucketEntry::EMPTY, Ordering::Relaxed);
+            bucket.entry(i).store(
+                crate::hash_bucket::HashBucketEntry::EMPTY,
+                Ordering::Relaxed,
+            );
         }
         bucket
             .overflow_address()
@@ -174,7 +175,7 @@ impl core::fmt::Debug for OverflowBucketPool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hash_bucket::{HashBucketEntry, BUCKET_NUM_ENTRIES};
+    use crate::hash_bucket::{BUCKET_NUM_ENTRIES, HashBucketEntry};
     use core::sync::atomic::Ordering;
 
     #[test]
@@ -208,7 +209,11 @@ mod tests {
         let addr = pool.allocate();
         let bucket = pool.get(addr);
         let ptr = bucket as *const HashBucket as usize;
-        assert_eq!(ptr % 64, 0, "Overflow bucket at {ptr:#x} is not 64-byte aligned");
+        assert_eq!(
+            ptr % 64,
+            0,
+            "Overflow bucket at {ptr:#x} is not 64-byte aligned"
+        );
     }
 
     #[test]

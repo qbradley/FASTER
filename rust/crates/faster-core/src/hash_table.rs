@@ -51,7 +51,7 @@ use core::sync::atomic::Ordering;
 
 use crate::address::LogicalAddress;
 use crate::hash::KeyHash;
-use crate::hash_bucket::{AtomicHashBucketEntry, HashBucket, HashBucketEntry, BUCKET_NUM_ENTRIES};
+use crate::hash_bucket::{AtomicHashBucketEntry, BUCKET_NUM_ENTRIES, HashBucket, HashBucketEntry};
 use crate::overflow::OverflowBucketPool;
 
 // ---------------------------------------------------------------------------
@@ -889,7 +889,8 @@ mod tests {
 
         // Use a wrong expected value.
         let wrong = HashBucketEntry::new(0x0001, LogicalAddress::new(Page(99), Offset(0)), false);
-        let new_entry = HashBucketEntry::new(0x0001, LogicalAddress::new(Page(1), Offset(0)), false);
+        let new_entry =
+            HashBucketEntry::new(0x0001, LogicalAddress::new(Page(1), Offset(0)), false);
         assert!(!table.update_entry(r.slot, wrong, new_entry));
     }
 
@@ -1033,11 +1034,7 @@ mod tests {
             let found = table.find_entry(*hash);
             assert!(found.is_some(), "missing entry for hash {hash:?}");
             let (entry, _) = found.unwrap();
-            assert_eq!(
-                entry.address(),
-                *addr,
-                "wrong address for hash {hash:?}"
-            );
+            assert_eq!(entry.address(), *addr, "wrong address for hash {hash:?}");
         }
     }
 
@@ -1129,15 +1126,11 @@ mod tests {
                     for i in 0..keys_per_thread {
                         // Overlapping: all threads use the same key space.
                         let hash = KeyHash::new(i.wrapping_mul(0x517CC1B727220A95));
-                        let addr = LogicalAddress::new(
-                            Page(t as u32),
-                            Offset(i as u32 + 2),
-                        );
+                        let addr = LogicalAddress::new(Page(t as u32), Offset(i as u32 + 2));
                         let r = table.find_or_create_entry(hash, addr);
                         if r.created {
                             // Commit the tentative entry.
-                            let committed =
-                                HashBucketEntry::new(r.entry.tag(), addr, false);
+                            let committed = HashBucketEntry::new(r.entry.tag(), addr, false);
                             table.update_entry(r.slot, r.entry, committed);
                             created_count += 1;
                         }
@@ -1256,14 +1249,10 @@ mod tests {
                     for i in 0..ops_per_thread {
                         let key = i; // All threads compete for the same keys.
                         let hash = KeyHash::new(key.wrapping_mul(0x9E3779B97F4A7C15));
-                        let addr = LogicalAddress::new(
-                            Page(t as u32),
-                            Offset(i as u32 + 2),
-                        );
+                        let addr = LogicalAddress::new(Page(t as u32), Offset(i as u32 + 2));
                         let r = table.find_or_create_entry(hash, addr);
                         if r.created {
-                            let committed =
-                                HashBucketEntry::new(r.entry.tag(), addr, false);
+                            let committed = HashBucketEntry::new(r.entry.tag(), addr, false);
                             table.update_entry(r.slot, r.entry, committed);
                         }
                     }

@@ -5,8 +5,8 @@
 //! manages the thread's lifecycle in the epoch table.
 
 use std::marker::PhantomData;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use super::table::EpochTable;
 

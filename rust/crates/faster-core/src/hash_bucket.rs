@@ -159,10 +159,7 @@ impl HashBucketEntry {
     #[inline(always)]
     pub const fn new(tag: u16, address: LogicalAddress, tentative: bool) -> Self {
         debug_assert!(tag <= MAX_TAG, "tag exceeds 14 bits");
-        debug_assert!(
-            address.raw() <= ADDRESS_MASK,
-            "address exceeds 48 bits"
-        );
+        debug_assert!(address.raw() <= ADDRESS_MASK, "address exceeds 48 bits");
         // Mask inputs to valid ranges for defense-in-depth in release builds.
         let masked_tag = (tag & MAX_TAG) as u64;
         let masked_addr = address.raw() & ADDRESS_MASK;
@@ -278,7 +275,11 @@ impl fmt::Display for HashBucketEntry {
                 "Entry(addr={}, tag=0x{:04x}{})",
                 self.address(),
                 self.tag(),
-                if self.is_tentative() { ", tentative" } else { "" },
+                if self.is_tentative() {
+                    ", tentative"
+                } else {
+                    ""
+                },
             )
         }
     }
@@ -623,11 +624,7 @@ impl HashBucket {
     /// we see the current slot state.
     #[inline]
     #[allow(clippy::result_unit_err)]
-    pub fn try_insert(
-        &self,
-        tag: u16,
-        address: LogicalAddress,
-    ) -> Result<usize, ()> {
+    pub fn try_insert(&self, tag: u16, address: LogicalAddress) -> Result<usize, ()> {
         let new_entry = HashBucketEntry::new(tag, address, false);
         for i in 0..BUCKET_NUM_ENTRIES {
             let current = self.entries[i].load(Ordering::Acquire);
@@ -1129,7 +1126,7 @@ mod tests {
         let entry = HashBucketEntry::new(0x2A5F, addr, true);
         let expected = 0x0000_ABCD_1234_5678_u64 // address
             | (0x2A5F_u64 << 48)                  // tag
-            | (1u64 << 63);                        // tentative
+            | (1u64 << 63); // tentative
         assert_eq!(entry.raw(), expected);
     }
 
@@ -1281,12 +1278,8 @@ mod tests {
 
         // Phase 3: CAS tentative → committed (clear tentative bit)
         let committed = tentative.without_tentative();
-        let result = atomic.compare_exchange(
-            tentative,
-            committed,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
+        let result =
+            atomic.compare_exchange(tentative, committed, Ordering::AcqRel, Ordering::Acquire);
         assert!(result.is_ok());
 
         // Verify: entry is committed (not tentative)
@@ -1435,10 +1428,7 @@ mod tests {
         let bucket = HashBucket::new();
         let overflow = LogicalAddress::new(Page(99), Offset(0));
         bucket.overflow_address().store(overflow, Ordering::Release);
-        assert_eq!(
-            bucket.overflow_address().load(Ordering::Acquire),
-            overflow
-        );
+        assert_eq!(bucket.overflow_address().load(Ordering::Acquire), overflow);
     }
 
     #[test]
@@ -1463,10 +1453,7 @@ mod tests {
             );
         }
         // Verify overflow is intact
-        assert_eq!(
-            bucket.overflow_address().load(Ordering::Acquire),
-            overflow
-        );
+        assert_eq!(bucket.overflow_address().load(Ordering::Acquire), overflow);
     }
 
     // -- find_entry --
@@ -1494,12 +1481,14 @@ mod tests {
         let addr1 = LogicalAddress::new(Page(1), Offset(10));
         let addr2 = LogicalAddress::new(Page(2), Offset(20));
         // Same tag in slots 2 and 5
-        bucket
-            .entry(2)
-            .store(HashBucketEntry::new(0x0ABC, addr1, false), Ordering::Release);
-        bucket
-            .entry(5)
-            .store(HashBucketEntry::new(0x0ABC, addr2, false), Ordering::Release);
+        bucket.entry(2).store(
+            HashBucketEntry::new(0x0ABC, addr1, false),
+            Ordering::Release,
+        );
+        bucket.entry(5).store(
+            HashBucketEntry::new(0x0ABC, addr2, false),
+            Ordering::Release,
+        );
 
         let (idx, found) = bucket.find_entry(0x0ABC).unwrap();
         assert_eq!(idx, 2);
@@ -1573,12 +1562,10 @@ mod tests {
         let bucket = HashBucket::new();
         let addr = LogicalAddress::new(Page(1), Offset(10));
         for i in 0..BUCKET_NUM_ENTRIES {
-            bucket
-                .entry(i)
-                .store(
-                    HashBucketEntry::new((i as u16) + 1, addr, false),
-                    Ordering::Release,
-                );
+            bucket.entry(i).store(
+                HashBucketEntry::new((i as u16) + 1, addr, false),
+                Ordering::Release,
+            );
         }
         assert_eq!(bucket.find_empty(), None);
     }
@@ -1589,12 +1576,10 @@ mod tests {
         let addr = LogicalAddress::new(Page(1), Offset(10));
         // Fill 0, 1, 2; leave 3 empty; fill 4, 5, 6
         for i in [0, 1, 2, 4, 5, 6] {
-            bucket
-                .entry(i)
-                .store(
-                    HashBucketEntry::new((i as u16) + 1, addr, false),
-                    Ordering::Release,
-                );
+            bucket.entry(i).store(
+                HashBucketEntry::new((i as u16) + 1, addr, false),
+                Ordering::Release,
+            );
         }
         assert_eq!(bucket.find_empty(), Some(3));
     }
@@ -1735,8 +1720,10 @@ mod tests {
 
         let ptrs: Vec<usize> = handles.into_iter().map(|h| h.join().unwrap()).collect();
         // All threads should get the same overflow bucket.
-        assert!(ptrs.windows(2).all(|w| w[0] == w[1]),
-            "All threads must resolve to the same overflow bucket");
+        assert!(
+            ptrs.windows(2).all(|w| w[0] == w[1]),
+            "All threads must resolve to the same overflow bucket"
+        );
 
         // Only one overflow address should be set.
         let addr = bucket_ref.overflow_address().load(Ordering::Acquire);
@@ -1834,7 +1821,9 @@ mod tests {
     fn find_entry_in_chain_not_found() {
         let bucket = HashBucket::new();
         let pool = crate::overflow::OverflowBucketPool::new();
-        bucket.try_insert(0x1111, LogicalAddress::from_raw(1)).unwrap();
+        bucket
+            .try_insert(0x1111, LogicalAddress::from_raw(1))
+            .unwrap();
         assert!(bucket.find_entry_in_chain(0x2222, &pool).is_none());
     }
 
@@ -1887,9 +1876,7 @@ mod tests {
         // Insert 21 entries (3 buckets × 7 slots).
         for i in 0..21u16 {
             let addr = LogicalAddress::from_raw((i as u64) + 2);
-            bucket
-                .insert_in_chain(i + 1, addr, &pool)
-                .unwrap();
+            bucket.insert_in_chain(i + 1, addr, &pool).unwrap();
         }
 
         // All 21 must be findable.

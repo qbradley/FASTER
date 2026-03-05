@@ -10,8 +10,8 @@
 // All content is gated on the `loom` feature.
 #![cfg(feature = "loom")]
 
-use loom::sync::atomic::Ordering;
 use loom::sync::Arc;
+use loom::sync::atomic::Ordering;
 use loom::thread;
 
 // ============================================================================
@@ -155,7 +155,11 @@ mod bucket {
     impl Bucket {
         pub fn new() -> Self {
             Self {
-                entries: [AtomicU64::new(EMPTY), AtomicU64::new(EMPTY), AtomicU64::new(EMPTY)],
+                entries: [
+                    AtomicU64::new(EMPTY),
+                    AtomicU64::new(EMPTY),
+                    AtomicU64::new(EMPTY),
+                ],
             }
         }
 

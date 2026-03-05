@@ -322,7 +322,9 @@ fn register_max_threads() {
     let mut threads = Vec::with_capacity(MAX_THREADS);
 
     for i in 0..MAX_THREADS {
-        let t = table.register().unwrap_or_else(|| panic!("failed to register thread {i}"));
+        let t = table
+            .register()
+            .unwrap_or_else(|| panic!("failed to register thread {i}"));
         threads.push(t);
     }
     assert_eq!(table.registered_count(), MAX_THREADS);
@@ -407,7 +409,10 @@ fn safe_epoch_monotonically_increases() {
             table.bump_current_epoch_no_callback();
         }
         let safe = table.safe_epoch();
-        assert!(safe >= prev_safe, "safe epoch decreased: {safe} < {prev_safe}");
+        assert!(
+            safe >= prev_safe,
+            "safe epoch decreased: {safe} < {prev_safe}"
+        );
         prev_safe = safe;
     }
 }

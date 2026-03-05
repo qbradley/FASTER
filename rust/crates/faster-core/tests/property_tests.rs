@@ -8,13 +8,11 @@ mod common;
 
 use proptest::prelude::*;
 
-use faster_core::address::{
-    LogicalAddress, Offset, Page, MAX_OFFSET, MAX_PAGE,
-};
-use faster_core::hash::{faster_hash_bytes, faster_hash_u64, tag_from_hash, Hashable};
+use faster_core::address::{LogicalAddress, MAX_OFFSET, MAX_PAGE, Offset, Page};
+use faster_core::hash::{Hashable, faster_hash_bytes, faster_hash_u64, tag_from_hash};
 use faster_core::hash_bucket::{HashBucket, HashBucketEntry};
 use faster_core::record::{
-    read_key, read_record_info, read_value, write_record, RecordInfo, RecordLayout,
+    RecordInfo, RecordLayout, read_key, read_record_info, read_value, write_record,
 };
 
 // ===========================================================================
@@ -33,8 +31,7 @@ fn offset_strategy() -> impl Strategy<Value = u32> {
 
 /// Strategy for valid LogicalAddress values.
 fn address_strategy() -> impl Strategy<Value = LogicalAddress> {
-    (page_strategy(), offset_strategy())
-        .prop_map(|(p, o)| LogicalAddress::new(Page(p), Offset(o)))
+    (page_strategy(), offset_strategy()).prop_map(|(p, o)| LogicalAddress::new(Page(p), Offset(o)))
 }
 
 /// Strategy for 14-bit tags (0..16383).

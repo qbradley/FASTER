@@ -213,8 +213,12 @@ fn rotr64(x: u64, n: u32) -> u64 {
 pub fn faster_hash_u64(input: u64) -> u64 {
     let mut h: u64 = 8;
     h = HASH_MAGIC.wrapping_mul(h).wrapping_add(input & 0xFFFF);
-    h = HASH_MAGIC.wrapping_mul(h).wrapping_add((input >> 16) & 0xFFFF);
-    h = HASH_MAGIC.wrapping_mul(h).wrapping_add((input >> 32) & 0xFFFF);
+    h = HASH_MAGIC
+        .wrapping_mul(h)
+        .wrapping_add((input >> 16) & 0xFFFF);
+    h = HASH_MAGIC
+        .wrapping_mul(h)
+        .wrapping_add((input >> 32) & 0xFFFF);
     h = HASH_MAGIC.wrapping_mul(h).wrapping_add(input >> 48);
     h = HASH_MAGIC.wrapping_mul(h);
     rotr64(h, 43)
@@ -380,7 +384,10 @@ mod tests {
         for val in 0u64..1000 {
             let kh = Hashable::hash(&val);
             let idx = kh.index(table_size);
-            assert!(idx < table_size, "index {idx} out of range for table_size {table_size}");
+            assert!(
+                idx < table_size,
+                "index {idx} out of range for table_size {table_size}"
+            );
         }
     }
 

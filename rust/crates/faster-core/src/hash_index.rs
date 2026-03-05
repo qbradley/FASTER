@@ -55,7 +55,7 @@ use std::sync::Arc;
 use crate::address::LogicalAddress;
 use crate::epoch::{EpochTable, EpochThread};
 use crate::hash::KeyHash;
-use crate::hash_bucket::{AtomicHashBucketEntry, HashBucketEntry, BUCKET_NUM_ENTRIES};
+use crate::hash_bucket::{AtomicHashBucketEntry, BUCKET_NUM_ENTRIES, HashBucketEntry};
 use crate::hash_table::{FindOrCreateResult, HashTable};
 
 use core::sync::atomic::Ordering;
@@ -380,11 +380,7 @@ impl HashIndex {
     /// let count = index.invalidate_entries_in_range(begin, end);
     /// assert_eq!(count, 1);
     /// ```
-    pub fn invalidate_entries_in_range(
-        &self,
-        begin: LogicalAddress,
-        end: LogicalAddress,
-    ) -> u64 {
+    pub fn invalidate_entries_in_range(&self, begin: LogicalAddress, end: LogicalAddress) -> u64 {
         let begin_raw = begin.raw();
         let end_raw = end.raw();
         let mut invalidated = 0u64;
@@ -920,10 +916,7 @@ mod tests {
     #[test]
     fn test_invalidate_empty_table() {
         let index = test_index();
-        let count = index.invalidate_entries_in_range(
-            LogicalAddress::ZERO,
-            LogicalAddress::MAX,
-        );
+        let count = index.invalidate_entries_in_range(LogicalAddress::ZERO, LogicalAddress::MAX);
         assert_eq!(count, 0);
     }
 
@@ -983,10 +976,7 @@ mod tests {
         }
 
         // Invalidate range that doesn't include page 10.
-        let count = index.invalidate_entries_in_range(
-            make_addr(0, 0),
-            make_addr(5, 0),
-        );
+        let count = index.invalidate_entries_in_range(make_addr(0, 0), make_addr(5, 0));
         assert_eq!(count, 0);
         assert_eq!(index.entry_count(), 1);
     }
@@ -1006,10 +996,7 @@ mod tests {
         }
 
         // Tentative entries should also be invalidated if in range.
-        let count = index.invalidate_entries_in_range(
-            make_addr(0, 0),
-            make_addr(100, 0),
-        );
+        let count = index.invalidate_entries_in_range(make_addr(0, 0), make_addr(100, 0));
         // The tentative entry has address INVALID (raw value 1) which is in [0, huge_range).
         // But our entry was created with make_addr(3, 100), which has the address as the
         // initial_address embedded in the tentative entry.
@@ -1129,8 +1116,7 @@ mod tests {
 
                         let r = idx.find_or_create(hash, LogicalAddress::INVALID);
                         if r.created {
-                            let committed =
-                                HashBucketEntry::new(r.entry.tag(), addr, false);
+                            let committed = HashBucketEntry::new(r.entry.tag(), addr, false);
                             idx.update(r.slot, r.entry, committed);
                             created_count += 1;
                         }
@@ -1206,8 +1192,8 @@ mod tests {
 
     #[test]
     fn test_concurrent_invalidate_with_readers() {
-        use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
         use std::thread;
 
         let index = Arc::new(HashIndex::new(10));
@@ -1262,10 +1248,7 @@ mod tests {
         }
 
         // Invalidator: remove page 1 entries.
-        let invalidated = index.invalidate_entries_in_range(
-            make_addr(1, 0),
-            make_addr(2, 0),
-        );
+        let invalidated = index.invalidate_entries_in_range(make_addr(1, 0), make_addr(2, 0));
         assert_eq!(invalidated, 50);
 
         done.store(true, AtomicOrdering::Relaxed);

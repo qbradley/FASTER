@@ -71,7 +71,7 @@ fn bench_tag_extraction(c: &mut Criterion) {
 // ---------------------------------------------------------------------------
 
 fn bench_entry_new(c: &mut Criterion) {
-    use faster_core::address::{LogicalAddress, Page, Offset};
+    use faster_core::address::{LogicalAddress, Offset, Page};
     c.bench_function("HashBucketEntry::new", |b| {
         let mut tag = 0u16;
         let addr = LogicalAddress::new(Page(42), Offset(1024));
@@ -111,9 +111,9 @@ fn bench_entry_address_extraction(c: &mut Criterion) {
 }
 
 fn bench_atomic_compare_exchange(c: &mut Criterion) {
-    use faster_core::address::{LogicalAddress, Page, Offset};
-    use faster_core::hash_bucket::{HashBucketEntry, AtomicHashBucketEntry};
     use core::sync::atomic::Ordering;
+    use faster_core::address::{LogicalAddress, Offset, Page};
+    use faster_core::hash_bucket::{AtomicHashBucketEntry, HashBucketEntry};
 
     c.bench_function("AtomicHashBucketEntry::compare_exchange", |b| {
         let atomic = AtomicHashBucketEntry::new(HashBucketEntry::EMPTY);
@@ -144,9 +144,9 @@ fn bench_atomic_compare_exchange(c: &mut Criterion) {
 // ---------------------------------------------------------------------------
 
 fn bench_bucket_find_entry_miss(c: &mut Criterion) {
-    use faster_core::address::{LogicalAddress, Page, Offset};
-    use faster_core::hash_bucket::{HashBucketEntry, HashBucket, BUCKET_NUM_ENTRIES};
     use core::sync::atomic::Ordering;
+    use faster_core::address::{LogicalAddress, Offset, Page};
+    use faster_core::hash_bucket::{BUCKET_NUM_ENTRIES, HashBucket, HashBucketEntry};
 
     let bucket = HashBucket::new();
     let addr = LogicalAddress::new(Page(1), Offset(42));
@@ -163,9 +163,9 @@ fn bench_bucket_find_entry_miss(c: &mut Criterion) {
 }
 
 fn bench_bucket_find_entry_hit_first(c: &mut Criterion) {
-    use faster_core::address::{LogicalAddress, Page, Offset};
-    use faster_core::hash_bucket::{HashBucketEntry, HashBucket, BUCKET_NUM_ENTRIES};
     use core::sync::atomic::Ordering;
+    use faster_core::address::{LogicalAddress, Offset, Page};
+    use faster_core::hash_bucket::{BUCKET_NUM_ENTRIES, HashBucket, HashBucketEntry};
 
     let bucket = HashBucket::new();
     let addr = LogicalAddress::new(Page(1), Offset(42));
@@ -181,9 +181,9 @@ fn bench_bucket_find_entry_hit_first(c: &mut Criterion) {
 }
 
 fn bench_bucket_find_entry_hit_last(c: &mut Criterion) {
-    use faster_core::address::{LogicalAddress, Page, Offset};
-    use faster_core::hash_bucket::{HashBucketEntry, HashBucket, BUCKET_NUM_ENTRIES};
     use core::sync::atomic::Ordering;
+    use faster_core::address::{LogicalAddress, Offset, Page};
+    use faster_core::hash_bucket::{BUCKET_NUM_ENTRIES, HashBucket, HashBucketEntry};
 
     let bucket = HashBucket::new();
     let addr = LogicalAddress::new(Page(1), Offset(42));
@@ -199,9 +199,9 @@ fn bench_bucket_find_entry_hit_last(c: &mut Criterion) {
 }
 
 fn bench_bucket_try_insert(c: &mut Criterion) {
-    use faster_core::address::{LogicalAddress, Page, Offset};
-    use faster_core::hash_bucket::{HashBucketEntry, HashBucket};
     use core::sync::atomic::Ordering;
+    use faster_core::address::{LogicalAddress, Offset, Page};
+    use faster_core::hash_bucket::{HashBucket, HashBucketEntry};
 
     c.bench_function("HashBucket::try_insert+reset", |b| {
         let bucket = HashBucket::new();
@@ -209,7 +209,9 @@ fn bench_bucket_try_insert(c: &mut Criterion) {
         b.iter(|| {
             // Insert into slot 0 then reset — measures CAS insert cost
             let _ = bucket.try_insert(black_box(0x1234), black_box(addr));
-            bucket.entry(0).store(HashBucketEntry::EMPTY, Ordering::Relaxed);
+            bucket
+                .entry(0)
+                .store(HashBucketEntry::EMPTY, Ordering::Relaxed);
         });
     });
 }
@@ -219,8 +221,8 @@ fn bench_bucket_try_insert(c: &mut Criterion) {
 // ---------------------------------------------------------------------------
 
 fn bench_epoch_protect_unprotect(c: &mut Criterion) {
-    use std::sync::Arc;
     use faster_core::epoch::EpochTable;
+    use std::sync::Arc;
 
     let table = Arc::new(EpochTable::new());
     let thread = table.register().expect("register");
@@ -235,8 +237,8 @@ fn bench_epoch_protect_unprotect(c: &mut Criterion) {
 }
 
 fn bench_epoch_protect_refresh_unprotect(c: &mut Criterion) {
-    use std::sync::Arc;
     use faster_core::epoch::EpochTable;
+    use std::sync::Arc;
 
     let table = Arc::new(EpochTable::new());
     let thread = table.register().expect("register");
@@ -251,8 +253,8 @@ fn bench_epoch_protect_refresh_unprotect(c: &mut Criterion) {
 }
 
 fn bench_epoch_bump(c: &mut Criterion) {
-    use std::sync::Arc;
     use faster_core::epoch::EpochTable;
+    use std::sync::Arc;
 
     let table = Arc::new(EpochTable::new());
 
@@ -264,8 +266,8 @@ fn bench_epoch_bump(c: &mut Criterion) {
 }
 
 fn bench_epoch_bump_with_drain(c: &mut Criterion) {
-    use std::sync::Arc;
     use faster_core::epoch::EpochTable;
+    use std::sync::Arc;
 
     let table = Arc::new(EpochTable::new());
 
@@ -307,7 +309,7 @@ fn bench_record_write_u64(c: &mut Criterion) {
 
 fn bench_record_read_u64(c: &mut Criterion) {
     use faster_core::address::LogicalAddress;
-    use faster_core::record::{RecordInfo, RecordLayout, write_record, read_key, read_value};
+    use faster_core::record::{RecordInfo, RecordLayout, read_key, read_value, write_record};
 
     let key: u64 = 0xDEAD_BEEF;
     let value: u64 = 0xCAFE_BABE;
@@ -350,7 +352,7 @@ fn bench_record_write_variable(c: &mut Criterion) {
 
 fn bench_record_read_variable(c: &mut Criterion) {
     use faster_core::address::LogicalAddress;
-    use faster_core::record::{RecordInfo, RecordLayout, write_record, read_key, read_value};
+    use faster_core::record::{RecordInfo, RecordLayout, read_key, read_value, write_record};
 
     let key: Vec<u8> = vec![0xAB; 32];
     let value: Vec<u8> = vec![0xCD; 128];
@@ -429,9 +431,9 @@ fn bench_alloc_throughput(c: &mut Criterion) {
 // ---------------------------------------------------------------------------
 
 fn bench_bucket_find_various_fill(c: &mut Criterion) {
-    use faster_core::address::{LogicalAddress, Page, Offset};
-    use faster_core::hash_bucket::{HashBucket, HashBucketEntry};
     use core::sync::atomic::Ordering;
+    use faster_core::address::{LogicalAddress, Offset, Page};
+    use faster_core::hash_bucket::{HashBucket, HashBucketEntry};
 
     let mut group = c.benchmark_group("bucket_find_fill_levels");
     let addr = LogicalAddress::new(Page(1), Offset(42));
@@ -567,10 +569,15 @@ fn bench_alloc_free_reuse(c: &mut Criterion) {
 // ---------------------------------------------------------------------------
 
 /// Helper: build a bucket chain of the given depth (0 = primary only).
-fn build_chain(depth: usize) -> (faster_core::hash_bucket::HashBucket, faster_core::overflow::OverflowBucketPool) {
-    use faster_core::address::{LogicalAddress, Page, Offset};
-    use faster_core::hash_bucket::{HashBucket, HashBucketEntry, BUCKET_NUM_ENTRIES};
+fn build_chain(
+    depth: usize,
+) -> (
+    faster_core::hash_bucket::HashBucket,
+    faster_core::overflow::OverflowBucketPool,
+) {
     use core::sync::atomic::Ordering;
+    use faster_core::address::{LogicalAddress, Offset, Page};
+    use faster_core::hash_bucket::{BUCKET_NUM_ENTRIES, HashBucket, HashBucketEntry};
 
     let bucket = HashBucket::new();
     let pool = faster_core::overflow::OverflowBucketPool::new();
@@ -667,8 +674,8 @@ fn bench_find_entry_in_chain(c: &mut Criterion) {
 }
 
 fn bench_insert_in_chain(c: &mut Criterion) {
-    use faster_core::address::{LogicalAddress, Page, Offset};
-    use faster_core::hash_bucket::{HashBucket, BUCKET_NUM_ENTRIES};
+    use faster_core::address::{LogicalAddress, Offset, Page};
+    use faster_core::hash_bucket::{BUCKET_NUM_ENTRIES, HashBucket};
 
     c.bench_function("insert_in_chain (overflow trigger)", |b| {
         b.iter_custom(|iters| {
@@ -699,7 +706,7 @@ fn make_bench_hash(seed: u64) -> faster_core::hash::KeyHash {
 
 /// Helper: pre-populate a hash index with N committed entries. Returns the index.
 fn prepopulate_index(log2_size: u32, n: u64) -> std::sync::Arc<faster_core::hash_index::HashIndex> {
-    use faster_core::address::{LogicalAddress, Page, Offset};
+    use faster_core::address::{LogicalAddress, Offset, Page};
     use faster_core::hash_bucket::HashBucketEntry;
 
     let index = faster_core::hash_index::HashIndex::new(log2_size);
@@ -720,7 +727,7 @@ fn prepopulate_index(log2_size: u32, n: u64) -> std::sync::Arc<faster_core::hash
 }
 
 fn bench_hash_index_insert_sequential(c: &mut Criterion) {
-    use faster_core::address::{LogicalAddress, Page, Offset};
+    use faster_core::address::{LogicalAddress, Offset, Page};
     use faster_core::hash_bucket::HashBucketEntry;
     use faster_core::hash_index::HashIndex;
 
@@ -779,7 +786,7 @@ fn bench_hash_index_find_miss(c: &mut Criterion) {
 }
 
 fn bench_hash_index_insert_concurrent(c: &mut Criterion) {
-    use faster_core::address::{LogicalAddress, Page, Offset};
+    use faster_core::address::{LogicalAddress, Offset, Page};
     use faster_core::hash_bucket::HashBucketEntry;
     use faster_core::hash_index::HashIndex;
 
@@ -884,7 +891,7 @@ fn bench_hash_index_find_concurrent(c: &mut Criterion) {
 }
 
 fn bench_hash_index_mixed_rw_concurrent_8(c: &mut Criterion) {
-    use faster_core::address::{LogicalAddress, Page, Offset};
+    use faster_core::address::{LogicalAddress, Offset, Page};
     use faster_core::hash_bucket::HashBucketEntry;
 
     let n = 200_000u64;

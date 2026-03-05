@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 // ---------------------------------------------------------------------------
 // End-to-end pipeline benchmarks: hash → bucket → allocator → record
@@ -13,12 +13,12 @@ struct RecordSlot {
 }
 
 fn bench_pipeline_insert(c: &mut Criterion) {
-    use std::sync::Arc;
     use faster_core::address::LogicalAddress;
     use faster_core::allocator::MallocFixedPageSize;
     use faster_core::epoch::EpochTable;
     use faster_core::hash::Hashable;
-    use faster_core::record::{write_record, RecordInfo, RecordLayout};
+    use faster_core::record::{RecordInfo, RecordLayout, write_record};
+    use std::sync::Arc;
 
     let table = Arc::new(EpochTable::new());
     let thread = table.register().expect("register");
@@ -40,9 +40,7 @@ fn bench_pipeline_insert(c: &mut Criterion) {
             let addr = alloc.allocate();
             let layout = RecordLayout::for_kv(&key, &value);
             let slot = alloc.get(addr);
-            let buf = unsafe {
-                std::slice::from_raw_parts_mut(slot as *const _ as *mut u8, 128)
-            };
+            let buf = unsafe { std::slice::from_raw_parts_mut(slot as *const _ as *mut u8, 128) };
             let info = RecordInfo::new(LogicalAddress::ZERO, 0, false, false, false);
             write_record(buf, &info, &key, &value, &layout);
 
@@ -52,14 +50,14 @@ fn bench_pipeline_insert(c: &mut Criterion) {
 }
 
 fn bench_pipeline_lookup(c: &mut Criterion) {
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
     use faster_core::address::LogicalAddress;
     use faster_core::allocator::MallocFixedPageSize;
     use faster_core::epoch::EpochTable;
     use faster_core::hash::Hashable;
     use faster_core::hash_bucket::{HashBucket, HashBucketEntry};
-    use faster_core::record::{write_record, read_key, read_value, RecordInfo, RecordLayout};
+    use faster_core::record::{RecordInfo, RecordLayout, read_key, read_value, write_record};
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     let table = Arc::new(EpochTable::new());
     let thread = table.register().expect("register");
@@ -73,16 +71,12 @@ fn bench_pipeline_lookup(c: &mut Criterion) {
         let addr = alloc.allocate();
         let layout = RecordLayout::for_kv(&key, &key);
         let slot = alloc.get(addr);
-        let buf = unsafe {
-            std::slice::from_raw_parts_mut(slot as *const _ as *mut u8, 128)
-        };
+        let buf = unsafe { std::slice::from_raw_parts_mut(slot as *const _ as *mut u8, 128) };
         let info = RecordInfo::new(LogicalAddress::ZERO, 0, false, false, false);
         write_record(buf, &info, &key, &key, &layout);
         let entry = HashBucketEntry::new(kh.tag(), addr, false);
         if let Some(slot) = bucket.find_empty() {
-            bucket
-                .entry(slot)
-                .store(entry, Ordering::Release);
+            bucket.entry(slot).store(entry, Ordering::Release);
         }
     }
 
@@ -99,9 +93,7 @@ fn bench_pipeline_lookup(c: &mut Criterion) {
 
             if let Some((_, entry)) = bucket.find_entry(tag) {
                 let slot = alloc.get(entry.address());
-                let buf = unsafe {
-                    std::slice::from_raw_parts(slot as *const _ as *const u8, 128)
-                };
+                let buf = unsafe { std::slice::from_raw_parts(slot as *const _ as *const u8, 128) };
                 let layout = RecordLayout::for_kv(&key, &key);
                 let k: u64 = read_key(buf, &layout);
                 let v: u64 = read_value(buf, &layout);
@@ -112,9 +104,9 @@ fn bench_pipeline_lookup(c: &mut Criterion) {
 }
 
 fn bench_epoch_contended(c: &mut Criterion) {
+    use faster_core::epoch::EpochTable;
     use std::sync::Arc;
     use std::thread;
-    use faster_core::epoch::EpochTable;
 
     let mut group = c.benchmark_group("epoch_contended");
 
@@ -169,4 +161,3 @@ criterion_group!(
     bench_epoch_contended,
 );
 criterion_main!(benches);
-
