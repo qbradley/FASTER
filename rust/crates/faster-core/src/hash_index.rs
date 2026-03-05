@@ -1,0 +1,1203 @@
+//! Higher-level concurrent hash index composing [`HashTable`] + [`EpochTable`].
+//!
+//! [`HashIndex`] is the component that FASTER's store uses for concurrent
+//! hash-based record lookup. It wraps the low-level latch-free [`HashTable`]
+//! with epoch-based reclamation ([`EpochTable`]) and provides:
+//!
+//! - **Epoch-aware lookups and inserts** — callers hold an [`EpochGuard`] for
+//!   the duration of an operation batch; individual operations delegate to the
+//!   underlying hash table without acquiring guards.
+//! - **GC integration** — [`invalidate_entries_in_range`](HashIndex::invalidate_entries_in_range)
+//!   scans the index and zeros entries whose addresses fall within a reclaimed
+//!   range, enabling hybrid-log page eviction.
+//! - **Maintenance** — [`cleanup_tentative_entries`](HashIndex::cleanup_tentative_entries)
+//!   removes stale tentative entries left by crashed or aborted inserts.
+//!
+//! # Epoch discipline
+//!
+//! `find`, `find_or_create`, and `update` assume the caller already holds an
+//! [`EpochGuard`]. Epoch protection is acquired per-session (once per operation
+//! batch), NOT per-operation — matching FASTER's session model. Creating a
+//! guard per-operation would be needlessly expensive and break the reentrant
+//! epoch semantics.
+//!
+//! # C++ correspondence
+//!
+//! | Rust                            | C++ (`mem_index.h` / `internal_hash_table.h`)       |
+//! |---------------------------------|------------------------------------------------------|
+//! | `HashIndex`                     | `MemHashIndex` + `InternalHashTable<D>`              |
+//! | `find()`                        | `FindEntry()`                                        |
+//! | `find_or_create()`              | `FindOrCreateEntry()`                                |
+//! | `update()`                      | CAS on `AtomicHashBucketEntry`                       |
+//! | `invalidate_entries_in_range()` | `InternalHashTable::InvalidateEntries()`             |
+//! | `register_thread()`             | `LightEpoch::register_thread()`                      |
+//! | `cleanup_tentative_entries()`   | Recovery-phase tentative cleanup                     |
+//!
+//! # Memory ordering
+//!
+//! All ordering choices are documented inline. Summary:
+//!
+//! | Operation                     | Ordering  | Rationale                                  |
+//! |-------------------------------|-----------|--------------------------------------------|
+//! | `find` / `find_or_create`     | (delegated) | See [`HashTable`] documentation           |
+//! | `update` CAS                  | `AcqRel`  | Publish new entry, see prior writes        |
+//! | `invalidate` CAS to EMPTY     | `AcqRel`  | Ensure zeroed entry visible to readers     |
+//! | `cleanup_tentative` CAS       | `AcqRel`  | Same as invalidate                         |
+//!
+//! # Thread safety
+//!
+//! `HashIndex` is `Send + Sync`. All operations are lock-free on the data
+//! path. Thread registration uses a mutex internally (rare, not hot path).
+
+use std::sync::Arc;
+
+use crate::address::LogicalAddress;
+use crate::epoch::{EpochTable, EpochThread};
+use crate::hash::KeyHash;
+use crate::hash_bucket::{AtomicHashBucketEntry, HashBucketEntry, BUCKET_NUM_ENTRIES};
+use crate::hash_table::{FindOrCreateResult, HashTable};
+
+use core::sync::atomic::Ordering;
+
+// ---------------------------------------------------------------------------
+// HashIndex
+// ---------------------------------------------------------------------------
+
+/// A concurrent hash index backed by epoch-based reclamation.
+///
+/// Composes [`HashTable`] (the latch-free bucket array) with [`EpochTable`]
+/// (epoch coordination and drain callbacks) into the user-facing hash index
+/// that FASTER's store operates against.
+///
+/// # Construction
+///
+/// ```
+/// use faster_core::hash_index::HashIndex;
+///
+/// // Create a hash index with 2^14 = 16384 buckets.
+/// let index = HashIndex::new(14);
+/// assert_eq!(index.num_buckets(), 16384);
+/// ```
+///
+/// # Usage pattern
+///
+/// ```
+/// use faster_core::hash_index::HashIndex;
+/// use faster_core::hash::KeyHash;
+/// use faster_core::address::LogicalAddress;
+///
+/// let index = HashIndex::new(10);
+///
+/// // 1. Register thread for epoch participation
+/// let thread = index.register_thread().expect("register");
+///
+/// // 2. Acquire epoch guard for the operation batch
+/// let _guard = thread.protect();
+///
+/// // 3. Perform operations (find, find_or_create, update)
+/// let hash = KeyHash::new(0xDEAD_BEEF_1234_5678);
+/// let result = index.find_or_create(hash, LogicalAddress::INVALID);
+/// assert!(result.created);
+/// ```
+pub struct HashIndex {
+    /// The latch-free concurrent hash table.
+    table: HashTable,
+
+    /// Epoch coordination table for safe memory reclamation.
+    /// Wrapped in `Arc` because [`EpochTable::register`] requires `&Arc<Self>`.
+    epoch: Arc<EpochTable>,
+}
+
+impl HashIndex {
+    /// Creates a new hash index with `2^log2_size` buckets.
+    ///
+    /// Initializes both the hash table and epoch system. All buckets start
+    /// empty, the global epoch starts at 1.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `log2_size` is outside [`HashTable::MIN_LOG2_SIZE`]..=[`HashTable::MAX_LOG2_SIZE`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use faster_core::hash_index::HashIndex;
+    ///
+    /// let index = HashIndex::new(8); // 256 buckets
+    /// assert_eq!(index.num_buckets(), 256);
+    /// assert_eq!(index.log2_buckets(), 8);
+    /// assert_eq!(index.entry_count(), 0);
+    /// ```
+    pub fn new(log2_size: u32) -> Self {
+        Self {
+            table: HashTable::new(log2_size),
+            epoch: Arc::new(EpochTable::new()),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Thread registration
+    // -----------------------------------------------------------------------
+
+    /// Registers the calling thread for epoch participation.
+    ///
+    /// Returns an [`EpochThread`] handle that can create [`EpochGuard`]s.
+    /// The handle holds an `Arc` to the epoch table and releases its slot
+    /// on drop.
+    ///
+    /// # Returns
+    ///
+    /// `None` if all [`MAX_THREADS`](crate::epoch::MAX_THREADS) slots are occupied.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use faster_core::hash_index::HashIndex;
+    ///
+    /// let index = HashIndex::new(8);
+    /// let thread = index.register_thread().expect("should register");
+    /// let _guard = thread.protect();
+    /// ```
+    pub fn register_thread(&self) -> Option<EpochThread> {
+        self.epoch.register()
+    }
+
+    // -----------------------------------------------------------------------
+    // Core operations (caller must hold EpochGuard)
+    // -----------------------------------------------------------------------
+
+    /// Looks up an existing committed entry by key hash.
+    ///
+    /// Scans the primary bucket and overflow chain for a committed (non-tentative)
+    /// entry whose tag matches `hash.tag()`. Returns `None` if not found.
+    ///
+    /// # Epoch requirement
+    ///
+    /// The caller **must** hold an [`EpochGuard`] for the duration of this call
+    /// and any subsequent use of the returned slot reference. The guard is NOT
+    /// acquired internally — FASTER acquires epoch protection per operation batch,
+    /// not per individual lookup.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use faster_core::hash_index::HashIndex;
+    /// use faster_core::hash::KeyHash;
+    ///
+    /// let index = HashIndex::new(10);
+    /// let thread = index.register_thread().unwrap();
+    /// let _guard = thread.protect();
+    ///
+    /// let hash = KeyHash::new(0xABCD_0000_0000_1234);
+    /// assert!(index.find(hash).is_none()); // empty table
+    /// ```
+    #[inline]
+    pub fn find(&self, hash: KeyHash) -> Option<(HashBucketEntry, &AtomicHashBucketEntry)> {
+        self.table.find_entry(hash)
+    }
+
+    /// Finds an existing entry or creates a new tentative entry.
+    ///
+    /// Delegates to [`HashTable::find_or_create_entry`] — the two-phase tentative
+    /// CAS protocol. If `created` is true in the result, the caller must:
+    /// 1. Write the record to the hybrid log.
+    /// 2. Call [`update`](Self::update) to clear the tentative bit.
+    ///
+    /// # Epoch requirement
+    ///
+    /// The caller **must** hold an [`EpochGuard`]. See [`find`](Self::find) for details.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use faster_core::hash_index::HashIndex;
+    /// use faster_core::hash::KeyHash;
+    /// use faster_core::address::LogicalAddress;
+    ///
+    /// let index = HashIndex::new(10);
+    /// let thread = index.register_thread().unwrap();
+    /// let _guard = thread.protect();
+    ///
+    /// let hash = KeyHash::new(0x1234_0000_0000_ABCD);
+    /// let result = index.find_or_create(hash, LogicalAddress::INVALID);
+    /// assert!(result.created);
+    /// assert!(result.entry.is_tentative());
+    /// ```
+    #[inline]
+    pub fn find_or_create(
+        &self,
+        hash: KeyHash,
+        initial_address: LogicalAddress,
+    ) -> FindOrCreateResult<'_> {
+        self.table.find_or_create_entry(hash, initial_address)
+    }
+
+    /// Atomically updates a hash index entry via CAS.
+    ///
+    /// Common use cases:
+    /// - **Commit:** CAS from tentative to committed (clear tentative bit).
+    /// - **Update address:** Point an existing entry to a new log record.
+    /// - **Invalidate:** CAS a tentative entry back to `EMPTY` on abort.
+    ///
+    /// Returns `true` if the CAS succeeded.
+    ///
+    /// # Epoch requirement
+    ///
+    /// The caller **must** hold an [`EpochGuard`]. See [`find`](Self::find) for details.
+    ///
+    /// # Memory ordering
+    ///
+    /// Delegates to [`HashTable::update_entry`] which uses `AcqRel` / `Acquire`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use faster_core::hash_index::HashIndex;
+    /// use faster_core::hash::KeyHash;
+    /// use faster_core::hash_bucket::HashBucketEntry;
+    /// use faster_core::address::{LogicalAddress, Page, Offset};
+    ///
+    /// let index = HashIndex::new(10);
+    /// let thread = index.register_thread().unwrap();
+    /// let _guard = thread.protect();
+    ///
+    /// let hash = KeyHash::new(0x1234_0000_0000_ABCD);
+    /// let result = index.find_or_create(hash, LogicalAddress::INVALID);
+    /// assert!(result.created);
+    ///
+    /// // Commit the tentative entry with a real address.
+    /// let new_addr = LogicalAddress::new(Page(1), Offset(256));
+    /// let committed = HashBucketEntry::new(result.entry.tag(), new_addr, false);
+    /// assert!(index.update(result.slot, result.entry, committed));
+    /// ```
+    #[inline]
+    pub fn update(
+        &self,
+        slot: &AtomicHashBucketEntry,
+        old: HashBucketEntry,
+        new: HashBucketEntry,
+    ) -> bool {
+        self.table.update_entry(slot, old, new)
+    }
+
+    // -----------------------------------------------------------------------
+    // GC: entry invalidation for page eviction
+    // -----------------------------------------------------------------------
+
+    /// Scans all buckets and invalidates entries whose address falls in `[begin, end)`.
+    ///
+    /// For each non-empty entry with `begin <= entry.address() < end`, attempts
+    /// a CAS to [`HashBucketEntry::EMPTY`]. CAS failures are expected and harmless
+    /// — they indicate a concurrent modification (insert or another invalidation).
+    ///
+    /// Returns the count of successfully invalidated entries.
+    ///
+    /// # Epoch requirement
+    ///
+    /// This method does **NOT** require epoch protection. It is designed to be
+    /// called from epoch drain callbacks when the hybrid log evicts pages. The
+    /// method only touches hash index entries (CAS to EMPTY) and does not
+    /// dereference any log addresses.
+    ///
+    /// # Concurrency
+    ///
+    /// Safe to call concurrently with `find`, `find_or_create`, and `update`.
+    /// The CAS ensures atomicity: readers either see the old entry or EMPTY,
+    /// never a torn value.
+    ///
+    /// # Memory ordering
+    ///
+    /// - Entries are loaded with `Acquire` to see the latest committed value.
+    /// - CAS uses `AcqRel` / `Relaxed`: `Release` on success ensures the
+    ///   zeroed entry is visible to subsequent readers; `Relaxed` on failure
+    ///   because we simply skip failed CAS attempts.
+    ///
+    /// # Performance
+    ///
+    /// O(total_entries) — walks every primary bucket and overflow chain.
+    /// Intended for batch page eviction, not the per-operation hot path.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use faster_core::hash_index::HashIndex;
+    /// use faster_core::hash::KeyHash;
+    /// use faster_core::hash_bucket::HashBucketEntry;
+    /// use faster_core::address::{LogicalAddress, Page, Offset};
+    ///
+    /// let index = HashIndex::new(8);
+    /// let thread = index.register_thread().unwrap();
+    ///
+    /// // Insert and commit an entry at address Page(1), Offset(100).
+    /// let hash = KeyHash::new(0x1234_0000_0000_ABCD);
+    /// {
+    ///     let _guard = thread.protect();
+    ///     let r = index.find_or_create(hash, LogicalAddress::INVALID);
+    ///     let addr = LogicalAddress::new(Page(1), Offset(100));
+    ///     let committed = HashBucketEntry::new(r.entry.tag(), addr, false);
+    ///     index.update(r.slot, r.entry, committed);
+    /// }
+    ///
+    /// // Invalidate all entries in page range [Page(0)..Page(2)).
+    /// let begin = LogicalAddress::new(Page(0), Offset(0));
+    /// let end = LogicalAddress::new(Page(2), Offset(0));
+    /// let count = index.invalidate_entries_in_range(begin, end);
+    /// assert_eq!(count, 1);
+    /// ```
+    pub fn invalidate_entries_in_range(
+        &self,
+        begin: LogicalAddress,
+        end: LogicalAddress,
+    ) -> u64 {
+        let begin_raw = begin.raw();
+        let end_raw = end.raw();
+        let mut invalidated = 0u64;
+        let pool = self.table.overflow_pool();
+
+        for bucket_idx in 0..self.table.num_buckets() {
+            let bucket = &self.table_buckets()[bucket_idx as usize];
+            let mut current = bucket;
+
+            loop {
+                for i in 0..BUCKET_NUM_ENTRIES {
+                    // Acquire: see the latest committed value.
+                    let entry = current.entry(i).load(Ordering::Acquire);
+                    if entry.is_empty() {
+                        continue;
+                    }
+
+                    let addr_raw = entry.address().raw();
+                    if addr_raw >= begin_raw && addr_raw < end_raw {
+                        // CAS to EMPTY. AcqRel on success: publish the zeroed
+                        // entry to concurrent readers. Relaxed on failure:
+                        // another thread modified this entry concurrently —
+                        // that's fine, skip it.
+                        if current
+                            .entry(i)
+                            .compare_exchange(
+                                entry,
+                                HashBucketEntry::EMPTY,
+                                Ordering::AcqRel,
+                                Ordering::Relaxed,
+                            )
+                            .is_ok()
+                        {
+                            invalidated += 1;
+                        }
+                    }
+                }
+
+                // Follow overflow chain.
+                let overflow_addr = current.overflow_address().load(Ordering::Acquire);
+                if overflow_addr == LogicalAddress::ZERO {
+                    break;
+                }
+                current = pool.get(overflow_addr);
+            }
+        }
+
+        invalidated
+    }
+
+    // -----------------------------------------------------------------------
+    // Maintenance: tentative entry cleanup
+    // -----------------------------------------------------------------------
+
+    /// Scans all buckets and removes stale tentative entries.
+    ///
+    /// Any entry with the tentative bit set is CAS'd to [`HashBucketEntry::EMPTY`].
+    /// This cleans up entries left by aborted or crashed insert operations.
+    ///
+    /// Returns the count of successfully cleaned entries.
+    ///
+    /// # When to call
+    ///
+    /// - During recovery after a crash (tentative entries from incomplete inserts).
+    /// - As periodic maintenance (though stale tentatives are rare in practice).
+    ///
+    /// This is NOT on the hot path — O(total_entries) scan.
+    ///
+    /// # Concurrency
+    ///
+    /// Safe to call concurrently with other operations. CAS failures are
+    /// expected if a concurrent insert commits its tentative entry between
+    /// our load and CAS — that's correct behavior (we don't want to clean
+    /// an entry that was just committed).
+    ///
+    /// # Memory ordering
+    ///
+    /// - Load with `Acquire`: see fully committed tentative entries.
+    /// - CAS with `AcqRel` / `Relaxed`: same rationale as `invalidate_entries_in_range`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use faster_core::hash_index::HashIndex;
+    /// use faster_core::hash::KeyHash;
+    /// use faster_core::address::LogicalAddress;
+    ///
+    /// let index = HashIndex::new(8);
+    /// let thread = index.register_thread().unwrap();
+    /// let _guard = thread.protect();
+    ///
+    /// // Create a tentative entry (simulating a partial insert).
+    /// let hash = KeyHash::new(0xAAAA_0000_0000_BBBB);
+    /// let r = index.find_or_create(hash, LogicalAddress::INVALID);
+    /// assert!(r.created);
+    /// assert!(r.entry.is_tentative());
+    ///
+    /// // Clean up tentative entries.
+    /// let count = index.cleanup_tentative_entries();
+    /// assert_eq!(count, 1);
+    ///
+    /// // Entry is now gone.
+    /// assert!(index.find(hash).is_none());
+    /// ```
+    pub fn cleanup_tentative_entries(&self) -> u64 {
+        let mut cleaned = 0u64;
+        let pool = self.table.overflow_pool();
+
+        for bucket_idx in 0..self.table.num_buckets() {
+            let bucket = &self.table_buckets()[bucket_idx as usize];
+            let mut current = bucket;
+
+            loop {
+                for i in 0..BUCKET_NUM_ENTRIES {
+                    // Acquire: see the latest value including tentative bit.
+                    let entry = current.entry(i).load(Ordering::Acquire);
+                    if !entry.is_empty() && entry.is_tentative() {
+                        // CAS to EMPTY. AcqRel on success to publish the
+                        // removal. Relaxed on failure — the entry was
+                        // concurrently modified (likely committed), which
+                        // is fine.
+                        if current
+                            .entry(i)
+                            .compare_exchange(
+                                entry,
+                                HashBucketEntry::EMPTY,
+                                Ordering::AcqRel,
+                                Ordering::Relaxed,
+                            )
+                            .is_ok()
+                        {
+                            cleaned += 1;
+                        }
+                    }
+                }
+
+                let overflow_addr = current.overflow_address().load(Ordering::Acquire);
+                if overflow_addr == LogicalAddress::ZERO {
+                    break;
+                }
+                current = pool.get(overflow_addr);
+            }
+        }
+
+        cleaned
+    }
+
+    // -----------------------------------------------------------------------
+    // Accessors
+    // -----------------------------------------------------------------------
+
+    /// Returns a reference to the underlying [`HashTable`].
+    ///
+    /// Use this for advanced operations (direct bucket access, statistics)
+    /// that are not covered by the `HashIndex` API.
+    #[inline]
+    pub fn table(&self) -> &HashTable {
+        &self.table
+    }
+
+    /// Returns a reference to the underlying [`EpochTable`].
+    ///
+    /// Use this for advanced epoch management (bumping epochs, drain callbacks,
+    /// monitoring epoch progress).
+    #[inline]
+    pub fn epoch(&self) -> &EpochTable {
+        &self.epoch
+    }
+
+    /// Returns a clone of the `Arc<EpochTable>` for shared ownership.
+    ///
+    /// Useful when components need to independently hold a reference to the
+    /// epoch table (e.g., for registering threads from other subsystems).
+    #[inline]
+    pub fn epoch_arc(&self) -> Arc<EpochTable> {
+        Arc::clone(&self.epoch)
+    }
+
+    /// Returns the number of primary buckets (2^log2_size).
+    #[inline]
+    pub fn num_buckets(&self) -> u64 {
+        self.table.num_buckets()
+    }
+
+    /// Returns the log2 of the number of primary buckets.
+    #[inline]
+    pub fn log2_buckets(&self) -> u32 {
+        self.table.log2_buckets()
+    }
+
+    /// Returns an approximate count of non-empty entries across all buckets.
+    ///
+    /// **WARNING:** O(n) scan. Use only for diagnostics/testing.
+    #[inline]
+    pub fn entry_count(&self) -> u64 {
+        self.table.entry_count()
+    }
+
+    /// Returns the number of overflow buckets allocated.
+    #[inline]
+    pub fn overflow_count(&self) -> u64 {
+        self.table.overflow_count()
+    }
+
+    // -----------------------------------------------------------------------
+    // Private helpers
+    // -----------------------------------------------------------------------
+
+    /// Returns a reference to the raw bucket slice for direct iteration.
+    ///
+    /// This accesses the internal bucket array via the public `HashTable`
+    /// API by using the `bucket()` method with synthesized hashes, but for
+    /// full-table scans we need direct slice access. We reconstruct the
+    /// bucket reference via pointer arithmetic from bucket(0).
+    ///
+    /// # Safety argument
+    ///
+    /// `HashTable::bucket(hash)` with `hash.index(num_buckets)` == `idx`
+    /// returns `&buckets[idx]`. We know the buckets are a contiguous
+    /// `Box<[HashBucket]>` of length `num_buckets`. Getting bucket 0 and
+    /// constructing a slice from it is sound because:
+    /// - All buckets are contiguous in memory.
+    /// - We only read within `num_buckets` bounds.
+    /// - `HashBucket` has `#[repr(C, align(64))]` so stride is correct.
+    fn table_buckets(&self) -> &[crate::hash_bucket::HashBucket] {
+        let first = self.table.bucket(KeyHash::new(0));
+        let len = self.table.num_buckets() as usize;
+        // SAFETY: `first` points to the start of a contiguous `Box<[HashBucket]>`
+        // of length `num_buckets`. The slice we construct is within bounds.
+        // `HashBucket` is `#[repr(C, align(64))]` with size == align == 64,
+        // so `std::slice::from_raw_parts` with stride 64 is correct.
+        // The lifetime is tied to `&self` which borrows the HashTable.
+        unsafe { std::slice::from_raw_parts(first, len) }
+    }
+}
+
+impl core::fmt::Debug for HashIndex {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HashIndex")
+            .field("num_buckets", &self.num_buckets())
+            .field("log2_buckets", &self.log2_buckets())
+            .field("entry_count", &self.entry_count())
+            .field("overflow_count", &self.overflow_count())
+            .field("epoch_current", &self.epoch.current_epoch())
+            .field("epoch_safe", &self.epoch.safe_epoch())
+            .finish()
+    }
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::address::{LogicalAddress, Offset, Page};
+    use crate::hash::KeyHash;
+    use crate::hash_bucket::HashBucketEntry;
+
+    /// Helper: create a hash index with a small table for testing.
+    fn test_index() -> HashIndex {
+        HashIndex::new(8) // 256 buckets
+    }
+
+    /// Helper: create a distinct KeyHash from a seed.
+    fn make_hash(seed: u64) -> KeyHash {
+        // Shift seed into the tag bits (48..61) and lower bits for index.
+        // This ensures different seeds produce different tags AND different buckets.
+        KeyHash::new(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+    }
+
+    /// Helper: create a valid LogicalAddress from simple components.
+    fn make_addr(page: u32, offset: u32) -> LogicalAddress {
+        LogicalAddress::new(Page(page), Offset(offset))
+    }
+
+    // -----------------------------------------------------------------------
+    // Construction tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_new_creates_empty_index() {
+        let index = test_index();
+        assert_eq!(index.num_buckets(), 256);
+        assert_eq!(index.log2_buckets(), 8);
+        assert_eq!(index.entry_count(), 0);
+        assert_eq!(index.overflow_count(), 0);
+    }
+
+    #[test]
+    fn test_new_various_sizes() {
+        for log2 in [1, 4, 8, 12, 16] {
+            let index = HashIndex::new(log2);
+            assert_eq!(index.num_buckets(), 1u64 << log2);
+            assert_eq!(index.log2_buckets(), log2);
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_new_too_small() {
+        let _ = HashIndex::new(0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_new_too_large() {
+        let _ = HashIndex::new(31);
+    }
+
+    // -----------------------------------------------------------------------
+    // Thread registration
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_register_thread() {
+        let index = test_index();
+        let thread = index.register_thread().expect("should register");
+        assert_eq!(index.epoch().registered_count(), 1);
+        drop(thread);
+        assert_eq!(index.epoch().registered_count(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Find on empty table
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_find_empty_table() {
+        let index = test_index();
+        let thread = index.register_thread().unwrap();
+        let _guard = thread.protect();
+
+        assert!(index.find(make_hash(1)).is_none());
+        assert!(index.find(make_hash(42)).is_none());
+        assert!(index.find(make_hash(u64::MAX)).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Find-or-create round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_find_or_create_new_entry() {
+        let index = test_index();
+        let thread = index.register_thread().unwrap();
+        let _guard = thread.protect();
+
+        let hash = make_hash(100);
+        let result = index.find_or_create(hash, LogicalAddress::INVALID);
+
+        assert!(result.created);
+        assert!(result.entry.is_tentative());
+        assert_eq!(result.entry.tag(), hash.tag());
+        assert_eq!(index.entry_count(), 1);
+    }
+
+    #[test]
+    fn test_find_or_create_returns_existing() {
+        let index = test_index();
+        let thread = index.register_thread().unwrap();
+        let _guard = thread.protect();
+
+        let hash = make_hash(200);
+        let addr = make_addr(5, 1024);
+
+        // Create and commit.
+        let r1 = index.find_or_create(hash, LogicalAddress::INVALID);
+        assert!(r1.created);
+        let committed = HashBucketEntry::new(r1.entry.tag(), addr, false);
+        assert!(index.update(r1.slot, r1.entry, committed));
+
+        // Second find_or_create should return the existing committed entry.
+        let r2 = index.find_or_create(hash, LogicalAddress::INVALID);
+        assert!(!r2.created);
+        assert!(!r2.entry.is_tentative());
+        assert_eq!(r2.entry.address(), addr);
+    }
+
+    // -----------------------------------------------------------------------
+    // Find after commit
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_find_after_commit() {
+        let index = test_index();
+        let thread = index.register_thread().unwrap();
+        let _guard = thread.protect();
+
+        let hash = make_hash(300);
+        let addr = make_addr(10, 2048);
+
+        // Tentative entries are NOT visible to find.
+        let r = index.find_or_create(hash, LogicalAddress::INVALID);
+        assert!(index.find(hash).is_none());
+
+        // Commit the entry.
+        let committed = HashBucketEntry::new(r.entry.tag(), addr, false);
+        assert!(index.update(r.slot, r.entry, committed));
+
+        // Now find should return it.
+        let (found, _slot) = index.find(hash).expect("should find committed entry");
+        assert_eq!(found.address(), addr);
+        assert_eq!(found.tag(), hash.tag());
+        assert!(!found.is_tentative());
+    }
+
+    // -----------------------------------------------------------------------
+    // Update entry
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_update_address() {
+        let index = test_index();
+        let thread = index.register_thread().unwrap();
+        let _guard = thread.protect();
+
+        let hash = make_hash(400);
+        let addr1 = make_addr(1, 100);
+        let addr2 = make_addr(2, 200);
+
+        // Create and commit with addr1.
+        let r = index.find_or_create(hash, LogicalAddress::INVALID);
+        let committed1 = HashBucketEntry::new(r.entry.tag(), addr1, false);
+        assert!(index.update(r.slot, r.entry, committed1));
+
+        // Update to addr2.
+        let committed2 = HashBucketEntry::new(r.entry.tag(), addr2, false);
+        assert!(index.update(r.slot, committed1, committed2));
+
+        // Verify the update.
+        let (found, _) = index.find(hash).unwrap();
+        assert_eq!(found.address(), addr2);
+    }
+
+    #[test]
+    fn test_update_fails_on_stale() {
+        let index = test_index();
+        let thread = index.register_thread().unwrap();
+        let _guard = thread.protect();
+
+        let hash = make_hash(500);
+        let addr = make_addr(3, 300);
+
+        // Create and commit.
+        let r = index.find_or_create(hash, LogicalAddress::INVALID);
+        let committed = HashBucketEntry::new(r.entry.tag(), addr, false);
+        assert!(index.update(r.slot, r.entry, committed));
+
+        // Try to update with stale expected value (the tentative entry).
+        let stale = r.entry; // still the tentative version
+        let new_entry = HashBucketEntry::new(r.entry.tag(), make_addr(99, 99), false);
+        assert!(!index.update(r.slot, stale, new_entry));
+    }
+
+    // -----------------------------------------------------------------------
+    // Multiple entries
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_multiple_entries() {
+        let index = test_index();
+        let thread = index.register_thread().unwrap();
+        let _guard = thread.protect();
+
+        let n = 50u64;
+        let mut hashes = Vec::with_capacity(n as usize);
+
+        for i in 0..n {
+            let hash = make_hash(1000 + i);
+            let addr = make_addr(i as u32, (i * 64) as u32);
+
+            let r = index.find_or_create(hash, LogicalAddress::INVALID);
+            assert!(r.created);
+            let committed = HashBucketEntry::new(r.entry.tag(), addr, false);
+            assert!(index.update(r.slot, r.entry, committed));
+            hashes.push((hash, addr));
+        }
+
+        assert_eq!(index.entry_count(), n);
+
+        // Verify all entries are findable.
+        for (hash, addr) in &hashes {
+            let (found, _) = index.find(*hash).expect("should find entry");
+            assert_eq!(found.address(), *addr);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // GC: invalidate_entries_in_range
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_invalidate_empty_table() {
+        let index = test_index();
+        let count = index.invalidate_entries_in_range(
+            LogicalAddress::ZERO,
+            LogicalAddress::MAX,
+        );
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_invalidate_all_entries_in_range() {
+        let index = test_index();
+        let thread = index.register_thread().unwrap();
+
+        // Insert entries at page 1 and page 2.
+        {
+            let _guard = thread.protect();
+            for i in 0..5u64 {
+                let hash = make_hash(2000 + i);
+                let addr = make_addr(1, (i * 100) as u32);
+                let r = index.find_or_create(hash, LogicalAddress::INVALID);
+                let committed = HashBucketEntry::new(r.entry.tag(), addr, false);
+                index.update(r.slot, r.entry, committed);
+            }
+            for i in 0..3u64 {
+                let hash = make_hash(3000 + i);
+                let addr = make_addr(2, (i * 100) as u32);
+                let r = index.find_or_create(hash, LogicalAddress::INVALID);
+                let committed = HashBucketEntry::new(r.entry.tag(), addr, false);
+                index.update(r.slot, r.entry, committed);
+            }
+        }
+
+        assert_eq!(index.entry_count(), 8);
+
+        // Invalidate only page 1.
+        let begin = make_addr(1, 0);
+        let end = make_addr(2, 0);
+        let invalidated = index.invalidate_entries_in_range(begin, end);
+        assert_eq!(invalidated, 5);
+        assert_eq!(index.entry_count(), 3);
+
+        // Page 2 entries should still be there.
+        let _guard = thread.protect();
+        for i in 0..3u64 {
+            let hash = make_hash(3000 + i);
+            assert!(index.find(hash).is_some());
+        }
+    }
+
+    #[test]
+    fn test_invalidate_no_match() {
+        let index = test_index();
+        let thread = index.register_thread().unwrap();
+
+        {
+            let _guard = thread.protect();
+            let hash = make_hash(4000);
+            let addr = make_addr(10, 500);
+            let r = index.find_or_create(hash, LogicalAddress::INVALID);
+            let committed = HashBucketEntry::new(r.entry.tag(), addr, false);
+            index.update(r.slot, r.entry, committed);
+        }
+
+        // Invalidate range that doesn't include page 10.
+        let count = index.invalidate_entries_in_range(
+            make_addr(0, 0),
+            make_addr(5, 0),
+        );
+        assert_eq!(count, 0);
+        assert_eq!(index.entry_count(), 1);
+    }
+
+    #[test]
+    fn test_invalidate_includes_tentative_entries() {
+        let index = test_index();
+        let thread = index.register_thread().unwrap();
+
+        // Create a tentative entry (don't commit it).
+        {
+            let _guard = thread.protect();
+            let hash = make_hash(5000);
+            let r = index.find_or_create(hash, make_addr(3, 100));
+            assert!(r.created);
+            assert!(r.entry.is_tentative());
+        }
+
+        // Tentative entries should also be invalidated if in range.
+        let count = index.invalidate_entries_in_range(
+            make_addr(0, 0),
+            make_addr(100, 0),
+        );
+        // The tentative entry has address INVALID (raw value 1) which is in [0, huge_range).
+        // But our entry was created with make_addr(3, 100), which has the address as the
+        // initial_address embedded in the tentative entry.
+        assert!(count >= 1);
+        assert_eq!(index.entry_count(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tentative entry cleanup
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_cleanup_tentative_empty_table() {
+        let index = test_index();
+        assert_eq!(index.cleanup_tentative_entries(), 0);
+    }
+
+    #[test]
+    fn test_cleanup_tentative_removes_tentative() {
+        let index = test_index();
+        let thread = index.register_thread().unwrap();
+        let _guard = thread.protect();
+
+        // Create 3 tentative entries (don't commit).
+        for i in 0..3u64 {
+            let hash = make_hash(6000 + i);
+            let r = index.find_or_create(hash, LogicalAddress::INVALID);
+            assert!(r.created);
+        }
+
+        assert_eq!(index.entry_count(), 3);
+        let cleaned = index.cleanup_tentative_entries();
+        assert_eq!(cleaned, 3);
+        assert_eq!(index.entry_count(), 0);
+    }
+
+    #[test]
+    fn test_cleanup_tentative_preserves_committed() {
+        let index = test_index();
+        let thread = index.register_thread().unwrap();
+        let _guard = thread.protect();
+
+        // Create and commit one entry.
+        let hash_committed = make_hash(7000);
+        let addr = make_addr(5, 256);
+        let r = index.find_or_create(hash_committed, LogicalAddress::INVALID);
+        let committed = HashBucketEntry::new(r.entry.tag(), addr, false);
+        index.update(r.slot, r.entry, committed);
+
+        // Create one tentative entry.
+        let hash_tentative = make_hash(7001);
+        let r2 = index.find_or_create(hash_tentative, LogicalAddress::INVALID);
+        assert!(r2.created);
+
+        assert_eq!(index.entry_count(), 2);
+
+        // Cleanup should only remove the tentative one.
+        let cleaned = index.cleanup_tentative_entries();
+        assert_eq!(cleaned, 1);
+        assert_eq!(index.entry_count(), 1);
+
+        // Committed entry still findable.
+        let (found, _) = index.find(hash_committed).unwrap();
+        assert_eq!(found.address(), addr);
+    }
+
+    // -----------------------------------------------------------------------
+    // Accessors
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_table_accessor() {
+        let index = test_index();
+        assert_eq!(index.table().num_buckets(), 256);
+    }
+
+    #[test]
+    fn test_epoch_accessor() {
+        let index = test_index();
+        assert_eq!(index.epoch().current_epoch(), 1);
+        assert_eq!(index.epoch().safe_epoch(), 0);
+    }
+
+    #[test]
+    fn test_debug_impl() {
+        let index = test_index();
+        let debug = format!("{:?}", index);
+        assert!(debug.contains("HashIndex"));
+        assert!(debug.contains("num_buckets"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Concurrent operations (multi-threaded)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_concurrent_inserts() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let index = Arc::new(HashIndex::new(12)); // 4096 buckets
+        let num_threads = 4;
+        let ops_per_thread = 200;
+
+        let handles: Vec<_> = (0..num_threads)
+            .map(|t| {
+                let idx = Arc::clone(&index);
+                thread::spawn(move || {
+                    let thread = idx.register_thread().unwrap();
+                    let _guard = thread.protect();
+
+                    let mut created_count = 0u64;
+                    for i in 0..ops_per_thread {
+                        let seed = (t as u64) * 10_000 + i;
+                        let hash = make_hash(seed);
+                        let addr = make_addr(t as u32, i as u32);
+
+                        let r = idx.find_or_create(hash, LogicalAddress::INVALID);
+                        if r.created {
+                            let committed =
+                                HashBucketEntry::new(r.entry.tag(), addr, false);
+                            idx.update(r.slot, r.entry, committed);
+                            created_count += 1;
+                        }
+                    }
+                    created_count
+                })
+            })
+            .collect();
+
+        let total: u64 = handles.into_iter().map(|h| h.join().unwrap()).sum();
+
+        // Most inserts should succeed. A few may collide on tag+bucket
+        // (different seeds producing identical 14-bit tag and bucket index),
+        // causing find_or_create to return an existing entry for one thread
+        // while the other still got `created = true` from its CAS. The
+        // entry_count may be slightly below `total` due to these collisions.
+        let expected = (num_threads * ops_per_thread) as u64;
+        assert!(
+            total >= expected - 10,
+            "expected ~{expected} creates, got {total}",
+        );
+        assert!(
+            index.entry_count() >= expected - 10,
+            "expected ~{expected} entries, got {}",
+            index.entry_count(),
+        );
+    }
+
+    #[test]
+    fn test_concurrent_find_and_insert() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let index = Arc::new(HashIndex::new(10));
+
+        // Pre-populate with committed entries.
+        {
+            let thread = index.register_thread().unwrap();
+            let _guard = thread.protect();
+            for i in 0..100u64 {
+                let hash = make_hash(8000 + i);
+                let addr = make_addr(1, i as u32);
+                let r = index.find_or_create(hash, LogicalAddress::INVALID);
+                let committed = HashBucketEntry::new(r.entry.tag(), addr, false);
+                index.update(r.slot, r.entry, committed);
+            }
+        }
+
+        // Concurrent readers: verify pre-populated entries.
+        let reader_handles: Vec<_> = (0..4)
+            .map(|_| {
+                let idx = Arc::clone(&index);
+                thread::spawn(move || {
+                    let thread = idx.register_thread().unwrap();
+                    let _guard = thread.protect();
+
+                    let mut found = 0u64;
+                    for i in 0..100u64 {
+                        let hash = make_hash(8000 + i);
+                        if idx.find(hash).is_some() {
+                            found += 1;
+                        }
+                    }
+                    found
+                })
+            })
+            .collect();
+
+        for h in reader_handles {
+            assert_eq!(h.join().unwrap(), 100);
+        }
+    }
+
+    #[test]
+    fn test_concurrent_invalidate_with_readers() {
+        use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+        use std::sync::Arc;
+        use std::thread;
+
+        let index = Arc::new(HashIndex::new(10));
+        let done = Arc::new(AtomicBool::new(false));
+
+        // Pre-populate: 50 entries on page 1, 50 on page 5.
+        {
+            let thread = index.register_thread().unwrap();
+            let _guard = thread.protect();
+            for i in 0..50u64 {
+                let hash = make_hash(9000 + i);
+                let addr = make_addr(1, i as u32);
+                let r = index.find_or_create(hash, LogicalAddress::INVALID);
+                let committed = HashBucketEntry::new(r.entry.tag(), addr, false);
+                index.update(r.slot, r.entry, committed);
+            }
+            for i in 0..50u64 {
+                let hash = make_hash(9500 + i);
+                let addr = make_addr(5, i as u32);
+                let r = index.find_or_create(hash, LogicalAddress::INVALID);
+                let committed = HashBucketEntry::new(r.entry.tag(), addr, false);
+                index.update(r.slot, r.entry, committed);
+            }
+        }
+
+        // Barrier to ensure reader is running before we invalidate.
+        let reader_started = Arc::new(AtomicBool::new(false));
+
+        // Reader thread: continually look up page-5 entries.
+        let idx_r = Arc::clone(&index);
+        let done_r = Arc::clone(&done);
+        let started_r = Arc::clone(&reader_started);
+        let reader = thread::spawn(move || {
+            let thread = idx_r.register_thread().unwrap();
+            let mut iterations = 0u64;
+            started_r.store(true, AtomicOrdering::Release);
+            while !done_r.load(AtomicOrdering::Relaxed) {
+                let _guard = thread.protect();
+                for i in 0..50u64 {
+                    let hash = make_hash(9500 + i);
+                    // Page 5 entries should always be findable.
+                    let _ = idx_r.find(hash);
+                }
+                iterations += 1;
+            }
+            iterations
+        });
+
+        // Wait for reader to start.
+        while !reader_started.load(AtomicOrdering::Acquire) {
+            std::hint::spin_loop();
+        }
+
+        // Invalidator: remove page 1 entries.
+        let invalidated = index.invalidate_entries_in_range(
+            make_addr(1, 0),
+            make_addr(2, 0),
+        );
+        assert_eq!(invalidated, 50);
+
+        done.store(true, AtomicOrdering::Relaxed);
+        let reader_iters = reader.join().unwrap();
+        assert!(reader_iters > 0);
+
+        // Page 5 entries are still intact.
+        assert_eq!(index.entry_count(), 50);
+    }
+}

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Shared test helpers for integration tests.
 
 use faster_core::address::{LogicalAddress, Offset, Page};
