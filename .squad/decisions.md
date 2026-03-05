@@ -288,6 +288,95 @@
 
 ---
 
+### 10. User Directive: Iterative MVP Process
+
+**User:** qbradley (via Copilot)  
+**Date:** 2026-03-05T19:08:00Z  
+**Status:** Active — Binding development process  
+**Impact:** Team-wide development methodology
+
+**Directive:** Develop using an iterative process. Create an MVP first, then iterate until full feature set. At each iteration, ensure the implementation is performant, secure, functionally correct, maintainable, and useful within the limits of features implemented so far. Use bottom-up approach for implementation given the top-down architecture design.
+
+**Implications:**
+- MVP is the foundation — no half-finished features
+- Quality gate on every iteration (clippy, fmt, tests, Miri)
+- Each phase produces a working, performant system
+- Architecture supports incremental feature addition
+
+---
+
+### 11. User Directive: Kimojio Async Runtime Context
+
+**User:** qbradley (via Copilot)  
+**Date:** 2026-03-05T19:08:00Z  
+**Status:** Reference Information  
+**Impact:** Team knowledge base
+
+**What:** Kimojio async runtime is at https://github.com/Azure/kimojio-rs. qbradley is the designer and implementer. Team can ask qbradley directly about kimojio design questions.
+
+**Implications:**
+- First-party knowledge source for async runtime integration
+- Consider kimojio as adapter target (alongside tokio, compio, monoio)
+- Direct communication channel for design questions
+
+---
+
+### 12. User Directive: Leverage PAW Workflow for Implementation
+
+**User:** qbradley (via Copilot)  
+**Date:** 2026-03-05T19:08:00Z  
+**Status:** Investigation Phase  
+**Impact:** Development process optimization
+
+**Directive:** Consider leveraging PAW (phased-agent-workflow) for building features and PAW-Review with Society of Thought for code review within Squad workflow. Investigate integration.
+
+**Status:** PAW available via task agent types:
+- `paw-workflow/PAW` — implementation workflow
+- `paw-workflow/PAW Review` — review workflow with multi-model deliberation
+
+**Team Action:**
+- Thrawn approved PAW for 5 complex MVP items (1f, 1g, 1h, 2d, 2e)
+- Direct implementation for 11 simpler items
+- Further integration to be determined post-MVP-Phase-1
+
+---
+
+### 13. MVP Iteration 1 Implementation Plan Approved
+
+**Agent:** Thrawn (Lead Architect)  
+**Date:** 2026-03-05T19:08:00Z  
+**Status:** APPROVED FOR EXECUTION  
+**Impact:** Team-wide — assigns all Phase 1 and Phase 2 work
+
+**Decision:** Execute MVP Iteration 1 as 16 work items across Phases 1 (Foundation, 9 items) and 2 (Hash Index, 6 items), using bottom-up ordering with maximum parallelism.
+
+**Key Points:**
+1. **Phase 1** (Weeks 1–4): Workspace, newtypes, status/error, hash traits, CI, record format, epoch system, memory allocator, foundation tests.
+2. **Phase 2** (Weeks 5–8, overlapping Phase 1 Week 4): Bucket entry, overflow pool, bucket structure, hash table core, concurrent ops, hash index tests.
+3. **PAW workflow** for 5 complex items: record format (1f), epoch system (1g), memory allocator (1h), hash table core (2d), concurrent ops (2e).
+4. **Direct implementation** for 11 simpler items (newtypes, enums, CI, thin wrappers, tests).
+5. **Quality bar:** Every work item must pass clippy, fmt, tests, and Miri (where applicable) before merge.
+6. **thiserror** added as acceptable `faster-core` dependency (zero runtime cost proc-macro for error types).
+
+**Assignments:**
+- **Mando:** Primary on 7 items (1b, 1c, 1d, 1f, 1g, 2a, 2c, 2d, 2e)
+- **Chirrut:** Primary on 2 items (1h, 2b), support on atomics/alignment
+- **Rex:** Primary on 3 items (1a, 1e, 1i, 2f)
+- **Maul:** Unsafe audit on all PAW items
+- **Cassian:** Behavioral spec extraction from C++/C# for validation
+- **Ahsoka:** Benchmark design and early performance analysis
+- **Thrawn:** Review authority on all PRs
+
+**Artifact:** `.squad/agents/thrawn/mvp-iteration-1-plan.md` (46KB)
+
+**Implications:**
+- All team members should read the plan before starting work
+- Work items are to be executed in dependency order per the graphs in the plan
+- No work item merges without passing the stated success criteria
+- Thrawn has final review authority on all PRs per architecture governance
+
+---
+
 ## Governance
 
 - All meaningful changes require team consensus
