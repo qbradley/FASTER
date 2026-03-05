@@ -178,6 +178,37 @@
 - **`core::array::from_fn` avoids clippy `declare_interior_mutable_const`**: Initializing arrays of atomics via `const INIT: AtomicBool = ...` triggers clippy's interior mutability lint. `core::array::from_fn(|_| AtomicBool::new(false))` is the idiomatic workaround.
 - **Drain callbacks must execute outside the drain list lock**: If a callback calls `bump_current_epoch`, it will try to acquire the drain list lock again. Collecting actions under the lock and executing after release prevents deadlocks.
 - **`compute_safe_epoch` race with `protect` is acceptable**: A thread in the middle of `protect()` (local=0 but about to store epoch) can be missed by `compute_safe_epoch`, making safe_epoch temporarily higher. This is safe because the thread hasn't started reading data yet, and drain callbacks free superseded data, not data at the current epoch.
+- **Hash table tentative-bit duplicate detection is tag-level, not key-level**: The `find_or_create_entry` re-scan after tentative CAS only catches *committed* duplicates. Two threads can both create tentative entries with the same tag in different slots. The log-level key comparison (in the caller) resolves true duplicates. This matches C++ FASTER behavior.
+- **`get_unchecked` for bucket lookup is justified**: The bucket index is always `hash & (num_buckets - 1)` which is strictly `< num_buckets == buckets.len()`. The bounds check elimination saves a branch on every hash probe.
+
+
+## 2025-07-18: Task 2d — Hash Table Core Complete (Mando)
+
+**What:** Implemented the latch-free concurrent hash table — FASTER's primary data structure. Created `hash_table.rs` with `HashTable`, `FindOrCreateResult`, and the three core operations: `find_entry`, `find_or_create_entry`, and `update_entry`.
+
+**Key details:**
+- `HashTable`: owns `Box<[HashBucket]>` (power-of-2 sized) + `OverflowBucketPool`
+- `new(log2_size)`: validates range 1..=30, allocates zeroed buckets
+- `bucket(hash)`: branchless lookup via `get_unchecked` with documented safety invariant
+- `find_entry(hash)`: scans bucket chain for committed (non-tentative) entry matching tag
+- `find_or_create_entry(hash, addr)`: two-phase CAS protocol — reserves tentative slot, re-scans for duplicates, returns `FindOrCreateResult` with entry + slot reference + created flag
+- `update_entry(slot, old, new)`: CAS-based entry update (commit, address update, or abort)
+- `entry_count()`: O(N) diagnostic scan
+- `overflow_count()`: delegates to pool's `allocated_count()`
+- Added `allocated_count()` helper to `OverflowBucketPool`
+- Every atomic ordering choice documented inline
+- Single `unsafe` block (`get_unchecked` in bucket lookup) with full safety proof
+
+**Files created/modified:**
+- `hash_table.rs` — HashTable struct + all operations + comprehensive tests (new)
+- `overflow.rs` — added `allocated_count()` method
+- `lib.rs` — added `pub mod hash_table`
+
+**Verification:**
+- `cargo test -p faster-core` ✅ — 362 lib tests + 64 doc-tests = 426 total, all passing
+- `cargo clippy -p faster-core -- -D warnings` ✅ — zero warnings
+- 30 new hash_table tests: construction (4), bucket lookup (2), find_entry (4), find_or_create (4), update_entry (2), abort (1), overflow (2), statistics (1), property tests (3), concurrent tests (4) — including 8-thread same-key, 8-thread overlapping keys, 16-thread mixed read/write, 8-thread high-contention small table
+- All 332 pre-existing tests still pass — zero regressions
 
 
 ## 2026-03-05T19:20: Wave 1 Sprint Complete — 1b + 1c + 1d + 1e Done

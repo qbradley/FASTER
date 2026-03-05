@@ -91,3 +91,84 @@
 
 **Next Steps:** Risk mitigation task force (Jyn lead), unsafe audit planning (Maul lead), Phase 1 sprint (Cassian lead), async adapter spike (Kenobi lead).
 
+## 2026-03-06: Item 1i — Foundation Integration Tests and Benchmarks
+
+**What:** Created comprehensive integration test suite and benchmark additions for all Phase 1 foundation modules.
+
+**Deliverables:**
+
+1. **Integration tests** (`rust/crates/faster-core/tests/integration_basics.rs` — 15 tests):
+   - LogicalAddress ↔ RecordInfo round-trip and mutation chains
+   - Allocator → store record → read back (single and 100-record batch)
+   - Hash key → extract tag → HashBucketEntry → find_entry round-trip
+   - Tentative entry invisibility to find_entry
+   - Epoch protect/unprotect + drain callback firing
+   - try_insert fills bucket then fails on 8th entry
+   - Variable-length record (Vec<u8>) round-trip
+   - OperationStatus in Result context
+   - Full pipeline: hash → bucket → alloc → record write → read
+   - Epoch-protected hash insert pattern
+   - Allocator free + reuse
+
+2. **Concurrent stress tests** (`tests/concurrent_stress.rs` — 10 tests, 3 `#[ignore]`):
+   - Epoch protect/unprotect storm (4, 8, 16 threads) with drain callback counting
+   - safe_epoch monotonicity verification under contention
+   - Concurrent bucket try_insert (4 and 7 threads, no lost entries)
+   - Multi-bucket concurrent insert (8 threads × 7 entries each)
+   - Concurrent alloc/free (4, 8, 16 threads)
+   - Combined epoch + bucket + allocator pattern (the real hash index pattern)
+   - Thread registration storm (32 threads × 100 register/unregister cycles)
+
+3. **Property-based tests** (`tests/property_tests.rs` — 18 test groups, 256-1024 cases each):
+   - LogicalAddress page/offset round-trip
+   - RecordInfo field encode/decode round-trip
+   - Hash tag always in 14-bit range
+   - Hash → tag → bucket → find_entry always succeeds
+   - HashBucketEntry encode/decode round-trip
+   - Record write/read for u64, u32, and Vec<u8>
+   - RecordLayout size consistency invariants
+   - Hash determinism
+   - Hash index range for power-of-two table sizes
+   - Address validity semantics
+   - Allocator unique addresses
+   - RecordInfo mutation preserves unmodified fields
+
+4. **Benchmark additions** (`benches/core_benchmarks.rs` + `faster-bench/benches/main.rs`):
+   - Epoch protect/unprotect latency (single-threaded)
+   - Epoch protect+refresh+unprotect latency
+   - Epoch bump (no callback) and bump+drain
+   - Record write/read u64+u64 and Vec<u8> 32B+128B
+   - Hash bytes 1KB and 4KB throughput
+   - Allocator throughput group (bump and alloc+free cycle)
+   - Bucket find with parameterized fill levels (1, 3, 5, 7 slots)
+   - Pipeline insert benchmark (epoch+hash+alloc+write)
+   - Pipeline lookup benchmark (epoch+find+read)
+   - Epoch contended benchmark (0, 2, 4 background threads)
+
+5. **Test infrastructure** (`tests/common/mod.rs`):
+   - Shared helpers: `addr()`, `fill_bucket()`, `hash_key()`
+
+**Test counts:**
+- Before: 332 unit + 58 doc = 390 tests
+- After: 332 unit + 15 integration + 10 concurrent + 18 property + 58 doc = 433 tests (+ 3 ignored nightly)
+- All pass on `cargo test --workspace`. Zero warnings. Zero clippy issues.
+
+**Key benchmark results (single-threaded, release):**
+- Epoch protect+unprotect: ~171 ns
+- Epoch bump+drain: ~225 ns
+- Record write u64+u64: ~1.3 ns
+- Record read u64+u64: ~1.4 ns
+- Hash bucket find (hit slot 0): ~970 ps
+- Hash bucket find (miss, 7 slots): ~3.2 ns
+- Allocator bump: ~7.8 ns
+- Full pipeline insert: ~190 ns
+- Epoch contended (4 bg threads): ~395 ns
+
+**Learnings:**
+- proptest's `prop_assert_eq!` macro doesn't support Rust 2024 inline format captures — must use positional/named args for format strings inside proptest blocks.
+- The epoch system's try_drain is invoked on every unprotect, which makes epoch protect+unprotect more expensive than a simple atomic pair (~170ns vs ~5ns for raw CAS). This is by design — drain amortization.
+- Criterion's throughput groups with `--quick` can panic on too-few samples. Parameterized `bench_with_input` is more robust for CI quick-bench validation.
+- Allocator free-list reuse path (~18ns) is 2.3× slower than bump path (~7.8ns) due to CAS contention on the Treiber stack head. This is expected and matches C++ FASTER behavior.
+
+---
+
