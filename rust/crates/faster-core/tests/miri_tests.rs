@@ -165,7 +165,7 @@ mod miri_allocator {
 mod miri_hash_bucket {
     use core::sync::atomic::Ordering;
     use faster_core::address::{LogicalAddress, Offset, Page};
-    use faster_core::hash_bucket::{HashBucket, HashBucketEntry, BUCKET_NUM_ENTRIES};
+    use faster_core::hash_bucket::{BUCKET_NUM_ENTRIES, HashBucket, HashBucketEntry};
     use faster_core::overflow::OverflowBucketPool;
 
     fn make_addr(p: u32, o: u32) -> LogicalAddress {
@@ -317,9 +317,7 @@ mod miri_hash_bucket {
         }
 
         // 8th insert — should allocate overflow bucket
-        bucket
-            .insert_in_chain(100, make_addr(2, 2), &pool)
-            .unwrap();
+        bucket.insert_in_chain(100, make_addr(2, 2), &pool).unwrap();
 
         // Verify overflow bucket exists
         let overflow = bucket.overflow_bucket(&pool);

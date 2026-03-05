@@ -471,7 +471,13 @@ mod tests {
         //   final             :  1  (bit 63)
 
         // previous_address only → should be in lower 48 bits
-        let info = RecordInfo::new(LogicalAddress::from_raw(0xABCD_1234_5678), 0, false, false, false);
+        let info = RecordInfo::new(
+            LogicalAddress::from_raw(0xABCD_1234_5678),
+            0,
+            false,
+            false,
+            false,
+        );
         assert_eq!(info.raw(), 0xABCD_1234_5678);
 
         // checkpoint_version = 1 → bit 48

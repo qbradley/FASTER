@@ -379,7 +379,10 @@ mod tests {
         assert_eq!(format!("{}", OperationStatus::Pending), "Pending");
         assert_eq!(format!("{}", OperationStatus::NotFound), "NotFound");
         assert_eq!(format!("{}", OperationStatus::Created), "Created");
-        assert_eq!(format!("{}", OperationStatus::InPlaceUpdated), "InPlaceUpdated");
+        assert_eq!(
+            format!("{}", OperationStatus::InPlaceUpdated),
+            "InPlaceUpdated"
+        );
         assert_eq!(format!("{}", OperationStatus::CopyUpdated), "CopyUpdated");
         assert_eq!(format!("{}", OperationStatus::Deleted), "Deleted");
         assert_eq!(format!("{}", OperationStatus::Aborted), "Aborted");
@@ -516,8 +519,7 @@ mod tests {
         let r = OperationResult::new(OperationStatus::Ok, Some("hello"));
         assert_eq!(r.into_output(), Some("hello"));
 
-        let empty: OperationResult<&str> =
-            OperationResult::new(OperationStatus::NotFound, None);
+        let empty: OperationResult<&str> = OperationResult::new(OperationStatus::NotFound, None);
         assert_eq!(empty.into_output(), None);
     }
 
@@ -528,8 +530,7 @@ mod tests {
         assert_eq!(mapped.status, OperationStatus::Created);
         assert_eq!(mapped.output, Some(30));
 
-        let empty: OperationResult<i32> =
-            OperationResult::new(OperationStatus::Pending, None);
+        let empty: OperationResult<i32> = OperationResult::new(OperationStatus::Pending, None);
         let mapped_empty = empty.map(|v| v + 1);
         assert_eq!(mapped_empty.output, None);
         assert_eq!(mapped_empty.status, OperationStatus::Pending);

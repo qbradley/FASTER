@@ -138,12 +138,21 @@ fn gc_invalidate_range_partial() {
 
     // Page 1 and 5 entries still findable.
     for i in 0..10u64 {
-        assert!(index.find(make_hash(1000 + i)).is_some(), "page 1 entry {i} missing");
-        assert!(index.find(make_hash(3000 + i)).is_some(), "page 5 entry {i} missing");
+        assert!(
+            index.find(make_hash(1000 + i)).is_some(),
+            "page 1 entry {i} missing"
+        );
+        assert!(
+            index.find(make_hash(3000 + i)).is_some(),
+            "page 5 entry {i} missing"
+        );
     }
     // Page 3 entries gone.
     for i in 0..10u64 {
-        assert!(index.find(make_hash(2000 + i)).is_none(), "page 3 entry {i} should be gone");
+        assert!(
+            index.find(make_hash(2000 + i)).is_none(),
+            "page 3 entry {i} should be gone"
+        );
     }
 }
 
@@ -240,8 +249,14 @@ fn overflow_chain_forced_same_bucket() {
 
     // All entries must be findable with correct addresses.
     for (i, (hash, expected_addr)) in hashes.iter().enumerate() {
-        let (found, _) = index.find(*hash).unwrap_or_else(|| panic!("entry {i} not found"));
-        assert_eq!(found.address(), *expected_addr, "entry {i} address mismatch");
+        let (found, _) = index
+            .find(*hash)
+            .unwrap_or_else(|| panic!("entry {i} not found"));
+        assert_eq!(
+            found.address(),
+            *expected_addr,
+            "entry {i} address mismatch"
+        );
     }
 }
 
@@ -257,7 +272,10 @@ fn empty_table_find_returns_none() {
     let _guard = thread.protect();
 
     for seed in [0u64, 1, 42, 999, u64::MAX, 0xDEAD_BEEF] {
-        assert!(index.find(make_hash(seed)).is_none(), "seed {seed} should be None");
+        assert!(
+            index.find(make_hash(seed)).is_none(),
+            "seed {seed} should be None"
+        );
     }
     assert_eq!(index.entry_count(), 0);
 }
@@ -483,7 +501,9 @@ fn epoch_protect_unprotect_cycle() {
     {
         let _guard = thread.protect();
         let hash = make_hash(11_000);
-        let (found, _) = index.find(hash).expect("entry should survive across guards");
+        let (found, _) = index
+            .find(hash)
+            .expect("entry should survive across guards");
         assert_eq!(found.address(), make_addr(1, 100));
 
         insert_committed(&index, 11_001, 2, 200);
@@ -514,7 +534,9 @@ fn multiple_register_thread_independent() {
     // Thread 2 can find it independently.
     {
         let _guard = thread2.protect();
-        let (found, _) = index.find(make_hash(12_000)).expect("should find across threads");
+        let (found, _) = index
+            .find(make_hash(12_000))
+            .expect("should find across threads");
         assert_eq!(found.address(), make_addr(1, 10));
     }
 
@@ -583,7 +605,10 @@ fn overflow_count_tracks_allocations() {
         assert!(index.update(r.slot, r.entry, committed));
     }
 
-    assert!(index.overflow_count() > 0, "overflow buckets should have been allocated");
+    assert!(
+        index.overflow_count() > 0,
+        "overflow buckets should have been allocated"
+    );
 }
 
 // ===========================================================================

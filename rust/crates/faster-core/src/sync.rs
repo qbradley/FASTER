@@ -9,14 +9,14 @@
 #![allow(unused_imports)]
 
 #[cfg(loom)]
-pub(crate) use loom::sync::atomic::{fence, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+pub(crate) use loom::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering, fence};
 #[cfg(loom)]
 pub(crate) use loom::sync::{Arc, Mutex};
 #[cfg(loom)]
 pub(crate) use loom::thread;
 
 #[cfg(not(loom))]
-pub(crate) use std::sync::atomic::{fence, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+pub(crate) use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering, fence};
 #[cfg(not(loom))]
 pub(crate) use std::sync::{Arc, Mutex};
 #[cfg(not(loom))]

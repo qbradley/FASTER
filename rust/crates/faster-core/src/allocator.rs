@@ -61,10 +61,10 @@
 use std::alloc::{self, Layout};
 use std::marker::PhantomData;
 use std::ptr::{self, NonNull};
-use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
-use crate::address::{LogicalAddress, Offset, Page, MAX_OFFSET, MAX_PAGE};
+use crate::address::{LogicalAddress, MAX_OFFSET, MAX_PAGE, Offset, Page};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -206,8 +206,7 @@ impl<T> PageDir<T> {
             return NonNull::dangling().as_ptr();
         }
         let align = PAGE_ALIGNMENT.max(std::mem::align_of::<T>());
-        let layout =
-            Layout::from_size_align(size, align).expect("invalid page layout");
+        let layout = Layout::from_size_align(size, align).expect("invalid page layout");
         // SAFETY: `layout` has non-zero size (checked above) and valid alignment.
         let ptr = unsafe { alloc::alloc_zeroed(layout) } as *mut T;
         if ptr.is_null() {
@@ -228,8 +227,7 @@ impl<T> PageDir<T> {
             return;
         }
         let align = PAGE_ALIGNMENT.max(std::mem::align_of::<T>());
-        let layout =
-            Layout::from_size_align(size, align).expect("invalid page layout");
+        let layout = Layout::from_size_align(size, align).expect("invalid page layout");
         // SAFETY: Caller guarantees `page` was allocated with this layout.
         unsafe { alloc::dealloc(page as *mut u8, layout) };
     }
@@ -678,7 +676,10 @@ impl<T> Drop for MallocFixedPageSize<T> {
 
         // Free retired directories (they don't own the pages — only the
         // current directory does).
-        let retired = self.retired_dirs.get_mut().unwrap_or_else(|e| e.into_inner());
+        let retired = self
+            .retired_dirs
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner());
         for old_dir in retired.drain(..) {
             // SAFETY: Each retired dir was created by `Box::into_raw` in
             // `expand_directory` and is still valid.
@@ -707,8 +708,8 @@ impl<T> std::fmt::Debug for MallocFixedPageSize<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicU64;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
 
     /// A test item that is exactly 64 bytes (cache-line sized).
     #[repr(C, align(64))]
@@ -778,7 +779,10 @@ mod tests {
         let alloc: MallocFixedPageSize<SmallItem> = MallocFixedPageSize::new();
         let addr = alloc.allocate();
         let item = alloc.get(addr);
-        assert_eq!(item.value, 0, "fresh allocation from zeroed page should be 0");
+        assert_eq!(
+            item.value, 0,
+            "fresh allocation from zeroed page should be 0"
+        );
     }
 
     #[test]
@@ -928,7 +932,8 @@ mod tests {
             "item pointer must be aligned to align_of::<T>()"
         );
         assert!(
-            (ptr as usize) % PAGE_ALIGNMENT == 0 || std::mem::align_of::<TestItem>() < PAGE_ALIGNMENT,
+            (ptr as usize) % PAGE_ALIGNMENT == 0
+                || std::mem::align_of::<TestItem>() < PAGE_ALIGNMENT,
             "first item on page should be cache-line aligned"
         );
     }

@@ -11,11 +11,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
 
-use faster_core::allocator::MallocFixedPageSize;
 use faster_core::address::{LogicalAddress, Offset, Page};
+use faster_core::allocator::MallocFixedPageSize;
 use faster_core::epoch::EpochTable;
 use faster_core::hash::Hashable;
-use faster_core::hash_bucket::{HashBucket, BUCKET_NUM_ENTRIES};
+use faster_core::hash_bucket::{BUCKET_NUM_ENTRIES, HashBucket};
 
 /// 128-byte item for allocator tests.
 #[repr(C)]

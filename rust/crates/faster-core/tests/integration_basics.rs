@@ -6,16 +6,16 @@
 
 mod common;
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use faster_core::address::LogicalAddress;
 use faster_core::allocator::MallocFixedPageSize;
 use faster_core::epoch::EpochTable;
 use faster_core::hash::Hashable;
-use faster_core::hash_bucket::{HashBucket, HashBucketEntry, BUCKET_NUM_ENTRIES};
+use faster_core::hash_bucket::{BUCKET_NUM_ENTRIES, HashBucket, HashBucketEntry};
 use faster_core::record::{
-    read_key, read_record_info, read_value, write_record, RecordInfo, RecordLayout,
+    RecordInfo, RecordLayout, read_key, read_record_info, read_value, write_record,
 };
 use faster_core::status::OperationStatus;
 
@@ -99,8 +99,7 @@ fn allocator_store_and_read_record() {
     // Write a record into the allocated slot.
     {
         let slot = alloc.get(addr);
-        let buf =
-            unsafe { std::slice::from_raw_parts_mut(slot as *const _ as *mut u8, 128) };
+        let buf = unsafe { std::slice::from_raw_parts_mut(slot as *const _ as *mut u8, 128) };
         let info = RecordInfo::new(LogicalAddress::ZERO, 7, false, false, false);
         write_record(buf, &info, &key, &value, &layout);
     }
@@ -133,8 +132,7 @@ fn allocator_multiple_records_independent() {
         addrs.push(addr);
 
         let slot = alloc.get(addr);
-        let buf =
-            unsafe { std::slice::from_raw_parts_mut(slot as *const _ as *mut u8, 128) };
+        let buf = unsafe { std::slice::from_raw_parts_mut(slot as *const _ as *mut u8, 128) };
         let info = RecordInfo::new(LogicalAddress::ZERO, 0, false, false, false);
         write_record(buf, &info, &k, &v, &layout);
     }
@@ -182,7 +180,10 @@ fn hash_to_bucket_entry_find_round_trip() {
         assert!(result.is_some(), "key {key} tag 0x{tag:04x} not found");
         let (found_slot, found_entry) = result.unwrap();
         assert_eq!(found_slot, expected_slot);
-        assert_eq!(found_entry.address(), common::addr(0, (expected_slot as u32) + 10));
+        assert_eq!(
+            found_entry.address(),
+            common::addr(0, (expected_slot as u32) + 10)
+        );
     }
 }
 
@@ -221,7 +222,10 @@ fn tentative_entries_invisible_to_find() {
     // A tentative entry should be skipped by find_entry.
     let tentative = HashBucketEntry::new(tag, addr, true);
     bucket.entry(0).store(tentative, Ordering::Release);
-    assert!(bucket.find_entry(tag).is_none(), "tentative should be invisible");
+    assert!(
+        bucket.find_entry(tag).is_none(),
+        "tentative should be invisible"
+    );
 
     // Committing (clearing tentative) makes it visible.
     let committed = tentative.without_tentative();
@@ -382,8 +386,7 @@ fn full_pipeline_hash_bucket_alloc_record() {
     let layout = RecordLayout::for_kv(&key, &value);
     {
         let slot = alloc.get(record_addr);
-        let buf =
-            unsafe { std::slice::from_raw_parts_mut(slot as *const _ as *mut u8, 128) };
+        let buf = unsafe { std::slice::from_raw_parts_mut(slot as *const _ as *mut u8, 128) };
         let info = RecordInfo::new(LogicalAddress::ZERO, 0, false, false, false);
         write_record(buf, &info, &key, &value, &layout);
     }

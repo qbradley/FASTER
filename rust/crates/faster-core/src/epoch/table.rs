@@ -138,9 +138,7 @@ impl EpochTable {
         // sentinel. A production implementation could use OS thread IDs,
         // but ThreadId doesn't expose a stable numeric value.
         // Release: visible to other threads checking is_occupied().
-        entry
-            .thread_id
-            .store((index as u64) + 1, Ordering::Release);
+        entry.thread_id.store((index as u64) + 1, Ordering::Release);
 
         Some(EpochThread::new(Arc::clone(self), index))
     }

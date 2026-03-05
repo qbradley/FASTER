@@ -103,7 +103,12 @@ fn concurrent_insert_unique_ranges_800k() {
     }
 
     let lost = missing.load(Ordering::Relaxed);
-    assert_eq!(lost, 0, "lost {lost} entries out of {}", num_threads as u64 * ops_per_thread);
+    assert_eq!(
+        lost,
+        0,
+        "lost {lost} entries out of {}",
+        num_threads as u64 * ops_per_thread
+    );
 }
 
 // ===========================================================================
@@ -235,7 +240,11 @@ fn concurrent_same_bucket_contention() {
     let _guard = thread.protect();
 
     for hash in &all_hashes {
-        assert!(index.find(*hash).is_some(), "entry not found for hash {:?}", hash);
+        assert!(
+            index.find(*hash).is_some(),
+            "entry not found for hash {:?}",
+            hash
+        );
     }
 
     // Total entries should match.
@@ -295,10 +304,7 @@ fn concurrent_insert_and_gc() {
             thread::spawn(move || {
                 barrier.wait();
                 for _ in 0..100 {
-                    index.invalidate_entries_in_range(
-                        make_addr(0, 0),
-                        make_addr(50, 0),
-                    );
+                    index.invalidate_entries_in_range(make_addr(0, 0), make_addr(50, 0));
                     std::thread::yield_now();
                 }
             })
@@ -313,7 +319,10 @@ fn concurrent_insert_and_gc() {
     }
 
     // All inserted entries (on pages 100+) should survive GC (pages 0..50).
-    assert!(index.entry_count() > 0, "entries should survive non-overlapping GC");
+    assert!(
+        index.entry_count() > 0,
+        "entries should survive non-overlapping GC"
+    );
 }
 
 // ===========================================================================
@@ -364,7 +373,10 @@ fn concurrent_same_key_convergence() {
     let creators: Vec<bool> = handles.into_iter().map(|h| h.join().unwrap()).collect();
 
     // At least one thread should have created it.
-    assert!(creators.iter().any(|&c| c), "at least one thread should be the creator");
+    assert!(
+        creators.iter().any(|&c| c),
+        "at least one thread should be the creator"
+    );
 
     // Under concurrent tentative insertion, multiple entries may exist (I2).
     // The session model prevents this in production (one session per key).

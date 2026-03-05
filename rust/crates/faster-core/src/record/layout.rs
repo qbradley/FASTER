@@ -312,7 +312,7 @@ mod tests {
         let layout = RecordLayout::compute(4, 4);
         assert_eq!(layout.key_offset(), 8);
         assert_eq!(layout.value_offset(), 16); // 8 + 4 = 12, padded to 16
-        assert_eq!(layout.total_size(), 24);   // 16 + 4 = 20, padded to 24
+        assert_eq!(layout.total_size(), 24); // 16 + 4 = 20, padded to 24
     }
 
     #[test]
@@ -321,7 +321,7 @@ mod tests {
         let layout = RecordLayout::compute(14, 14);
         assert_eq!(layout.key_offset(), 8);
         assert_eq!(layout.value_offset(), 24); // 8 + 14 = 22, padded to 24
-        assert_eq!(layout.total_size(), 40);   // 24 + 14 = 38, padded to 40
+        assert_eq!(layout.total_size(), 40); // 24 + 14 = 38, padded to 40
     }
 
     #[test]
@@ -378,7 +378,10 @@ mod tests {
 
         let read_info = read_record_info(&buf);
         assert_eq!(read_info, info);
-        assert_eq!(read_info.previous_address(), LogicalAddress::new(Page(10), Offset(256)));
+        assert_eq!(
+            read_info.previous_address(),
+            LogicalAddress::new(Page(10), Offset(256))
+        );
         assert_eq!(read_info.checkpoint_version(), 42);
 
         let read_k: u64 = read_key(&buf, &layout);
