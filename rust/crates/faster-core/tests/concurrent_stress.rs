@@ -189,19 +189,8 @@ fn concurrent_bucket_insert(num_threads: usize) {
                 let addr = LogicalAddress::new(Page(0), Offset((i as u32) + 10));
                 barrier.wait();
 
-                // Retry loop — another thread may race for the same empty slot.
-                loop {
-                    match bucket.try_insert(tag, addr) {
-                        Ok(_) => {
-                            success_count.fetch_add(1, Ordering::Relaxed);
-                            break;
-                        }
-                        Err(()) => {
-                            // Bucket full — this means other threads got there first.
-                            // For N ≤ 7 threads this shouldn't happen (7 slots).
-                            break;
-                        }
-                    }
+                if bucket.try_insert(tag, addr).is_ok() {
+                    success_count.fetch_add(1, Ordering::Relaxed);
                 }
             })
         })
