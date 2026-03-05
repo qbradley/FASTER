@@ -78,3 +78,42 @@
 - Pain points: ref parameters, 6 generic type params, mixed async patterns, 19-method callback interface
 - Pleasant aspects: SimpleFunctions helper, status-based errors (no exceptions), IDisposable pattern, direct device control
 - Rust can improve: ownership model, simpler traits, unified async, compile-time safety
+
+---
+
+## 2026-03-05T18:33: Thrawn Rust FASTER Architecture Finalized
+
+**What:** Thrawn completed 288 KB comprehensive Rust FASTER architecture specification (6101 lines, 14 sections). 3-part parallel document (Thrawn-A/B/C) due to massive context requirements.
+
+**Artifact Location:** `.squad/agents/thrawn/rust-faster-architecture.md`
+
+**Sections:** Vision, Crates, Data Structures, Concurrency, Storage, Operations, Checkpoint, API, FFI, Async Integration, Testing, Phases, 12 Key Decisions, Risk Register (25 risks, 5 critical)
+
+**12 Core Architectural Decisions:**
+1. No async/await in core (user directive) — callback/completion model
+2. Custom epoch (not crossbeam-epoch) — FASTER-specific semantics
+3. Inline variable-length records (C++ model)
+4. Rust atomic patterns for hash index — lock-free
+5. 32 MB default page size — 512-byte sector alignment
+6. Completion-based Device trait — runtime-agnostic
+7. Opaque FFI handles (~15 function API surface)
+8. Own checkpoint format — forward-compatible binary
+9. Result<Status, Error> taxonomy with bitflag Status
+10. Thread-affine sessions (!Send compile-time) — mono-threaded safety
+11. Unified Key/Value traits for fixed+variable-length
+12. Epoch-coordinated grow protocol (doubles, no shrink)
+
+**What This Means For You:**
+- **All:** You are now operating under this architecture. Decisions binding for implementation phases.
+- **Kenobi:** Async adapter design bridges callback core to Future/async/await ecosystem (Decision #3 path).
+- **Mando:** Core code stays fully sync, zero async runtime deps. No tokio in core.
+- **Chirrut:** Device trait is callback-based (Box<dyn FnOnce>), not Future-based.
+- **Jyn:** Simulation framework must model callback completion ordering for testing.
+- **Maul:** Unsafe audit scope: hash index atomics (AcqRel/Acquire), record pointer arithmetic, FFI boundary.
+- **Cassian:** Phase roadmap and implementation sequence encoded in Part 3.
+- **Grievous:** Your async/await recommendation overridden by user directive; async ergonomics achieved via adapter layer.
+
+**Risk Profile:** 25 identified risks (5 critical ≥15, 8 high 10-14). Primary mitigations: deterministic simulation, Miri verification, security audit, cross-implementation comparison.
+
+**Next Steps:** Risk mitigation task force (Jyn lead), unsafe audit planning (Maul lead), Phase 1 sprint (Cassian lead), async adapter spike (Kenobi lead).
+
