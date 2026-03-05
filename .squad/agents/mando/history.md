@@ -133,6 +133,53 @@
 
 ---
 
+## 2025-07-18: Task 1f — Record Format and Key/Value Traits Complete (Mando)
+
+**What:** Implemented `RecordInfo` (8-byte packed header), `AtomicRecordInfo`, `Key`/`Value` serialization traits with `FixedSizeKey`/`FixedSizeValue` marker traits, and `RecordLayout` for record offset computation. Created as `record/` directory module with three submodules.
+
+**Key details:**
+- `RecordInfo`: `#[repr(transparent)]` over `u64`, bit layout matches C++ `record.h` exactly: `[63:Final][62:Tombstone][61:Invalid][60..48:Version(13)][47..0:PreviousAddress(48)]`
+- `AtomicRecordInfo`: wraps `AtomicU64`, provides `set_invalid`/`set_tombstone`/`set_final` via `fetch_or`, plus CAS operations with explicit `Ordering`
+- `Key` trait: requires `Hashable + Eq + Clone + Send + Sync + 'static` with safe `serialize(&self, buf: &mut [u8])` / `deserialize(buf: &[u8]) -> Self` interface
+- `Value` trait: requires `Clone + Send + Sync + 'static` with same serialization interface
+- `FixedSizeKey`/`FixedSizeValue`: marker traits with `const SIZE: usize` for compile-time record sizing
+- Implementations for: `u32`, `u64`, `i32`, `i64` (via macro, little-endian), `Vec<u8>` and `String` (length-prefixed)
+- `RecordLayout`: computes key/value offsets and total record size with 8-byte alignment
+- `pad_alignment()`: port of C++ `pad_alignment` from `auto_ptr.h`
+- `write_record`/`read_record_info`/`read_key`/`read_value`: safe record I/O helpers
+- Added `Hashable for Vec<u8>` to `hash.rs` (delegates to `[u8]` slice impl)
+- Zero `unsafe` code — all serialization via safe byte slices
+
+**Files created/modified:**
+- `record/mod.rs` — module docs, re-exports
+- `record/record_info.rs` — RecordInfo, AtomicRecordInfo (27 KB)
+- `record/traits.rs` — Key, Value, FixedSizeKey, FixedSizeValue + impls (16 KB)
+- `record/layout.rs` — RecordLayout, pad_alignment, record R/W helpers (20 KB)
+- `hash.rs` — added Hashable for Vec<u8>
+
+**Verification:**
+- `cargo test -p faster-core -- record` ✅ — 74 unit tests + 12 doc-tests = 86 new tests, all passing
+- All existing tests unaffected (67 address + 28 status/error tests still pass)
+- `cargo clippy -p faster-core` ✅ — zero new warnings
+- Property tests (proptest): RecordInfo round-trip, Key/Value serialization round-trip, full record write/read round-trip for both fixed-size and variable-length types
+
+**Design decisions (see `.squad/decisions/inbox/mando-record-format.md`):**
+- Safe slice-based serialization API (Section 8.2 style) rather than unsafe pointer API (Section 3.2.3 style) — can add unsafe low-level accessors when allocator module needs direct memory access
+- 8-byte alignment cap for v1 (all padding to 8 bytes) — simple, matches architecture v1 recommendation, < 8 bytes of waste per field for small types
+- `#[repr(transparent)]` for RecordInfo (not `#[repr(C)]`) — correct for single-field newtype over u64
+- RecordInfo stores as native u64, serializes as little-endian for on-disk format — matches x86 behavior, correct on big-endian too
+
+## Learnings
+
+- When types implement both Key and Value (e.g., u32), method calls are ambiguous. Tests must use fully-qualified syntax: `Key::serialize(&key, &mut buf)` rather than `key.serialize(&mut buf)`.
+- C++ RecordInfo bitfield layout (LSB to MSB): previous_address(48), checkpoint_version(13), invalid(1), tombstone(1), final(1). The C++ naming of "invalid" at bit 61 is slightly confusing since "invalid" usually means "not valid" but in FASTER it means "superseded."
+- `pad_alignment(size, alignment)` uses `(size + (alignment-1)) & !(alignment-1)` — this is a classic bit trick that works for any power-of-two alignment and correctly handles `size = 0` (returns 0).
+- **Epoch initial value must be 1, not 0**: 0 is reserved as the "inactive" sentinel in per-thread `local_current_epoch`. Starting at 0 would make a freshly-protected thread look inactive.
+- **`core::array::from_fn` avoids clippy `declare_interior_mutable_const`**: Initializing arrays of atomics via `const INIT: AtomicBool = ...` triggers clippy's interior mutability lint. `core::array::from_fn(|_| AtomicBool::new(false))` is the idiomatic workaround.
+- **Drain callbacks must execute outside the drain list lock**: If a callback calls `bump_current_epoch`, it will try to acquire the drain list lock again. Collecting actions under the lock and executing after release prevents deadlocks.
+- **`compute_safe_epoch` race with `protect` is acceptable**: A thread in the middle of `protect()` (local=0 but about to store epoch) can be missed by `compute_safe_epoch`, making safe_epoch temporarily higher. This is safe because the thread hasn't started reading data yet, and drain callbacks free superseded data, not data at the current epoch.
+
+
 ## 2026-03-05T19:20: Wave 1 Sprint Complete — 1b + 1c + 1d + 1e Done
 
 **Context:** All 4 Wave 1 tasks executed in parallel by full team.
@@ -157,4 +204,40 @@
 - Chirrut (1d): Hash traits complete, 64 tests passing
 - Rex (1e): CI skeleton complete, 5-job GitHub Actions pipeline validated locally
 - All 127 tests passing in workspace. Zero regressions.
+
+---
+
+## 2025-07-18: Task 1g — Epoch-Based Reclamation System Complete (Mando)
+
+**What:** Implemented the full epoch-based reclamation system: `EpochTable` (central coordination), `EpochEntry` (per-thread slots), `DrainList` (deferred callbacks), `EpochGuard` (RAII protection), and `EpochThread` (per-thread handle). This is the coordination backbone for all concurrent operations.
+
+**Key details:**
+- `EpochTable`: global `current_epoch` (AtomicU64, SeqCst bump), `safe_to_reclaim_epoch`, 256-slot cache-line-padded thread table, drain list, mutex-protected free list for registration
+- `EpochEntry`: `local_current_epoch` (Release/Acquire), `reentrant` counter (Relaxed, single-writer), `thread_id`, `phase_finished[8]` (checkpoint stub), all `#[repr(C)]`
+- `DrainList`: `Mutex<Vec<DrainAction>>` — callbacks collected under lock, executed after release to prevent deadlocks (callbacks can call `bump_current_epoch`)
+- `EpochGuard`: RAII protect/unprotect, `!Send` via `PhantomData<*const ()>` (thread-affine), reentrant (nested guards increment counter), `refresh()` for long operations
+- `EpochThread`: holds `Arc<EpochTable>` + entry index, auto-deregisters on Drop, explicit `unregister()` available
+- `LightEpoch` type alias for C++ naming compatibility
+- Every atomic operation has documented memory ordering rationale in comments
+- Zero `unsafe` code
+
+**Files created:**
+- `epoch/mod.rs` — module docs, re-exports, constants
+- `epoch/entry.rs` — EpochEntry (per-thread slot)
+- `epoch/drain.rs` — DrainList + drain action queue
+- `epoch/table.rs` — EpochTable (core coordination)
+- `epoch/guard.rs` — EpochGuard (RAII) + EpochThread (handle)
+- `epoch/tests.rs` — comprehensive test suite
+
+**Verification:**
+- `cargo test -p faster-core` ✅ — 286 unit tests + 54 doc-tests = 340 total, all passing
+- `cargo clippy -p faster-core -- -D warnings` ✅ — zero warnings
+- 39 epoch-specific tests: basic ops, reentrance (2-3 deep), drain callbacks (immediate, delayed, ordered, nested), guard RAII (including panic unwind), registration limits (256 + overflow), concurrent stress (16-thread protect/unprotect, 8-thread bump+protect, monotonicity checks), property tests (proptest: random ops, symmetry, invariants)
+- All existing tests unaffected (247 pre-existing tests still pass)
+
+**Design decisions (see `.squad/decisions/inbox/mando-epoch-system.md`):**
+- Custom epoch over crossbeam-epoch: FASTER needs drain callbacks and phase coordination, not pointer-level GC
+- Mutex-based DrainList: acceptable because push/drain are rare (not on hot path); prevents deadlocks via lock-then-release-then-execute pattern
+- `Relaxed` load of `current_epoch` in `protect()`: conservative (stale epoch → lower safe epoch → delayed drains → safe)
+- `SeqCst` for `bump_current_epoch`: total ordering required to prevent stale-epoch race with local stores
 

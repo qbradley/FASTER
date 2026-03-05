@@ -69,6 +69,28 @@
 
 ---
 
+## 2026-03-06: Task 2a — Hash Bucket Entry Types Completed (Chirrut)
+
+**What:** Implemented `HashBucketEntry` and `AtomicHashBucketEntry` in `rust/crates/faster-core/src/hash_bucket.rs`. These are the 64-bit packed entries stored in hash bucket slots — the lowest level of the hash index.
+
+**Key design decisions:**
+- Bit layout matches C++ `HotLogIndexBucketEntryDef` exactly: `[63:Tentative][62:Reserved][61..48:Tag(14)][47..0:Address(48)]`. Note: the architecture doc §3.1.1 placed tentative at bit 61 and reserved at bits 62-63, but the C++ source code puts tentative at bit 63 and reserved at bit 62. I followed the C++ source as the authoritative reference.
+- `#[repr(transparent)]` over `u64` for both `HashBucketEntry` (value type) and `AtomicHashBucketEntry` (over `AtomicU64`), ensuring exact 8-byte size with no padding.
+- All bit manipulation is `#[inline(always)]` and branchless — shift+mask operations compile to single instructions on x86-64 and AArch64.
+- Memory ordering rationale documented on every `AtomicHashBucketEntry` method: `Acquire` for lookups, `AcqRel`/`Acquire` for CAS operations.
+- `EMPTY = Self(0)` matches C++ `kInvalidEntry = 0`.
+- Provided both `compare_exchange` (strong) and `compare_exchange_weak` for CAS retry loops on ARM.
+- No unsafe code required.
+
+**Quality:** 42 hash-bucket-specific tests (31 unit + 7 property tests via proptest + 4 doc-tests). All 146 crate tests pass. Clippy clean (no warnings in new code). 4 new criterion benchmarks added (entry creation, tag extraction, address extraction, compare_exchange throughput).
+
+**Artifacts:**
+- `rust/crates/faster-core/src/hash_bucket.rs` — full implementation
+- `rust/crates/faster-core/benches/core_benchmarks.rs` — 4 new hash_bucket benchmarks added
+- `rust/crates/faster-core/src/lib.rs` — `pub mod hash_bucket;` added
+
+---
+
 ## 2026-03-05T19:20: Wave 1 Sprint Complete — 1d Done
 
 **Context:** All 4 Wave 1 tasks executed in parallel by full team.
@@ -90,4 +112,48 @@
 - Mando (1b/1c): Address + status/error complete, 127 tests passing
 - Rex (1e): CI skeleton complete, 5-job GitHub Actions pipeline validated locally
 - All 127 tests passing in workspace. Zero regressions.
+
+---
+
+## 2026-03-06: Task 2c — Hash Bucket Structure Completed (Chirrut)
+
+**What:** Implemented `HashBucket` — the 64-byte cache-line-aligned container holding 7 `AtomicHashBucketEntry` slots plus one `AtomicLogicalAddress` overflow pointer. Added to existing `hash_bucket.rs`.
+
+**Key design decisions:**
+- `#[repr(C, align(64))]` guarantees 64-byte size and cache-line alignment. Two compile-time `const _: () = assert!(...)` verify both invariants.
+- 7 entries stored as `[AtomicHashBucketEntry; 7]` (not `[AtomicU64; 8]` as sketched in the architecture doc) — strongly typed, no casting needed. The 8th slot is `AtomicLogicalAddress` for the overflow chain.
+- `find_entry(tag)` scans 7 entries with `Acquire` loads, skipping empty and tentative entries. Returns first match `(index, entry)`.
+- `find_empty()` returns first empty slot index. `try_insert(tag, addr)` does find-empty + CAS in one operation.
+- `try_insert` uses `AcqRel`/`Acquire` CAS ordering and retries on next slot if CAS fails (another thread beat us).
+- No unsafe code. All concurrency via atomic operations.
+
+**Quality:** 30 new bucket-specific tests (unit + property), plus 4 new criterion benchmarks (find_entry miss/hit-first/hit-last, try_insert). All 293 crate tests pass (247 lib + 46 doc). Clippy clean.
+
+**Also fixed:** Pre-existing compile error in `record/mod.rs` — `record_info` submodule visibility was `mod` (private), but `layout.rs` tests referenced `crate::record::record_info::MAX_VERSION`. Changed to `pub(crate) mod`.
+
+**Artifacts:**
+- `rust/crates/faster-core/src/hash_bucket.rs` — HashBucket struct + methods + tests
+- `rust/crates/faster-core/benches/core_benchmarks.rs` — 4 new bucket scan benchmarks
+
+---
+
+## 2026-03-07: Task 1h — Memory Allocator (MallocFixedPageSize) Completed (Chirrut)
+
+**What:** Implemented `MallocFixedPageSize<T>` — the fixed-size page allocator for overflow hash buckets and internal metadata structures. Full replacement of the `allocator.rs` stub with a production-grade, lock-free allocator modeled after C++ `malloc_fixed_page_size.h`.
+
+**Key design decisions:**
+- Two-level allocation: growable page directory (level 1) + heap-allocated pages of 2^20 = 1,048,576 items each (level 2). Matches C++ `FixedPageAddress::kOffsetBits = 20`.
+- Lock-free bump allocation via `AtomicU64::fetch_add` on a monotonic flat counter. Page/offset derived from counter using bit shifts (power-of-2 items per page).
+- Lock-free free list via Treiber stack with 16-bit ABA tags in the upper bits of the head pointer. Freed items store next-pointer in their first 8 bytes. Requires `size_of::<T>() >= 8`.
+- Pages heap-allocated via `alloc::alloc_zeroed` with cache-line alignment (64 bytes). Pages are never moved or freed until allocator drop — pointer stability guaranteed.
+- Page directory growth uses Mutex (extremely rare: only when crossing a page boundary for the first time beyond current capacity). Old directories retired to a Vec and freed on Drop.
+- Address encoding uses `LogicalAddress` directly: `page()` = directory index, `offset()` = item index within page. Counter starts at flat index 2 so addresses 0 (ZERO) and 1 (INVALID) are never returned.
+- `get(&self) -> &T` is safe (interior mutability via atomics is the expected pattern for HashBucket). `get_mut(&self) -> &mut T` is `unsafe` — caller must prove exclusive access.
+- Every `unsafe` block has a `// SAFETY:` comment per project `#![forbid(clippy::undocumented_unsafe_blocks)]` policy.
+
+**Quality:** 23 new allocator-specific tests (15 unit + 4 property tests via proptest + 3 concurrent stress tests + 1 atomic-items concurrent test). 2 new criterion benchmarks (bump allocation throughput, free-list reuse throughput). All 310 lib tests + 56 doc tests pass. Clippy clean (zero new warnings).
+
+**Artifacts:**
+- `rust/crates/faster-core/src/allocator.rs` — full implementation (~700 lines)
+- `rust/crates/faster-core/benches/core_benchmarks.rs` — 2 new allocator benchmarks added
 

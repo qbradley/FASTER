@@ -26,5 +26,6 @@ pub mod allocator;
 pub mod epoch;
 pub mod error;
 pub mod hash;
+pub mod hash_bucket;
 pub mod record;
 pub mod status;
