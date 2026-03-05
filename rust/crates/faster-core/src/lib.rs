@@ -27,5 +27,8 @@ pub mod epoch;
 pub mod error;
 pub mod hash;
 pub mod hash_bucket;
+pub mod hash_index;
+pub mod hash_table;
+pub mod overflow;
 pub mod record;
 pub mod status;

@@ -645,6 +645,244 @@ impl HashBucket {
         }
         Err(())
     }
+
+    // -----------------------------------------------------------------------
+    // Overflow chain operations
+    // -----------------------------------------------------------------------
+
+    /// Returns the overflow bucket, following the overflow pointer.
+    ///
+    /// If the overflow pointer is [`LogicalAddress::ZERO`], returns `None`.
+    /// Otherwise, resolves the address through the pool and returns the bucket.
+    ///
+    /// # Memory ordering
+    ///
+    /// The overflow pointer is loaded with `Acquire`. This ensures we see the
+    /// fully-initialized overflow bucket that was published with `Release`
+    /// when the overflow pointer was CAS'd.
+    #[inline]
+    pub fn overflow_bucket<'a>(
+        &self,
+        pool: &'a crate::overflow::OverflowBucketPool,
+    ) -> Option<&'a HashBucket> {
+        let addr = self.overflow_address.load(Ordering::Acquire);
+        if addr == LogicalAddress::ZERO {
+            None
+        } else {
+            Some(pool.get(addr))
+        }
+    }
+
+    /// Returns the overflow bucket, allocating a new one if none exists.
+    ///
+    /// This is the core concurrent overflow operation:
+    /// 1. Load overflow pointer with `Acquire`.
+    /// 2. If non-null, return that bucket (fast path).
+    /// 3. If null, allocate a new zeroed bucket from the pool.
+    /// 4. CAS the overflow pointer from ZERO to the new bucket's address.
+    /// 5. If CAS succeeds, return our new bucket.
+    /// 6. If CAS fails (another thread won the race), free our allocation
+    ///    and return the winner's bucket.
+    ///
+    /// # Memory ordering
+    ///
+    /// - CAS uses `AcqRel`/`Acquire`: `Release` publishes the fully-initialized
+    ///   bucket to threads that subsequently load with `Acquire`.
+    /// - The losing thread's allocation is freed immediately — no leak.
+    ///
+    /// # Lock-free guarantee
+    ///
+    /// This operation is lock-free: exactly one thread's CAS will succeed,
+    /// and losers make forward progress (they use the winner's bucket).
+    pub fn get_or_create_overflow<'a>(
+        &self,
+        pool: &'a crate::overflow::OverflowBucketPool,
+    ) -> &'a HashBucket {
+        // Fast path: overflow already exists.
+        let existing = self.overflow_address.load(Ordering::Acquire);
+        if existing != LogicalAddress::ZERO {
+            return pool.get(existing);
+        }
+
+        // Slow path: allocate and race to install.
+        let new_addr = pool.allocate();
+
+        // CAS: ZERO → new_addr. Only one thread wins.
+        match self.overflow_address.compare_exchange(
+            LogicalAddress::ZERO,
+            new_addr,
+            // Release on success: the zeroed bucket is now visible to
+            // any thread that loads this pointer with Acquire.
+            Ordering::AcqRel,
+            // Acquire on failure: we need to see the winner's bucket.
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {
+                // We won — our bucket is installed.
+                pool.get(new_addr)
+            }
+            Err(winner_addr) => {
+                // Another thread beat us. Free our allocation, use theirs.
+                pool.free(new_addr);
+                pool.get(winner_addr)
+            }
+        }
+    }
+
+    /// Walks the bucket chain (primary → overflow → overflow → ...),
+    /// calling `f` on each bucket.
+    ///
+    /// If `f` returns `ControlFlow::Break(value)`, traversal stops and
+    /// `Some(value)` is returned. If the chain is exhausted without
+    /// breaking, returns `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use faster_core::hash_bucket::HashBucket;
+    /// use faster_core::overflow::OverflowBucketPool;
+    /// use core::ops::ControlFlow;
+    ///
+    /// let bucket = HashBucket::new();
+    /// let pool = OverflowBucketPool::new();
+    ///
+    /// // Count entries across chain (just the primary bucket here).
+    /// let mut count = 0u32;
+    /// bucket.for_each_bucket(&pool, |_b| -> ControlFlow<()> {
+    ///     count += 1;
+    ///     ControlFlow::Continue(())
+    /// });
+    /// assert_eq!(count, 1);
+    /// ```
+    #[inline]
+    pub fn for_each_bucket<T, F>(
+        &self,
+        pool: &crate::overflow::OverflowBucketPool,
+        mut f: F,
+    ) -> Option<T>
+    where
+        F: FnMut(&HashBucket) -> core::ops::ControlFlow<T>,
+    {
+        // Start with `self` (the primary bucket).
+        let mut current: &HashBucket = self;
+        loop {
+            match f(current) {
+                core::ops::ControlFlow::Break(val) => return Some(val),
+                core::ops::ControlFlow::Continue(()) => {}
+            }
+            // Follow overflow pointer.
+            let overflow_addr = current.overflow_address.load(Ordering::Acquire);
+            if overflow_addr == LogicalAddress::ZERO {
+                return None;
+            }
+            current = pool.get(overflow_addr);
+        }
+    }
+
+    /// Searches the bucket and all overflow buckets for an entry with
+    /// matching `tag`.
+    ///
+    /// Returns `Some((bucket_addr, slot_index, entry))` where:
+    /// - `bucket_addr`: [`LogicalAddress::ZERO`] for the primary bucket,
+    ///   or the overflow bucket's address in the pool.
+    /// - `slot_index`: The entry's index within its bucket (0..7).
+    /// - `entry`: The [`HashBucketEntry`] value found.
+    ///
+    /// Returns `None` if no matching non-tentative entry is found in the
+    /// entire chain.
+    ///
+    /// # Memory ordering
+    ///
+    /// Each entry is loaded with `Acquire` (via [`find_entry`](Self::find_entry)).
+    /// Overflow pointers are loaded with `Acquire`.
+    #[inline]
+    pub fn find_entry_in_chain(
+        &self,
+        tag: u16,
+        pool: &crate::overflow::OverflowBucketPool,
+    ) -> Option<(LogicalAddress, usize, HashBucketEntry)> {
+        // Check primary bucket first.
+        if let Some((idx, entry)) = self.find_entry(tag) {
+            return Some((LogicalAddress::ZERO, idx, entry));
+        }
+
+        // Walk overflow chain.
+        let mut overflow_addr = self.overflow_address.load(Ordering::Acquire);
+        while overflow_addr != LogicalAddress::ZERO {
+            let bucket = pool.get(overflow_addr);
+            if let Some((idx, entry)) = bucket.find_entry(tag) {
+                return Some((overflow_addr, idx, entry));
+            }
+            overflow_addr = bucket.overflow_address.load(Ordering::Acquire);
+        }
+        None
+    }
+
+    /// Inserts an entry into the bucket chain, allocating overflow buckets
+    /// as needed.
+    ///
+    /// The algorithm:
+    /// 1. Try inserting into the primary bucket (scan for empty slot + CAS).
+    /// 2. If full, follow the overflow chain, trying each bucket.
+    /// 3. If the entire chain is full, allocate a new overflow bucket at
+    ///    the tail and insert there.
+    ///
+    /// Returns `Ok(())` on success. This operation is lock-free: all
+    /// concurrent insertions make forward progress.
+    ///
+    /// # Memory ordering
+    ///
+    /// - Entry CAS: `AcqRel`/`Acquire` (via [`try_insert`](Self::try_insert)).
+    /// - Overflow CAS: `AcqRel`/`Acquire` (via [`get_or_create_overflow`]).
+    ///
+    /// # Lock-free correctness argument
+    ///
+    /// Each thread either successfully CAS's into an empty slot (progress) or
+    /// loses the CAS (another thread made progress). In the worst case, a
+    /// thread walks the entire chain and extends it, but the chain length is
+    /// bounded by the total number of concurrent insert operations.
+    #[inline]
+    #[allow(clippy::result_unit_err)]
+    pub fn insert_in_chain(
+        &self,
+        tag: u16,
+        address: LogicalAddress,
+        pool: &crate::overflow::OverflowBucketPool,
+    ) -> Result<(), ()> {
+        // Try the primary bucket first.
+        if self.try_insert(tag, address).is_ok() {
+            return Ok(());
+        }
+
+        // Walk existing overflow chain.
+        let mut current: &HashBucket = self;
+        loop {
+            let overflow_addr = current.overflow_address.load(Ordering::Acquire);
+            if overflow_addr == LogicalAddress::ZERO {
+                // No more overflow buckets — need to create one.
+                break;
+            }
+            let overflow = pool.get(overflow_addr);
+            if overflow.try_insert(tag, address).is_ok() {
+                return Ok(());
+            }
+            current = overflow;
+        }
+
+        // All existing buckets are full. Create overflow and insert.
+        // `get_or_create_overflow` handles the race where two threads both
+        // try to create the overflow bucket — one wins, one reuses.
+        let new_overflow = current.get_or_create_overflow(pool);
+        // Try inserting into the new overflow. If this fails (extremely rare:
+        // another thread filled all 7 slots between our create and insert),
+        // recurse into the chain from the new overflow.
+        if new_overflow.try_insert(tag, address).is_ok() {
+            return Ok(());
+        }
+        // Recursive case: the new overflow is already full (concurrent
+        // insertions). Continue from the new overflow.
+        new_overflow.insert_in_chain(tag, address, pool)
+    }
 }
 
 impl Default for HashBucket {
@@ -1445,6 +1683,274 @@ mod tests {
         assert!(dbg.contains("HashBucket"));
         assert!(dbg.contains("overflow"));
     }
+
+    // -- Overflow chain operations --
+
+    #[test]
+    fn overflow_bucket_none_when_empty() {
+        let bucket = HashBucket::new();
+        let pool = crate::overflow::OverflowBucketPool::new();
+        assert!(bucket.overflow_bucket(&pool).is_none());
+    }
+
+    #[test]
+    fn get_or_create_overflow_creates_new() {
+        let bucket = HashBucket::new();
+        let pool = crate::overflow::OverflowBucketPool::new();
+        let overflow = bucket.get_or_create_overflow(&pool);
+        // Overflow should be empty.
+        for i in 0..BUCKET_NUM_ENTRIES {
+            assert!(overflow.entry(i).load(Ordering::Relaxed).is_empty());
+        }
+        // Overflow pointer should now be set.
+        let addr = bucket.overflow_address().load(Ordering::Acquire);
+        assert_ne!(addr, LogicalAddress::ZERO);
+    }
+
+    #[test]
+    fn get_or_create_overflow_returns_existing() {
+        let bucket = HashBucket::new();
+        let pool = crate::overflow::OverflowBucketPool::new();
+        let o1 = bucket.get_or_create_overflow(&pool) as *const HashBucket;
+        let o2 = bucket.get_or_create_overflow(&pool) as *const HashBucket;
+        assert_eq!(o1, o2, "Second call should return the same overflow bucket");
+    }
+
+    #[test]
+    fn get_or_create_overflow_concurrent_race() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let bucket = Box::leak(Box::new(HashBucket::new()));
+        let bucket_ref: &'static HashBucket = bucket;
+        let pool = Arc::new(crate::overflow::OverflowBucketPool::new());
+        let barrier = Arc::new(Barrier::new(8));
+
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let pool = Arc::clone(&pool);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    bucket_ref.get_or_create_overflow(&pool) as *const HashBucket as usize
+                })
+            })
+            .collect();
+
+        let ptrs: Vec<usize> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        // All threads should get the same overflow bucket.
+        assert!(ptrs.windows(2).all(|w| w[0] == w[1]),
+            "All threads must resolve to the same overflow bucket");
+
+        // Only one overflow address should be set.
+        let addr = bucket_ref.overflow_address().load(Ordering::Acquire);
+        assert_ne!(addr, LogicalAddress::ZERO);
+        assert_eq!(pool.get(addr) as *const HashBucket as usize, ptrs[0]);
+
+        // Leak cleanup — we can't un-leak, but this is a test.
+    }
+
+    #[test]
+    fn for_each_bucket_single() {
+        let bucket = HashBucket::new();
+        let pool = crate::overflow::OverflowBucketPool::new();
+        let mut count = 0u32;
+        let result: Option<()> = bucket.for_each_bucket(&pool, |_| {
+            count += 1;
+            core::ops::ControlFlow::Continue(())
+        });
+        assert!(result.is_none());
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn for_each_bucket_with_overflow() {
+        let bucket = HashBucket::new();
+        let pool = crate::overflow::OverflowBucketPool::new();
+        // Create two levels of overflow.
+        let o1 = bucket.get_or_create_overflow(&pool);
+        let _o2 = o1.get_or_create_overflow(&pool);
+
+        let mut count = 0u32;
+        bucket.for_each_bucket(&pool, |_| {
+            count += 1;
+            core::ops::ControlFlow::<()>::Continue(())
+        });
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn for_each_bucket_early_break() {
+        let bucket = HashBucket::new();
+        let pool = crate::overflow::OverflowBucketPool::new();
+        let _ = bucket.get_or_create_overflow(&pool);
+
+        let mut visited = 0u32;
+        let result = bucket.for_each_bucket(&pool, |_| {
+            visited += 1;
+            core::ops::ControlFlow::Break(42u32)
+        });
+        assert_eq!(result, Some(42));
+        assert_eq!(visited, 1); // Stopped after first bucket.
+    }
+
+    #[test]
+    fn find_entry_in_chain_primary() {
+        let bucket = HashBucket::new();
+        let pool = crate::overflow::OverflowBucketPool::new();
+        let addr = LogicalAddress::new(Page(5), Offset(200));
+        bucket.try_insert(0x1234, addr).unwrap();
+
+        let found = bucket.find_entry_in_chain(0x1234, &pool);
+        assert!(found.is_some());
+        let (bucket_addr, idx, entry) = found.unwrap();
+        assert_eq!(bucket_addr, LogicalAddress::ZERO); // Primary bucket.
+        assert_eq!(idx, 0);
+        assert_eq!(entry.tag(), 0x1234);
+        assert_eq!(entry.address(), addr);
+    }
+
+    #[test]
+    fn find_entry_in_chain_overflow() {
+        let bucket = HashBucket::new();
+        let pool = crate::overflow::OverflowBucketPool::new();
+        let addr = LogicalAddress::new(Page(1), Offset(10));
+
+        // Fill primary bucket.
+        for i in 0..BUCKET_NUM_ENTRIES {
+            bucket.try_insert((i as u16) + 1, addr).unwrap();
+        }
+
+        // Insert into overflow.
+        let overflow = bucket.get_or_create_overflow(&pool);
+        overflow.try_insert(0x00FF, addr).unwrap();
+
+        // Find it via chain search.
+        let found = bucket.find_entry_in_chain(0x00FF, &pool);
+        assert!(found.is_some());
+        let (bucket_addr, idx, entry) = found.unwrap();
+        assert_ne!(bucket_addr, LogicalAddress::ZERO); // Found in overflow.
+        assert_eq!(idx, 0);
+        assert_eq!(entry.tag(), 0x00FF);
+    }
+
+    #[test]
+    fn find_entry_in_chain_not_found() {
+        let bucket = HashBucket::new();
+        let pool = crate::overflow::OverflowBucketPool::new();
+        bucket.try_insert(0x1111, LogicalAddress::from_raw(1)).unwrap();
+        assert!(bucket.find_entry_in_chain(0x2222, &pool).is_none());
+    }
+
+    #[test]
+    fn insert_in_chain_primary() {
+        let bucket = HashBucket::new();
+        let pool = crate::overflow::OverflowBucketPool::new();
+        let addr = LogicalAddress::new(Page(1), Offset(42));
+
+        assert!(bucket.insert_in_chain(0x1234, addr, &pool).is_ok());
+        let (_, _, entry) = bucket.find_entry_in_chain(0x1234, &pool).unwrap();
+        assert_eq!(entry.address(), addr);
+    }
+
+    #[test]
+    fn insert_in_chain_triggers_overflow() {
+        let bucket = HashBucket::new();
+        let pool = crate::overflow::OverflowBucketPool::new();
+        let addr = LogicalAddress::new(Page(1), Offset(10));
+
+        // Fill primary bucket.
+        for i in 0..BUCKET_NUM_ENTRIES {
+            bucket.insert_in_chain((i as u16) + 1, addr, &pool).unwrap();
+        }
+        // This 8th insert must trigger overflow.
+        bucket.insert_in_chain(0x00FF, addr, &pool).unwrap();
+
+        // Overflow should exist now.
+        assert_ne!(
+            bucket.overflow_address().load(Ordering::Acquire),
+            LogicalAddress::ZERO
+        );
+
+        // All 8 entries must be findable.
+        for i in 0..BUCKET_NUM_ENTRIES {
+            assert!(
+                bucket.find_entry_in_chain((i as u16) + 1, &pool).is_some(),
+                "Could not find tag {} in chain",
+                (i as u16) + 1
+            );
+        }
+        assert!(bucket.find_entry_in_chain(0x00FF, &pool).is_some());
+    }
+
+    #[test]
+    fn insert_in_chain_deep_overflow() {
+        let bucket = HashBucket::new();
+        let pool = crate::overflow::OverflowBucketPool::new();
+
+        // Insert 21 entries (3 buckets × 7 slots).
+        for i in 0..21u16 {
+            let addr = LogicalAddress::from_raw((i as u64) + 2);
+            bucket
+                .insert_in_chain(i + 1, addr, &pool)
+                .unwrap();
+        }
+
+        // All 21 must be findable.
+        for i in 0..21u16 {
+            let expected_addr = LogicalAddress::from_raw((i as u64) + 2);
+            let found = bucket.find_entry_in_chain(i + 1, &pool);
+            assert!(found.is_some(), "Could not find tag {}", i + 1);
+            let (_, _, entry) = found.unwrap();
+            assert_eq!(entry.tag(), i + 1);
+            assert_eq!(entry.address(), expected_addr);
+        }
+    }
+
+    #[test]
+    fn insert_in_chain_concurrent() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let bucket = Box::leak(Box::new(HashBucket::new()));
+        let bucket_ref: &'static HashBucket = bucket;
+        let pool = Arc::new(crate::overflow::OverflowBucketPool::new());
+        let num_threads = 8;
+        let entries_per_thread = 4; // 32 entries total → needs 4+ buckets
+        let barrier = Arc::new(Barrier::new(num_threads));
+
+        let handles: Vec<_> = (0..num_threads)
+            .map(|t| {
+                let pool = Arc::clone(&pool);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    for i in 0..entries_per_thread {
+                        let tag = (t * entries_per_thread + i + 1) as u16;
+                        let addr = LogicalAddress::from_raw(tag as u64 + 1);
+                        bucket_ref
+                            .insert_in_chain(tag, addr, &pool)
+                            .expect("insert_in_chain failed");
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Verify all entries are findable.
+        let total = num_threads * entries_per_thread;
+        for i in 0..total {
+            let tag = (i + 1) as u16;
+            let expected_addr = LogicalAddress::from_raw(tag as u64 + 1);
+            let found = bucket_ref.find_entry_in_chain(tag, &pool);
+            assert!(found.is_some(), "Missing tag {tag} after concurrent insert");
+            let (_, _, entry) = found.unwrap();
+            assert_eq!(entry.address(), expected_addr);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1583,6 +2089,46 @@ mod proptests {
                 let found = bucket.find_entry(tag);
                 prop_assert!(found.is_some(), "Could not find tag 0x{:04x}", tag);
                 let (_, entry) = found.unwrap();
+                prop_assert_eq!(entry.tag(), tag);
+                prop_assert_eq!(entry.address(), expected_addr);
+            }
+        }
+
+        /// Insert N entries (N > 7) via chain insert → all N are findable.
+        #[test]
+        fn insert_n_chain_then_find_all(
+            n in 8usize..=35,
+            tags in proptest::collection::vec(1u16..=MAX_TAG, 35),
+        ) {
+            // Deduplicate tags.
+            let mut unique_tags: Vec<u16> = Vec::new();
+            for &t in &tags {
+                if !unique_tags.contains(&t) {
+                    unique_tags.push(t);
+                }
+                if unique_tags.len() == n {
+                    break;
+                }
+            }
+            if unique_tags.len() < n {
+                return Ok(());
+            }
+
+            let bucket = HashBucket::new();
+            let pool = crate::overflow::OverflowBucketPool::new();
+
+            for (i, &tag) in unique_tags.iter().enumerate() {
+                let addr = LogicalAddress::from_raw((i as u64) + 2);
+                let result = bucket.insert_in_chain(tag, addr, &pool);
+                prop_assert!(result.is_ok(), "Chain insert failed for tag 0x{:04x} at i={}", tag, i);
+            }
+
+            // Find all N.
+            for (i, &tag) in unique_tags.iter().enumerate() {
+                let expected_addr = LogicalAddress::from_raw((i as u64) + 2);
+                let found = bucket.find_entry_in_chain(tag, &pool);
+                prop_assert!(found.is_some(), "Could not find tag 0x{:04x} in chain", tag);
+                let (_, _, entry) = found.unwrap();
                 prop_assert_eq!(entry.tag(), tag);
                 prop_assert_eq!(entry.address(), expected_addr);
             }
