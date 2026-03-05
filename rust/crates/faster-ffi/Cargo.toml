@@ -1,0 +1,19 @@
+[package]
+name = "faster-ffi"
+version = "0.1.0"
+description = "C FFI bindings for the FASTER key-value store"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["ffi", "c-api", "bindings", "kv-store"]
+categories.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+faster-core = { path = "../faster-core" }
+faster-device = { path = "../faster-device" }

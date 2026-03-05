@@ -1,0 +1,17 @@
+[package]
+name = "faster-tokio"
+version = "0.1.0"
+description = "Tokio async adapter for FASTER — callback-to-Future bridge"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["async", "tokio", "kv-store", "adapter"]
+categories.workspace = true
+publish = false
+
+[dependencies]
+faster-core = { path = "../faster-core" }
+faster-device = { path = "../faster-device" }
+tokio = { workspace = true }

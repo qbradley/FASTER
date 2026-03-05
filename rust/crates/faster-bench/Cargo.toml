@@ -1,0 +1,21 @@
+[package]
+name = "faster-bench"
+version = "0.1.0"
+description = "Benchmarks and YCSB workload generator for FASTER"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["benchmark", "ycsb", "performance"]
+categories.workspace = true
+publish = false
+
+[dependencies]
+faster-core = { path = "../faster-core" }
+faster-device = { path = "../faster-device" }
+criterion = { workspace = true }
+
+[[bench]]
+name = "main"
+harness = false

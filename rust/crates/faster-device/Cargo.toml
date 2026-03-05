@@ -1,0 +1,19 @@
+[package]
+name = "faster-device"
+version = "0.1.0"
+description = "Device trait and I/O implementations for FASTER"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["io", "device", "storage", "async", "completion"]
+categories.workspace = true
+publish = false
+
+[dependencies]
+faster-core = { path = "../faster-core" }
+
+[features]
+default = ["file-io"]
+file-io = []

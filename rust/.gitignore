@@ -1,0 +1,24 @@
+# Build artifacts
+/target/
+
+# Editor files
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Cargo lock is checked in for applications but we're a library workspace;
+# include it for reproducible CI builds.
+# Cargo.lock  (DO check in — workspace contains benchmarks)
+
+# Coverage artifacts
+*.profraw
+*.profdata
+lcov.info
+tarpaulin-report.html

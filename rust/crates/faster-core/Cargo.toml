@@ -1,0 +1,31 @@
+[package]
+name = "faster-core"
+version = "0.1.0"
+description = "Core KV engine for FASTER — zero async runtime dependencies"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["kv-store", "hash-map", "concurrent", "epoch", "hybrid-log"]
+categories.workspace = true
+publish = false
+
+[dependencies]
+crossbeam-utils = { workspace = true }
+cfg-if = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+
+[features]
+default = []
+# Enable extra runtime assertions for debug/testing builds
+paranoid = []
+# Enable metrics collection (operation counters, cache-hit rates)
+metrics = []
+
+[[bench]]
+name = "core_benchmarks"
+harness = false
