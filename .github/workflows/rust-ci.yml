@@ -1,0 +1,120 @@
+# Rust CI for the FASTER Rust workspace.
+# Runs on every push/PR that touches rust/** paths.
+
+name: Rust CI
+
+on:
+  push:
+    paths: ["rust/**"]
+  pull_request:
+    paths: ["rust/**"]
+  schedule:
+    - cron: "0 6 * * 0"   # Every Sunday at 06:00 UTC (for Miri)
+  workflow_dispatch:        # Manual trigger (for Miri / benchmarks)
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: "-D warnings"
+
+defaults:
+  run:
+    working-directory: rust
+
+jobs:
+  # ── Formatting (nightly, fast-fail) ──────────────────────────────
+  fmt:
+    name: Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  # ── Lint + Check + Test (matrix) ─────────────────────────────────
+  ci:
+    name: CI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: fmt
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+          shared-key: ci-${{ matrix.os }}
+
+      - name: Compile check
+        run: cargo check --workspace
+
+      - name: Clippy lints
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Tests (debug)
+        run: cargo test --workspace
+
+      - name: Tests (release)
+        run: cargo test --workspace --release
+
+  # ── Miri (nightly, weekly + on-demand) ───────────────────────────
+  miri:
+    name: Miri (undefined-behavior detection)
+    runs-on: ubuntu-latest
+    # Run weekly on Sunday, or on-demand via workflow_dispatch
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    continue-on-error: true   # informational until unsafe code stabilizes
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+          shared-key: miri
+
+      - name: Miri test
+        run: cargo +nightly miri test --workspace
+        env:
+          MIRIFLAGS: "-Zmiri-symbolic-alignment-check -Zmiri-retag-fields"
+
+  # ── Benchmarks (main branch only) ───────────────────────────────
+  bench:
+    name: Benchmarks
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+          shared-key: bench
+
+      - name: Run benchmarks
+        run: cargo bench --workspace --no-fail-fast -- --save-baseline main
+
+  # ── cargo-deny (license + advisory audit) ────────────────────────
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: rust/Cargo.toml
+          command: check

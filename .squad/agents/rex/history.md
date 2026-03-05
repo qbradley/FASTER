@@ -10,6 +10,27 @@
 
 <!-- Append new learnings below. Each entry is something lasting about the project. -->
 
+## 2026-03-05T19:25: Item 1e — CI Skeleton Created
+
+**What:** Created `.github/workflows/rust-ci.yml` — a multi-job GitHub Actions CI pipeline for the Rust workspace.
+
+**Jobs:**
+1. **fmt** — Formatting check using nightly rustfmt (required for `imports_granularity` and `group_imports` options in `rustfmt.toml`).
+2. **ci** — Clippy + check + test (debug & release) on a 3-OS matrix (ubuntu, windows, macos). Gated behind `fmt`. Uses `Swatinem/rust-cache@v2` for caching.
+3. **miri** — Weekly scheduled + on-demand Miri runs with `-Zmiri-symbolic-alignment-check -Zmiri-retag-fields`. `continue-on-error: true` — informational for now.
+4. **bench** — `cargo bench --workspace --save-baseline main` on pushes to main only.
+5. **deny** — `cargo deny check` using `EmbarkStudios/cargo-deny-action@v2` against the existing `rust/deny.toml`.
+
+**Local validation:** All 5 core commands (`check`, `clippy`, `fmt --check`, `test`, `test --release`) pass clean in the current workspace.
+
+**Also:** Added CI status badge to `rust/README.md`.
+
+**Learnings:**
+- The `rustfmt.toml` uses `imports_granularity` and `group_imports`, which are nightly-only features. Formatting CI must use nightly toolchain.
+- This environment uses `msrustup` (Microsoft internal), not public `rustup`. CI uses standard `dtolnay/rust-toolchain` actions since it targets GitHub-hosted runners.
+- `cargo-deny` is not installed locally but the `deny.toml` config exists and is well-structured. Using the official GH action avoids toolchain issues.
+- Path filtering (`rust/**`) keeps Rust CI from running on C#/C++ changes — important since the monorepo has three language ecosystems.
+
 ---
 
 ## 2026-03-05T18:33: Thrawn Rust FASTER Architecture Finalized
