@@ -174,6 +174,13 @@ impl Hashable for String {
     }
 }
 
+impl Hashable for Vec<u8> {
+    #[inline]
+    fn hash(&self) -> KeyHash {
+        KeyHash::new(faster_hash_bytes(self.as_slice()))
+    }
+}
+
 impl<const N: usize> Hashable for [u8; N] {
     #[inline]
     fn hash(&self) -> KeyHash {

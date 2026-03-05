@@ -518,3 +518,252 @@ LogicalAddress::new(10u32, 256u32)  // Would compile even if swapped
 - Document architectural decisions here
 - Keep history focused on work, decisions focused on direction
 - Archive decisions older than 30 days when file exceeds ~20KB
+# Decision: Record Format Design Choices
+
+**Agent:** Mando (Rust Expert)
+**Date:** 2025-07-18
+**Status:** DECIDED
+**Task:** 1f — Record Format and Key/Value Traits
+**Impact:** Core data representation — affects all record I/O, hybrid log, hash index
+
+---
+
+## 1. Safe Serialization API (Slice-Based)
+
+**Decision:** The `Key` and `Value` traits use safe `&mut [u8]` / `&[u8]` slice-based serialization rather than unsafe `*mut u8` / `*const u8` raw pointer serialization from Section 3.2.3.
+
+**Rationale:**
+- Section 8.2 (Public API) specifies the safe slice-based interface
+- Zero unsafe code in the serialization layer — all safety validated at compile time
+- Can add unsafe low-level pointer-based accessors later when the hybrid log allocator needs direct memory-mapped access
+- Callers don't need to worry about buffer sizing invariants beyond "buf must be ≥ serialized_size()"
+
+**Trade-off:** Slightly less flexible for zero-copy mmap scenarios. When the allocator module needs it, we can add `unsafe serialize_to(*mut u8)` as an extension trait.
+
+---
+
+## 2. 8-Byte Alignment Cap
+
+**Decision:** All record padding uses 8-byte alignment (RECORD_ALIGNMENT = 8) regardless of the key/value type's natural alignment.
+
+**Rationale:**
+- Architecture v1 caps alignment at 8 bytes (§3.2.2)
+- Simplifies layout computation — no need for alignment metadata in traits
+- Sufficient for all primitive types (u8..u128, i8..i128, f32, f64)
+- At most 7 bytes of padding waste per field — acceptable for v1
+- Can be refined later by adding alignment info to the trait system
+
+---
+
+## 3. `#[repr(transparent)]` for RecordInfo
+
+**Decision:** RecordInfo is `#[repr(transparent)]` over `u64`, not `#[repr(C)]`.
+
+**Rationale:**
+- `#[repr(transparent)]` is the correct annotation for a single-field newtype
+- Guarantees identical ABI to `u64` (same size, alignment, passing convention)
+- `#[repr(C)]` is for multi-field structs — overkill and slightly misleading for a newtype
+
+---
+
+## 4. Little-Endian On-Disk Format
+
+**Decision:** RecordInfo header and all numeric serializations use little-endian byte order via `to_le_bytes()` / `from_le_bytes()`.
+
+**Rationale:**
+- FASTER is designed for x86 (little-endian) — this matches native behavior on the primary platform
+- Correct on big-endian platforms too (explicit conversion)
+- On-disk format is deterministic regardless of host endianness
+
+---
+
+## 5. Marker Traits for Fixed-Size Types
+
+**Decision:** `FixedSizeKey` and `FixedSizeValue` are separate marker traits with `const SIZE: usize`, rather than adding `is_fixed_size()` / `fixed_size()` methods to the base traits.
+
+**Rationale:**
+- Compile-time specialization: the hybrid log can use `<K as FixedSizeKey>::SIZE` at compile time for record sizing, not runtime checks
+- More idiomatic Rust — marker traits enable conditional impl blocks and where bounds
+- Avoids runtime panics from calling `fixed_size()` on variable-length types
+
+# Decision: Tentative Bit at Bit 63 (Not Bit 61)
+
+**Agent:** Chirrut (Systems Programming Expert)
+**Date:** 2026-03-06
+**Task:** 2a — Hash Bucket Entry Types
+**Status:** DECIDED — follows C++ source
+
+## Context
+
+The architecture doc §3.1.1 shows the tentative bit at bit 61 with reserved bits at 62-63:
+```
+  63    62    61     60..48          47..0
+│  0  │  0  │ Ten │   Tag (14)   │   Address (48)            │
+```
+
+However, the C++ source (`cc/src/index/hash_bucket.h`, `HotLogIndexBucketEntryDef`) defines the bitfield order as:
+```cpp
+uint64_t address    : 48;            // bits [47:0]
+uint64_t tag        : 14;            // bits [61:48]
+uint64_t reserved   : 1;            // bit [62]
+uint64_t tentative  : 1;            // bit [63]
+```
+
+## Decision
+
+Follow the C++ source code as the authoritative reference. Tentative is bit 63, reserved is bit 62.
+
+## Rationale
+
+1. The C++ implementation is the production-proven reference. Behavioral compatibility requires matching its exact bit layout.
+2. The architecture doc may have simplified the diagram (swapping reserved/tentative for visual clarity). The code is the single source of truth.
+3. Property tests verify round-trip correctness, and explicit bit-position tests lock down the layout.
+
+## Impact
+
+- All downstream code (hash bucket, hash table core, concurrent ops) must use bit 63 for tentative.
+- The architecture doc §3.1.1 diagram should be updated to match C++ (low priority — code is the source of truth).
+- Tag extraction in `hash.rs` and `hash_bucket.rs` use the same bit range [61:48], which is correct in both docs and code.
+
+# Decision: HashBucket — Typed Fields vs Raw AtomicU64 Array
+
+**Author:** Chirrut  
+**Date:** 2026-03-06  
+**Task:** 2c (Hash Bucket Structure)  
+**Status:** Decided
+
+## Context
+
+The architecture doc §3.1.2 sketches `HashBucket` as `entries: [AtomicU64; 8]` where slots 0–6 are data entries and slot 7 is the overflow pointer. This is a flat, untyped layout.
+
+## Decision
+
+Use strongly-typed fields instead:
+
+```rust
+#[repr(C, align(64))]
+pub struct HashBucket {
+    entries: [AtomicHashBucketEntry; 7],
+    overflow_address: AtomicLogicalAddress,
+}
+```
+
+## Rationale
+
+1. **Type safety:** The overflow slot stores a `LogicalAddress`, not a `HashBucketEntry`. Using `AtomicLogicalAddress` makes this explicit. No risk of accidentally treating the overflow pointer as a hash entry or vice versa.
+
+2. **API clarity:** `bucket.overflow_address()` returns `&AtomicLogicalAddress` with its own `load`/`store`/`compare_exchange` methods. `bucket.entry(i)` returns `&AtomicHashBucketEntry`. No index confusion possible.
+
+3. **Same layout guarantee:** Both `AtomicHashBucketEntry` and `AtomicLogicalAddress` are `#[repr(transparent)]` over `AtomicU64`. With `#[repr(C)]` on the struct, the layout is identical to `[AtomicU64; 8]`. Compile-time asserts verify `size_of == 64` and `align_of == 64`.
+
+4. **No performance impact:** Zero-cost at runtime — same memory representation, same instructions.
+
+## Impact
+
+- **Mando (2d: Hash Table Core):** Use `bucket.entry(i)` and `bucket.overflow_address()` for the lookup/insert algorithms. The overflow pointer is an `AtomicLogicalAddress`, not a raw pointer — you'll encode overflow bucket locations as `LogicalAddress` values into the overflow allocator's address space.
+- **Chirrut (future overflow allocator):** The overflow allocator will map `LogicalAddress` values to `&HashBucket` references. This is the only unsafe boundary in the hash index.
+
+# Decision: Epoch System Design Choices
+
+**Agent:** Mando (Rust Expert)
+**Date:** 2025-07-18
+**Task:** 1g — Epoch-Based Reclamation System
+**Status:** Implemented
+
+## Decision 1: Custom Epoch System (Not crossbeam-epoch)
+
+**Choice:** Built a ~400-line custom `EpochTable` rather than using `crossbeam-epoch`.
+
+**Rationale:**
+- crossbeam-epoch provides deferred deallocation of individual objects via `Guard` + `defer()`
+- FASTER needs a fundamentally different primitive: epoch-keyed drain callbacks that fire when *all threads* pass a given epoch, plus per-thread phase markers for checkpoint coordination
+- The custom system is simpler (~400 lines) than an adapter wrapping crossbeam would be
+- We still use `crossbeam-utils::CachePadded` for cache-line padding (utility, not runtime)
+
+**Impact:** All modules depending on epoch protection use `EpochTable` directly.
+
+## Decision 2: Mutex-Based DrainList
+
+**Choice:** `Mutex<Vec<DrainAction>>` rather than a lock-free queue.
+
+**Rationale:**
+- `push` occurs only on `bump_current_epoch` (not per-operation)
+- `drain_up_to` occurs only on `try_drain` (also rare)
+- Critical sections are microsecond-short (Vec manipulation only)
+- Actions execute *outside* the lock (collected, lock released, then executed) to prevent deadlocks when callbacks call `bump_current_epoch`
+- A lock-free queue adds complexity for negligible benefit on a cold path
+
+**Impact:** Drain list contention is not a scalability bottleneck.
+
+## Decision 3: Memory Ordering Strategy
+
+**Choices:**
+| Operation | Ordering | Why |
+|-----------|----------|-----|
+| `protect → reentrant.fetch_add` | Relaxed | Single-writer: only the owning thread modifies |
+| `protect → current_epoch.load` | Relaxed | Stale reads are conservative (lower epoch → lower safe → safe) |
+| `protect → local_epoch.store` | Release | Pairs with Acquire in `compute_safe_epoch` |
+| `unprotect → local_epoch.store(0)` | Release | Makes protected-region writes visible |
+| `bump → current_epoch.fetch_add` | SeqCst | Total ordering with thread-local stores required |
+| `compute_safe → current_epoch.load` | SeqCst | Consistent with bump ordering |
+| `compute_safe → per-thread load` | Acquire | Sees latest Release store from protect |
+
+**Impact:** Matches C++ FASTER ordering semantics. The SeqCst on bump is the conservative choice — could potentially be relaxed to AcqRel with careful analysis, but the bump path is not hot enough to warrant the risk.
+
+## Decision 4: EpochGuard is !Send (Thread-Affine)
+
+**Choice:** `PhantomData<*const ()>` makes EpochGuard `!Send` and `!Sync`.
+
+**Rationale:**
+- Matches FASTER's session model (Decision #10: thread-affine sessions)
+- A guard must be dropped on the same thread that created it (it unprotects a specific thread entry)
+- Sending a guard to another thread would break epoch protection invariants
+- The borrow checker also prevents dropping EpochThread while a guard exists (lifetime bound)
+
+**Impact:** Users must use guards within a single thread. EpochThread itself is Send (can be moved to a thread pool), but guards created from it are pinned to that thread.
+
+# Decision: MallocFixedPageSize Allocator Design
+
+**Agent:** Chirrut (Systems Programming Expert)
+**Date:** 2026-03-07
+**Status:** Implemented
+**Impact:** All overflow bucket allocation, future hybrid log page management
+
+## Decision
+
+Implemented `MallocFixedPageSize<T>` as a lock-free, two-level page allocator using `LogicalAddress` for item addressing.
+
+## Key Design Choices
+
+### 1. Treiber Stack Free List (not per-thread deques)
+
+**C++ uses:** Per-thread `std::deque<FreeAddress>` with epoch-gated reuse.
+**Rust uses:** Global lock-free Treiber stack with 16-bit ABA tags.
+
+**Rationale:** The C++ per-thread approach requires `Thread::id()` which maps to FASTER's custom thread registry. Since the Rust epoch system doesn't yet have thread-local free list integration, a global CAS-based free list is correct and simple. When epoch integration arrives, we can add per-thread free lists as an optimization without changing the public API.
+
+### 2. 16-bit ABA Tags on Free List Head
+
+The Treiber stack head uses bits 48..63 as a generation counter, preventing ABA problems during concurrent push/pop. This works because `LogicalAddress` only uses 48 bits, leaving 16 bits free.
+
+### 3. LogicalAddress Reuse (no separate FixedPageAddress)
+
+**C++ uses:** A separate `FixedPageAddress` type with different bit widths (20-bit offset, 28-bit page).
+**Rust uses:** The existing `LogicalAddress` (25-bit offset, 23-bit page) with `ITEMS_PER_PAGE = 2^20`.
+
+**Rationale:** Using one address type simplifies the codebase. The 25-bit offset field can represent item indices up to ~33M, easily accommodating our 1M items per page. The hash bucket overflow pointer (`AtomicLogicalAddress`) works directly with these addresses.
+
+### 4. Flat Counter with Bit Manipulation (not encoded address increment)
+
+The bump counter is a flat u64 index, mapped to page/offset via shift and mask. This avoids the C++ approach of incrementing an encoded address (which relies on exact bit-width overflow semantics).
+
+### 5. `get_mut` is `unsafe`, `get` is safe
+
+`get(&self) -> &T` is safe because the primary use case (hash bucket lookup) uses atomic interior mutability. `get_mut` is `unsafe` because it creates `&mut T` from `&self`, requiring the caller to prove exclusive access.
+
+## Implications
+
+- **Mando:** The allocator API is ready for hash index overflow bucket allocation. Use `allocate()` → `get()` for bucket lifecycle.
+- **Thrawn:** Address encoding matches C++ semantics. Phase 2 hash table can use `MallocFixedPageSize<HashBucket>` directly.
+- **Future epoch integration:** Add `free_at_epoch(addr, epoch)` method that defers the `free()` call until the epoch is safe to reclaim. The Treiber stack mechanism stays unchanged.
+- **Maul:** 10 unsafe blocks, all with SAFETY comments. Key audit points: `get`/`get_mut` aliasing contract, Treiber stack CAS correctness, `Drop` implementation.
