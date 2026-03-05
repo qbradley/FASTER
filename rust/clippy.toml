@@ -1,0 +1,14 @@
+# Clippy configuration for FASTER — systems programming project.
+# Tuned for correctness over convenience.
+
+# Threshold for struct/enum size before suggesting Box
+too-large-for-stack = 200
+
+# Allow functions with many arguments (systems code often has complex signatures)
+too-many-arguments-threshold = 10
+
+# Cognitive complexity threshold
+cognitive-complexity-threshold = 40
+
+# Allow type repetition in bounds (common with complex trait bounds)
+type-complexity-threshold = 300

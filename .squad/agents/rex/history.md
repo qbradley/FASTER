@@ -33,7 +33,29 @@
 
 ---
 
-## 2026-03-05T18:33: Thrawn Rust FASTER Architecture Finalized
+## 2026-03-05T19:20: Wave 1 Sprint Complete — 1e Done
+
+**Context:** All 4 Wave 1 tasks executed in parallel by full team.
+
+**Your Deliverable (1e):**
+- Task 1e: CI skeleton — 5-job GitHub Actions workflow, all validated locally
+
+**Decision Merged:**
+- Decision #14: Rust CI Architecture — GitHub Actions (not Azure Pipelines), 5 jobs, path filtering, nightly rustfmt only
+
+**Orchestration Log:** `.squad/orchestration-log/2026-03-05T1920-rex.md`
+
+**What's Next:**
+- All future Rust PRs will now be gated on fmt + clippy + test (debug/release) × 3 OSes ✅
+- Miri runs weekly (Sundays 06:00 UTC) + on manual dispatch for UB detection
+- Benchmark baseline established for main branch
+
+**Team Status:**
+- Mando (1b/1c): Address + status/error complete, 127 tests passing
+- Chirrut (1d): Hash traits complete, 64 tests passing
+- All 127 tests passing in workspace. Zero regressions.
+
+
 
 **What:** Thrawn completed 288 KB comprehensive Rust FASTER architecture specification (6101 lines, 14 sections). 3-part parallel document (Thrawn-A/B/C) due to massive context requirements.
 

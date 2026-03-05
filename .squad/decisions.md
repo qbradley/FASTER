@@ -377,6 +377,141 @@
 
 ---
 
+### 10. Typed Page/Offset Newtypes for LogicalAddress API
+
+**Agent:** Mando (Rust Expert)  
+**Date:** 2026-03-05  
+**Status:** Implemented  
+**Impact:** All code that constructs or destructures `LogicalAddress`
+
+**Decision:** `LogicalAddress::new()` takes `Page` and `Offset` newtypes rather than raw `u32` parameters. Page/offset extraction methods return these newtypes.
+
+```rust
+// What we did:
+LogicalAddress::new(Page(10), Offset(256))
+addr.page()   // → Page(10)
+addr.offset()  // → Offset(256)
+
+// What we didn't do:
+LogicalAddress::new(10u32, 256u32)  // Would compile even if swapped
+```
+
+**Rationale:**
+1. Prevents argument transposition — `new(offset_val, page_val)` won't compile
+2. Self-documenting at call sites — `Page(10)` is clearer than bare `10u32`
+3. Zero runtime cost — both `#[repr(transparent)]` over `u32`, identical codegen
+4. Composable — downstream code can accept `Page` or `Offset` directly
+
+**Implications:**
+- All consumers of `LogicalAddress` must use `Page(n)` / `Offset(n)` syntax
+- Pattern matching on inner `u32` via `.0` field (public)
+- Arithmetic not yet implemented; add `impl Add<u32> for Offset` when needed
+
+---
+
+### 11. Status and Error Type Design (Task 1c)
+
+**Agent:** Mando (Rust Expert)  
+**Date:** 2026-03-05  
+**Status:** Implemented  
+**Impact:** All operations in the system use these types
+
+**Decision:** Flat `OperationStatus` enum (8 variants) instead of nested Status/OkKind. Manual error impls instead of thiserror. `OperationResult<T>` struct for operation returns.
+
+**Details:**
+- `OperationStatus`: Ok, Pending, NotFound, Created, InPlaceUpdated, CopyUpdated, Deleted, Aborted
+- `FasterError`: ObjectNotFound, ObjectExists, ConcurrentModification, OutOfMemory, IoError, Corruption
+- Manual impls: Display, Error, From<std::io::Error> (~40 lines, avoids proc-macro dependency)
+- `OperationResult<T>`: struct with `status: OperationStatus` and `output: Option<T>`
+
+**Rationale:**
+1. Flat enum more ergonomic — callers match directly on `Created` instead of `Ok(OkKind::CreatedRecord)`
+2. Manual error impls: Only 6 variants; keeping core dependencies minimal (crossbeam-utils, cfg-if)
+3. OperationResult matches C# pattern of `(Status, Output)` pairs
+
+**Implications:**
+- All downstream modules import `OperationStatus` and `FasterError`
+- OperationResult types are Send + Sync safe for concurrent use
+- If error enum grows >10 variants, thiserror can be added later without breaking API
+
+---
+
+### 12. Hash Function and Tag Layout for Rust FASTER
+
+**Agent:** Chirrut (Systems Programming Expert)  
+**Date:** 2026-03-05  
+**Status:** Implemented  
+**Impact:** Hash index correctness, C++ behavioral compatibility
+
+**Decision:** Use exact C++ `FasterHash` algorithm as default. Tag extraction: bits 48..61 (14 bits), matching C++ `kTagBits = 14`.
+
+**Details:**
+- `faster_hash_u64`: 4 × 16-bit chunks with polynomial accumulation (magic = 40343), finishes with `rotr64(h, 43)`
+- `faster_hash_bytes`: Rolling polynomial over bytes, seeded by length, finishes with `rotr64(h, 6)`
+- Tag: `((hash >> 48) & 0x3FFF) as u16` — 14-bit fingerprint
+- Bucket index: `hash & (table_size - 1)` — power-of-two masking
+
+**Rationale:**
+1. Behavioral compatibility — same hash distribution as C++
+2. Production-tested quality (Chi-squared validated on 1M keys)
+3. No external dependency; simple arithmetic
+4. Hashable trait unsealed for user customization
+
+**Implications:**
+- Hash index implementations use `KeyHash`, `tag_from_hash`, `bucket_index` directly
+- Future: ahash/xxhash can be added behind feature flag
+- Benchmarks registered for throughput regression monitoring
+
+---
+
+### 13. Workspace Directory Named `rust/` (Not `faster-rs/`)
+
+**Agent:** Mando (Rust Expert)  
+**Date:** 2026-03-05  
+**Status:** DECIDED  
+**Impact:** Repository layout convention
+
+**Decision:** The Rust workspace lives at `rust/` in the repo root, not `faster-rs/` as originally suggested.
+
+**Rationale:** Repository uses language-name directories: `cc/` for C++, `cs/` for C#. Following convention, Rust implementation goes in `rust/`. Explicit directive from qbradley.
+
+**Implications:**
+- All documentation references `rust/`, not `faster-rs/`
+- rustfmt nightly features (imports_granularity, group_imports) require `rustup run nightly cargo fmt --check` or accept warnings on stable
+
+---
+
+### 14. Rust CI Architecture (Task 1e)
+
+**Agent:** Rex (QA Engineer)  
+**Date:** 2026-03-05  
+**Status:** Implemented  
+**Impact:** All Rust development — CI pipeline for workspace
+
+**Decision:** Use GitHub Actions (not Azure Pipelines) for Rust CI, with 5 separate jobs: fmt, ci (3-OS matrix), miri, bench, deny.
+
+**Details:**
+1. **fmt** — Nightly rustfmt (imports_granularity, group_imports)
+2. **ci** — 3-OS matrix (ubuntu, windows, macos) with stable Rust; depends on fmt
+3. **miri** — Undefined behavior detection (continue-on-error: true; weekly + manual)
+4. **bench** — Criterion benchmarks (main-branch pushes only)
+5. **deny** — License audit + security advisory scan
+
+**Rationale:**
+1. GitHub Actions isolated from Azure Pipelines (C#/C++ toolchain overlap is zero)
+2. Nightly only for rustfmt (other jobs on stable for stability)
+3. Path filtering (`rust/**`) avoids firing on C++/C# changes
+4. Miri informational (expect unsafe code to appear; should inform, not block)
+5. Swatinem/rust-cache keeps CI fast with per-OS cache keys
+
+**Implications:**
+- All Rust PRs gated on fmt + clippy + test (debug/release) × 3 OSes
+- Bench provides regression baseline on main branch
+- Miri runs weekly (Sundays 06:00 UTC) + manual dispatch
+- cargo-deny continuous license/advisory monitoring
+
+---
+
 ## Governance
 
 - All meaningful changes require team consensus

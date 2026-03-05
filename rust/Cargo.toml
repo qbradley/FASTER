@@ -1,0 +1,41 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85.0"
+license = "MIT"
+repository = "https://github.com/microsoft/FASTER"
+homepage = "https://github.com/microsoft/FASTER"
+keywords = ["kv-store", "hash-map", "concurrent", "persistent", "high-performance"]
+categories = ["data-structures", "concurrency", "database-implementations"]
+
+[workspace.dependencies]
+# Core dependencies (minimal footprint)
+crossbeam-utils = "0.8"
+cfg-if = "1"
+
+# Async adapter dependencies
+tokio = { version = "1", features = ["rt", "sync", "io-util"] }
+
+# Device dependencies
+# (reserved for future io-uring, etc.)
+
+# FFI dependencies
+# (reserved for cbindgen integration)
+
+# Testing dependencies
+proptest = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3
+strip = "symbols"
+
+[profile.bench]
+inherits = "release"
+debug = true
+strip = "none"
