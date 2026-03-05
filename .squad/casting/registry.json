@@ -1,16 +1,95 @@
 {
   "agents": {
-    "thrawn": { "persistent_name": "Thrawn", "universe": "Star Wars", "created_at": "2026-03-05T16:39:47Z", "legacy_named": false, "status": "active" },
-    "grievous": { "persistent_name": "Grievous", "universe": "Star Wars", "created_at": "2026-03-05T16:39:47Z", "legacy_named": false, "status": "active" },
-    "dooku": { "persistent_name": "Dooku", "universe": "Star Wars", "created_at": "2026-03-05T16:39:47Z", "legacy_named": false, "status": "active" },
-    "mando": { "persistent_name": "Mando", "universe": "Star Wars", "created_at": "2026-03-05T16:39:47Z", "legacy_named": false, "status": "active" },
-    "chirrut": { "persistent_name": "Chirrut", "universe": "Star Wars", "created_at": "2026-03-05T16:39:47Z", "legacy_named": false, "status": "active" },
-    "cassian": { "persistent_name": "Cassian", "universe": "Star Wars", "created_at": "2026-03-05T16:39:47Z", "legacy_named": false, "status": "active" },
-    "tarkin": { "persistent_name": "Tarkin", "universe": "Star Wars", "created_at": "2026-03-05T16:39:47Z", "legacy_named": false, "status": "active" },
-    "maul": { "persistent_name": "Maul", "universe": "Star Wars", "created_at": "2026-03-05T16:39:47Z", "legacy_named": false, "status": "active" },
-    "ahsoka": { "persistent_name": "Ahsoka", "universe": "Star Wars", "created_at": "2026-03-05T16:39:47Z", "legacy_named": false, "status": "active" },
-    "rex": { "persistent_name": "Rex", "universe": "Star Wars", "created_at": "2026-03-05T16:39:47Z", "legacy_named": false, "status": "active" },
-    "jyn": { "persistent_name": "Jyn", "universe": "Star Wars", "created_at": "2026-03-05T16:39:47Z", "legacy_named": false, "status": "active" },
-    "kenobi": { "persistent_name": "Kenobi", "universe": "Star Wars", "created_at": "2026-03-05T16:39:47Z", "legacy_named": false, "status": "active" }
+    "thrawn": {
+      "persistent_name": "Thrawn",
+      "universe": "Star Wars",
+      "created_at": "2026-03-05T16:39:47Z",
+      "legacy_named": false,
+      "status": "active"
+    },
+    "grievous": {
+      "persistent_name": "Grievous",
+      "universe": "Star Wars",
+      "created_at": "2026-03-05T16:39:47Z",
+      "legacy_named": false,
+      "status": "active"
+    },
+    "dooku": {
+      "persistent_name": "Dooku",
+      "universe": "Star Wars",
+      "created_at": "2026-03-05T16:39:47Z",
+      "legacy_named": false,
+      "status": "active"
+    },
+    "mando": {
+      "persistent_name": "Mando",
+      "universe": "Star Wars",
+      "created_at": "2026-03-05T16:39:47Z",
+      "legacy_named": false,
+      "status": "active"
+    },
+    "chirrut": {
+      "persistent_name": "Chirrut",
+      "universe": "Star Wars",
+      "created_at": "2026-03-05T16:39:47Z",
+      "legacy_named": false,
+      "status": "active"
+    },
+    "cassian": {
+      "persistent_name": "Cassian",
+      "universe": "Star Wars",
+      "created_at": "2026-03-05T16:39:47Z",
+      "legacy_named": false,
+      "status": "active"
+    },
+    "tarkin": {
+      "persistent_name": "Tarkin",
+      "universe": "Star Wars",
+      "created_at": "2026-03-05T16:39:47Z",
+      "legacy_named": false,
+      "status": "active"
+    },
+    "maul": {
+      "persistent_name": "Maul",
+      "universe": "Star Wars",
+      "created_at": "2026-03-05T16:39:47Z",
+      "legacy_named": false,
+      "status": "active"
+    },
+    "ahsoka": {
+      "persistent_name": "Ahsoka",
+      "universe": "Star Wars",
+      "created_at": "2026-03-05T16:39:47Z",
+      "legacy_named": false,
+      "status": "active"
+    },
+    "rex": {
+      "persistent_name": "Rex",
+      "universe": "Star Wars",
+      "created_at": "2026-03-05T16:39:47Z",
+      "legacy_named": false,
+      "status": "active"
+    },
+    "jyn": {
+      "persistent_name": "Jyn",
+      "universe": "Star Wars",
+      "created_at": "2026-03-05T16:39:47Z",
+      "legacy_named": false,
+      "status": "active"
+    },
+    "kenobi": {
+      "persistent_name": "Kenobi",
+      "universe": "Star Wars",
+      "created_at": "2026-03-05T16:39:47Z",
+      "legacy_named": false,
+      "status": "active"
+    },
+    "leia": {
+      "persistent_name": "Leia",
+      "universe": "Star Wars",
+      "created_at": "2026-03-05T17:01:27Z",
+      "legacy_named": false,
+      "status": "active"
+    }
   }
 }

@@ -18,6 +18,7 @@ How to decide who handles what for the FASTER Rust implementation.
 | Testing, correctness, edge cases | Rex | Unit tests, integration tests, property-based tests, CI setup |
 | Deterministic simulation testing, fault injection | Jyn | Simulation harness, deterministic scheduling, failure scenario coverage |
 | Async integration, Tokio, runtime compat, C FFI | Kenobi | Runtime-agnostic async, Tokio integration, C header generation |
+| Documentation, samples, developer experience | Leia | Docs, examples, migration guides, adoption strategy, DX audit |
 | Code review (any domain) | Thrawn + domain expert | Architecture review + domain-specific correctness |
 | Session logging | Scribe | Automatic — never needs routing |
 

@@ -24,6 +24,7 @@
 | Rex | QA Engineer | `.squad/agents/rex/charter.md` | ✅ Active |
 | Jyn | Det. Simulation Testing Expert | `.squad/agents/jyn/charter.md` | ✅ Active |
 | Kenobi | Tokio/Async Expert | `.squad/agents/kenobi/charter.md` | ✅ Active |
+| Leia | Developer Advocate | `.squad/agents/leia/charter.md` | ✅ Active |
 | Scribe | Session Logger | `.squad/agents/scribe/charter.md` | 📋 Silent |
 | Ralph | Work Monitor | — | 🔄 Monitor |
 
