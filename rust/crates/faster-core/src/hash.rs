@@ -396,10 +396,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "power of two")]
     fn bucket_index_panics_on_non_power_of_two() {
         let kh = KeyHash::new(42);
-        let _ = kh.index(3); // 3 is not a power of two
+        let _ = kh.index(3); // 3 is not a power of two — debug_assert fires
     }
 
     // -----------------------------------------------------------------------
