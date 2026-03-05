@@ -157,3 +157,25 @@
 - `rust/crates/faster-core/src/allocator.rs` — full implementation (~700 lines)
 - `rust/crates/faster-core/benches/core_benchmarks.rs` — 2 new allocator benchmarks added
 
+---
+
+## 2026-03-07: Task 2b — Overflow Bucket Pool Completed (Chirrut)
+
+**What:** Implemented `OverflowBucketPool` and all overflow chain operations: allocation, resolution, deallocation, chain traversal, chain search, and chain insert. This bridges the allocator (1h) to the hash bucket (2c) to form a complete overflow chain mechanism.
+
+**Key design decisions:**
+- `OverflowBucketPool` is a thin wrapper around `MallocFixedPageSize<HashBucket>`. The pool's `allocate()` explicitly re-zeroes buckets after allocation to handle free-list reuse (stale entries). Fresh bump-allocated pages are already zeroed, but the redundant zeroing cost is negligible vs. the allocation itself.
+- `get_or_create_overflow()` is the critical concurrent operation: allocate → CAS → loser frees and uses winner's bucket. Memory ordering: `AcqRel`/`Acquire` on the overflow pointer CAS. `Release` semantics ensure the zeroed bucket is visible before the pointer is published; `Acquire` ensures readers see the fully-initialized bucket.
+- Chain traversal via `for_each_bucket()` uses `ControlFlow<T>` for early termination — zero-cost when the closure returns `Continue`. Walk is iterative (not recursive) to avoid stack growth on deep chains.
+- `insert_in_chain()` tries primary bucket first, then walks existing overflow chain, then allocates a new overflow via `get_or_create_overflow`. The rare recursive tail-call handles the case where concurrent insertions fill a freshly-allocated overflow before we can insert.
+- `find_entry_in_chain()` returns `(bucket_addr, slot_index, entry)` — `LogicalAddress::ZERO` for the primary bucket, otherwise the overflow bucket's pool address. This gives callers the information needed for future CAS updates on the entry.
+- Overflow chain methods live on `HashBucket` (not a separate helper) because they're integral to bucket semantics and need private access to `overflow_address`. The pool itself lives in a new `overflow.rs` module to keep hash_bucket.rs focused.
+
+**Quality:** 22 new overflow tests in hash_bucket.rs (15 unit + 1 concurrent race + 1 deep chain + 1 proptest), 7 new tests in overflow.rs (6 unit + 1 concurrent stress), 1 new proptest for chain insert of N>7 entries. 6 new criterion benchmarks (chain traversal at depth 0/1/2/5, find_entry_in_chain, insert_in_chain). All 332 lib tests + 58 doc tests pass. Clippy clean.
+
+**Artifacts:**
+- `rust/crates/faster-core/src/overflow.rs` — OverflowBucketPool implementation + tests
+- `rust/crates/faster-core/src/hash_bucket.rs` — overflow chain methods on HashBucket + tests + proptests
+- `rust/crates/faster-core/src/lib.rs` — `pub mod overflow;` added
+- `rust/crates/faster-core/benches/core_benchmarks.rs` — 6 new overflow chain benchmarks
+
