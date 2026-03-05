@@ -269,15 +269,15 @@ Both C++ and C# encode a hash bucket entry into a single 64-bit word. This is es
 **Bit layout:**
 
 ```
-  63    62    61     60..48          47..0
-┌─────┬─────┬─────┬──────────────┬───────────────────────────┐
-│  0  │  0  │ Ten │   Tag (14)   │   Address (48)            │
-└─────┴─────┴─────┴──────────────┴───────────────────────────┘
-        │      │       │                   │
-        │      │       │                   └─ Logical address in hybrid log
-        │      │       └─ Hash fingerprint for fast rejection
-        │      └─ Tentative bit: entry is being inserted (not yet committed)
-        └─ Reserved for read-cache bit (v2)
+  63    62     61..48          47..0
+┌─────┬─────┬──────────────┬───────────────────────────────┐
+│ Ten │ RC  │   Tag (14)   │   Address (48)                │
+└─────┴─────┴──────────────┴───────────────────────────────┘
+  │      │       │                   │
+  │      │       │                   └─ Logical address in hybrid log
+  │      │       └─ Hash fingerprint for fast rejection
+  │      └─ Reserved for read-cache bit (v2)
+  └─ Tentative bit: entry is being inserted (not yet committed)
 ```
 
 **Rust representation:**
@@ -290,7 +290,7 @@ struct HashBucketEntry(u64);
 impl HashBucketEntry {
     const ADDRESS_BITS: u32 = 48;
     const TAG_BITS: u32 = 14;
-    const TENTATIVE_BIT: u64 = 1 << 61;
+    const TENTATIVE_BIT: u64 = 1 << 63;
     const ADDRESS_MASK: u64 = (1u64 << 48) - 1;
     const TAG_MASK: u64 = ((1u64 << 14) - 1) << 48;
 
@@ -5692,7 +5692,7 @@ For variable-length types, keys and values are prefixed with a 4-byte length:
 **Decision:** Implement the hash index using Rust's `std::sync::atomic` types with compare-and-swap (CAS) loops for all mutations. The hash bucket is represented as `[AtomicU64; 8]` (64 bytes = 1 cache line).
 
 **Atomic patterns:**
-- **Insert:** CAS on the target entry slot. If tentative entry exists from another thread, retry. Use tentative bit (bit 0 of the entry) to reserve a slot before writing the full entry.
+- **Insert:** CAS on the target entry slot. If tentative entry exists from another thread, retry. Use tentative bit (bit 63 of the entry) to reserve a slot before writing the full entry.
 - **Delete:** Atomic store of `Address::kInvalidAddress` into the entry (or set invalid bit).
 - **Lookup:** Relaxed load of entry, then verify via tag comparison. If match, follow address into hybrid log.
 - **Overflow:** Allocate new overflow bucket from `MallocFixedPageSize`. CAS the overflow pointer (bucket[7]) to link the new bucket.
