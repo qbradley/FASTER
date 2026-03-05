@@ -201,3 +201,6 @@ cs/remote/.idea
 cs/libdpr/.idea
 
 cs/**/BenchmarkDotNet.Artifacts/
+# Squad: ignore generated logs
+.squad/orchestration-log/
+.squad/log/
