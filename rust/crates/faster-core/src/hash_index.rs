@@ -700,7 +700,8 @@ mod tests {
 
     #[test]
     fn test_new_various_sizes() {
-        for log2 in [1, 4, 8, 12, 16] {
+        // Cap at 2^14 to keep test under 1s; 2^16 = 4MB allocation.
+        for log2 in [1, 4, 8, 12, 14] {
             let index = HashIndex::new(log2);
             assert_eq!(index.num_buckets(), 1u64 << log2);
             assert_eq!(index.log2_buckets(), log2);

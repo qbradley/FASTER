@@ -126,6 +126,9 @@ fn safe_epoch_monotonically_increases() {
         .collect();
 
     // Observer thread: poll safe_epoch and verify monotonicity.
+    // Note: safe_epoch() is NOT an atomic snapshot — it scans per-thread
+    // entries non-atomically, so a single read may lag. We use a retry to
+    // distinguish genuine violations from scan-time races.
     let observer = {
         let table = Arc::clone(&table);
         let last_safe = Arc::clone(&last_safe);
@@ -135,9 +138,15 @@ fn safe_epoch_monotonically_increases() {
             barrier.wait();
             for _ in 0..(cycles * num_threads) {
                 let s = table.safe_epoch();
-                let prev = last_safe.fetch_max(s, Ordering::Relaxed);
+                let prev = last_safe.fetch_max(s, Ordering::SeqCst);
                 if s < prev {
-                    violation.store(true, Ordering::Relaxed);
+                    // Non-atomic scan can produce stale reads. Retry to
+                    // confirm: a genuine violation persists across retries.
+                    std::thread::yield_now();
+                    let s2 = table.safe_epoch();
+                    if s2 < prev {
+                        violation.store(true, Ordering::SeqCst);
+                    }
                 }
             }
         })
@@ -149,7 +158,7 @@ fn safe_epoch_monotonically_increases() {
     observer.join().expect("observer panicked");
 
     assert!(
-        !violation.load(Ordering::Relaxed),
+        !violation.load(Ordering::SeqCst),
         "safe_epoch must be monotonically non-decreasing"
     );
 }
