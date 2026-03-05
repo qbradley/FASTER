@@ -1110,7 +1110,7 @@ mod tests {
 
                     let mut created_count = 0u64;
                     for i in 0..ops_per_thread {
-                        let seed = (t as u64) * 10_000 + i;
+                        let seed = t * 10_000 + i;
                         let hash = make_hash(seed);
                         let addr = make_addr(t as u32, i as u32);
 
@@ -1133,7 +1133,7 @@ mod tests {
         // causing find_or_create to return an existing entry for one thread
         // while the other still got `created = true` from its CAS. The
         // entry_count may be slightly below `total` due to these collisions.
-        let expected = (num_threads * ops_per_thread) as u64;
+        let expected = num_threads * ops_per_thread;
         assert!(
             total >= expected - 10,
             "expected ~{expected} creates, got {total}",

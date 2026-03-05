@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn error_source_is_io_for_io_variant() {
-        let io = std::io::Error::new(std::io::ErrorKind::Other, "disk failure");
+        let io = std::io::Error::other("disk failure");
         let err = FasterError::Io(io);
         let source = std::error::Error::source(&err);
         assert!(source.is_some());
