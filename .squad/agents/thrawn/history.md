@@ -10,6 +10,20 @@
 
 <!-- Append new learnings below. Each entry is something lasting about the project. -->
 
+### 2026-03-05: MVP Iteration 1 Plan — Bottom-Up Foundation + Hash Index
+
+**What:** Created detailed bottom-up implementation plan for Phases 1 (Foundation) and 2 (Hash Index), decomposed into 16 concrete work items with dependency graphs, assignments, success criteria, and PAW candidacy assessment.
+
+**Key structural insight:** Bottom-up ordering revealed the true dependency chain: workspace → newtypes/status/hash-traits (parallel) → record format → epoch + allocator (parallel) → hash entry → bucket → hash table → concurrent ops. Maximum parallelism = 4 work streams in Phase 1, 2 in early Phase 2.
+
+**PAW candidates identified:** 5 items (1f Record Format, 1g Epoch, 1h Allocator, 2d Hash Table, 2e Concurrent Ops) — all contain unsafe code, complex concurrency, or both. Simple type definitions (newtypes, enums, thin wrappers) are better as direct implementation.
+
+**Critical dependency chain:** The epoch system (1g) and memory allocator (1h) are the two longest-pole items in Phase 1 at ~1–1.5 weeks each. They can run in parallel (Mando on epoch, Chirrut on allocator) but both block Phase 2's hash table.
+
+**Risk insight:** The tentative-bit CAS protocol in the hash index (2d/2e) is the most subtle concurrency algorithm in Iteration 1. Model-based property testing (shadow HashMap comparison) is the primary correctness verification strategy — not just stress testing.
+
+**Artifact:** `.squad/agents/thrawn/mvp-iteration-1-plan.md`
+
 ### 2026-03-05: Architecture Part 3 — Verification, Phasing, Decisions, Risks
 
 **What:** Authored Sections 11-14 of the Rust FASTER architecture document (Part 3 of 3).
