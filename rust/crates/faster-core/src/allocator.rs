@@ -315,15 +315,16 @@ impl<T> MallocFixedPageSize<T> {
     ///
     /// # Panics
     ///
-    /// Panics if `size_of::<T>() < 8`. The free list embeds a 8-byte next
-    /// pointer inside freed items, so `T` must be at least 8 bytes.
+    /// Panics if `size_of::<T>() < 8` or `align_of::<T>() < 8`. The free list
+    /// embeds a 8-byte next pointer inside freed items, so `T` must be at
+    /// least 8 bytes with at least 8-byte alignment.
     ///
     /// # Examples
     ///
     /// ```
     /// use faster_core::allocator::MallocFixedPageSize;
     ///
-    /// let alloc: MallocFixedPageSize<[u8; 64]> = MallocFixedPageSize::new();
+    /// let alloc: MallocFixedPageSize<[u64; 8]> = MallocFixedPageSize::new();
     /// let addr = alloc.allocate();
     /// assert!(addr.is_valid());
     /// ```
@@ -333,6 +334,12 @@ impl<T> MallocFixedPageSize<T> {
             "MallocFixedPageSize<T> requires size_of::<T>() >= 8 \
              (for free list linkage); got size_of::<T>() = {}",
             std::mem::size_of::<T>(),
+        );
+        assert!(
+            std::mem::align_of::<T>() >= std::mem::align_of::<u64>(),
+            "MallocFixedPageSize<T> requires align_of::<T>() >= 8 \
+             (free list writes u64 into freed items); got align_of::<T>() = {}",
+            std::mem::align_of::<T>(),
         );
 
         let dir = Box::into_raw(Box::new(PageDir::<T>::new(INITIAL_DIR_CAPACITY)));

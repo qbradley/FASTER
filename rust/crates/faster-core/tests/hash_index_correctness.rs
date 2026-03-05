@@ -346,10 +346,10 @@ fn gc_invalidate_entire_range() {
 }
 
 // ===========================================================================
-// 11. cleanup_tentative_entries removes stale tentative entries
+// 11. cleanup_tentative_entries_for_recovery removes stale tentative entries
 // ===========================================================================
 
-/// Leave some entries tentative, some committed. cleanup_tentative_entries
+/// Leave some entries tentative, some committed. cleanup_tentative_entries_for_recovery
 /// should only remove the tentative ones.
 #[test]
 fn cleanup_tentative_removes_only_tentative() {
@@ -371,7 +371,7 @@ fn cleanup_tentative_removes_only_tentative() {
 
     assert_eq!(index.entry_count(), 8);
 
-    let cleaned = index.cleanup_tentative_entries();
+    let cleaned = index.cleanup_tentative_entries_for_recovery();
     assert_eq!(cleaned, 3);
     assert_eq!(index.entry_count(), 5);
 

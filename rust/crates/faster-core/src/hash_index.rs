@@ -10,8 +10,9 @@
 //! - **GC integration** — [`invalidate_entries_in_range`](HashIndex::invalidate_entries_in_range)
 //!   scans the index and zeros entries whose addresses fall within a reclaimed
 //!   range, enabling hybrid-log page eviction.
-//! - **Maintenance** — [`cleanup_tentative_entries`](HashIndex::cleanup_tentative_entries)
-//!   removes stale tentative entries left by crashed or aborted inserts.
+//! - **Maintenance** — [`cleanup_tentative_entries_for_recovery`](HashIndex::cleanup_tentative_entries_for_recovery)
+//!   removes stale tentative entries left by crashed or aborted inserts
+//!   (recovery-only; not safe while insert sessions are active).
 //!
 //! # Epoch discipline
 //!
@@ -31,7 +32,7 @@
 //! | `update()`                      | CAS on `AtomicHashBucketEntry`                       |
 //! | `invalidate_entries_in_range()` | `InternalHashTable::InvalidateEntries()`             |
 //! | `register_thread()`             | `LightEpoch::register_thread()`                      |
-//! | `cleanup_tentative_entries()`   | Recovery-phase tentative cleanup                     |
+//! | `cleanup_tentative_entries_for_recovery()` | Recovery-phase tentative cleanup             |
 //!
 //! # Memory ordering
 //!
@@ -109,10 +110,15 @@ pub struct HashIndex {
 }
 
 impl HashIndex {
-    /// Creates a new hash index with `2^log2_size` buckets.
+    /// Creates a new **standalone** hash index with `2^log2_size` buckets.
     ///
-    /// Initializes both the hash table and epoch system. All buckets start
-    /// empty, the global epoch starts at 1.
+    /// Initializes both the hash table and a fresh [`EpochTable`]. All buckets
+    /// start empty, the global epoch starts at 1.
+    ///
+    /// Use this constructor when the hash index owns its own epoch lifecycle
+    /// (tests, benchmarks, standalone usage). When embedding the index inside
+    /// a larger system such as `FasterKv`, prefer [`with_epoch`](Self::with_epoch)
+    /// so that all subsystems share a single epoch table.
     ///
     /// # Panics
     ///
@@ -129,9 +135,39 @@ impl HashIndex {
     /// assert_eq!(index.entry_count(), 0);
     /// ```
     pub fn new(log2_size: u32) -> Self {
+        Self::with_epoch(log2_size, Arc::new(EpochTable::new()))
+    }
+
+    /// Creates a hash index with `2^log2_size` buckets using an
+    /// externally-provided [`EpochTable`].
+    ///
+    /// This constructor is intended for use inside composite structures like
+    /// `FasterKv`, where a single [`EpochTable`] must be shared across the
+    /// hash index, hybrid log, and other subsystems. The caller retains an
+    /// `Arc` clone and passes one in here; all components then participate in
+    /// the same epoch lifecycle.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `log2_size` is outside [`HashTable::MIN_LOG2_SIZE`]..=[`HashTable::MAX_LOG2_SIZE`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use faster_core::epoch::EpochTable;
+    /// use faster_core::hash_index::HashIndex;
+    ///
+    /// let shared_epoch = Arc::new(EpochTable::new());
+    /// let index = HashIndex::with_epoch(8, Arc::clone(&shared_epoch));
+    ///
+    /// // The index uses the same epoch table, not a private copy.
+    /// assert!(Arc::ptr_eq(&index.epoch_arc(), &shared_epoch));
+    /// ```
+    pub fn with_epoch(log2_size: u32, epoch: Arc<EpochTable>) -> Self {
         Self {
             table: HashTable::new(log2_size),
-            epoch: Arc::new(EpochTable::new()),
+            epoch,
         }
     }
 
@@ -403,30 +439,53 @@ impl HashIndex {
     // Maintenance: tentative entry cleanup
     // -----------------------------------------------------------------------
 
-    /// Scans all buckets and removes stale tentative entries.
+    /// Scans all buckets and removes stale tentative entries left by crashed
+    /// or aborted insert operations during recovery.
     ///
     /// Any entry with the tentative bit set is CAS'd to [`HashBucketEntry::EMPTY`].
-    /// This cleans up entries left by aborted or crashed insert operations.
-    ///
     /// Returns the count of successfully cleaned entries.
+    ///
+    /// # Safety — recovery-only precondition
+    ///
+    /// **This method MUST only be called during recovery, when no insert
+    /// sessions are active.** It is NOT safe to call concurrently with
+    /// active [`find_or_create`](Self::find_or_create) operations.
+    ///
+    /// The two-phase insert protocol (see [`HashTable::find_or_create_entry`])
+    /// deliberately leaves entries in the tentative state between phase 1
+    /// (reservation) and phase 2 (commit). An entry being tentative does NOT
+    /// mean it is abandoned — it may belong to an in-flight insert that has
+    /// not yet called [`update`](Self::update) to clear the tentative bit.
+    ///
+    /// If this method runs concurrently with active inserters, the CAS can
+    /// race with an in-flight insert and delete a live tentative entry,
+    /// causing **silent data loss**: the inserter's subsequent commit CAS
+    /// will fail (the slot is now EMPTY), and the record will be lost from
+    /// the index with no error reported.
+    ///
+    /// The CAS-failure guard (Relaxed on failure) only protects against
+    /// entries that were *committed* between load and CAS — it cannot
+    /// distinguish a still-tentative in-flight entry from a genuinely
+    /// abandoned one.
     ///
     /// # When to call
     ///
-    /// - During recovery after a crash (tentative entries from incomplete inserts).
-    /// - As periodic maintenance (though stale tentatives are rare in practice).
+    /// - During recovery after a crash — no sessions are active, so all
+    ///   remaining tentative entries are genuinely orphaned.
+    /// - After draining all sessions and ensuring no in-flight operations
+    ///   remain (e.g., during controlled shutdown).
     ///
-    /// This is NOT on the hot path — O(total_entries) scan.
+    /// Do **not** use as periodic background maintenance while the store is
+    /// serving operations — there is no way to distinguish live in-flight
+    /// tentative entries from abandoned ones without session-level tracking.
     ///
-    /// # Concurrency
+    /// # Performance
     ///
-    /// Safe to call concurrently with other operations. CAS failures are
-    /// expected if a concurrent insert commits its tentative entry between
-    /// our load and CAS — that's correct behavior (we don't want to clean
-    /// an entry that was just committed).
+    /// O(total_entries) full-table scan. Not on the hot path.
     ///
     /// # Memory ordering
     ///
-    /// - Load with `Acquire`: see fully committed tentative entries.
+    /// - Load with `Acquire`: see the latest value including tentative bit.
     /// - CAS with `AcqRel` / `Relaxed`: same rationale as `invalidate_entries_in_range`.
     ///
     /// # Examples
@@ -446,14 +505,14 @@ impl HashIndex {
     /// assert!(r.created);
     /// assert!(r.entry.is_tentative());
     ///
-    /// // Clean up tentative entries.
-    /// let count = index.cleanup_tentative_entries();
+    /// // In recovery (no active sessions), clean up tentative entries.
+    /// let count = index.cleanup_tentative_entries_for_recovery();
     /// assert_eq!(count, 1);
     ///
     /// // Entry is now gone.
     /// assert!(index.find(hash).is_none());
     /// ```
-    pub fn cleanup_tentative_entries(&self) -> u64 {
+    pub fn cleanup_tentative_entries_for_recovery(&self) -> u64 {
         let mut cleaned = 0u64;
         let pool = self.table.overflow_pool();
 
@@ -646,6 +705,21 @@ mod tests {
             assert_eq!(index.num_buckets(), 1u64 << log2);
             assert_eq!(index.log2_buckets(), log2);
         }
+    }
+
+    #[test]
+    fn test_with_epoch_shares_epoch_table() {
+        let shared_epoch = Arc::new(EpochTable::new());
+        let index = HashIndex::with_epoch(8, Arc::clone(&shared_epoch));
+
+        // The index must use the exact same allocation, not a copy.
+        assert!(Arc::ptr_eq(&index.epoch_arc(), &shared_epoch));
+
+        // Operations through the index are visible via the shared handle.
+        let thread = index.register_thread().expect("should register");
+        assert_eq!(shared_epoch.registered_count(), 1);
+        drop(thread);
+        assert_eq!(shared_epoch.registered_count(), 0);
     }
 
     #[test]
@@ -949,7 +1023,7 @@ mod tests {
     #[test]
     fn test_cleanup_tentative_empty_table() {
         let index = test_index();
-        assert_eq!(index.cleanup_tentative_entries(), 0);
+        assert_eq!(index.cleanup_tentative_entries_for_recovery(), 0);
     }
 
     #[test]
@@ -966,7 +1040,7 @@ mod tests {
         }
 
         assert_eq!(index.entry_count(), 3);
-        let cleaned = index.cleanup_tentative_entries();
+        let cleaned = index.cleanup_tentative_entries_for_recovery();
         assert_eq!(cleaned, 3);
         assert_eq!(index.entry_count(), 0);
     }
@@ -992,7 +1066,7 @@ mod tests {
         assert_eq!(index.entry_count(), 2);
 
         // Cleanup should only remove the tentative one.
-        let cleaned = index.cleanup_tentative_entries();
+        let cleaned = index.cleanup_tentative_entries_for_recovery();
         assert_eq!(cleaned, 1);
         assert_eq!(index.entry_count(), 1);
 

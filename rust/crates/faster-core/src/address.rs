@@ -225,7 +225,10 @@ impl LogicalAddress {
     pub const fn new(page: Page, offset: Offset) -> Self {
         debug_assert!(page.0 <= MAX_PAGE, "page exceeds MAX_PAGE");
         debug_assert!(offset.0 <= MAX_OFFSET, "offset exceeds MAX_OFFSET");
-        Self(((page.0 as u64) << OFFSET_BITS) | (offset.0 as u64))
+        // Mask inputs to valid ranges for defense-in-depth in release builds.
+        let p = (page.0 as u64) & (MAX_PAGE as u64);
+        let o = (offset.0 as u64) & (MAX_OFFSET as u64);
+        Self((p << OFFSET_BITS) | o)
     }
 
     /// Creates a `LogicalAddress` from a raw `u64` value.

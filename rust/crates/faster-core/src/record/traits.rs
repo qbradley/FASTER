@@ -32,7 +32,8 @@ use crate::hash::Hashable;
 /// assert_eq!(key.serialized_size(), 8);
 ///
 /// let mut buf = vec![0u8; 8];
-/// key.serialize(&mut buf);
+/// let written = key.serialize(&mut buf);
+/// assert_eq!(written, 8);
 /// let restored = u64::deserialize(&buf);
 /// assert_eq!(restored, 42);
 /// ```
@@ -43,7 +44,8 @@ pub trait Key: Hashable + Eq + Clone + Send + Sync + 'static {
     /// Serializes this key into `buf`.
     ///
     /// The buffer must be at least `self.serialized_size()` bytes.
-    fn serialize(&self, buf: &mut [u8]);
+    /// Returns the number of bytes written.
+    fn serialize(&self, buf: &mut [u8]) -> usize;
 
     /// Deserializes a key from the start of `buf`.
     fn deserialize(buf: &[u8]) -> Self;
@@ -63,7 +65,8 @@ pub trait Key: Hashable + Eq + Clone + Send + Sync + 'static {
 /// assert_eq!(value.serialized_size(), 8);
 ///
 /// let mut buf = vec![0u8; 8];
-/// value.serialize(&mut buf);
+/// let written = value.serialize(&mut buf);
+/// assert_eq!(written, 8);
 /// let restored = u64::deserialize(&buf);
 /// assert_eq!(restored, 999);
 /// ```
@@ -74,7 +77,8 @@ pub trait Value: Clone + Send + Sync + 'static {
     /// Serializes this value into `buf`.
     ///
     /// The buffer must be at least `self.serialized_size()` bytes.
-    fn serialize(&self, buf: &mut [u8]);
+    /// Returns the number of bytes written.
+    fn serialize(&self, buf: &mut [u8]) -> usize;
 
     /// Deserializes a value from the start of `buf`.
     fn deserialize(buf: &[u8]) -> Self;
@@ -109,9 +113,10 @@ macro_rules! impl_key_value_for_numeric {
             }
 
             #[inline]
-            fn serialize(&self, buf: &mut [u8]) {
+            fn serialize(&self, buf: &mut [u8]) -> usize {
                 let bytes = self.to_le_bytes();
                 buf[..bytes.len()].copy_from_slice(&bytes);
+                bytes.len()
             }
 
             #[inline]
@@ -135,9 +140,10 @@ macro_rules! impl_key_value_for_numeric {
             }
 
             #[inline]
-            fn serialize(&self, buf: &mut [u8]) {
+            fn serialize(&self, buf: &mut [u8]) -> usize {
                 let bytes = self.to_le_bytes();
                 buf[..bytes.len()].copy_from_slice(&bytes);
+                bytes.len()
             }
 
             #[inline]
@@ -170,10 +176,11 @@ impl Key for Vec<u8> {
         LENGTH_PREFIX_SIZE + self.len()
     }
 
-    fn serialize(&self, buf: &mut [u8]) {
+    fn serialize(&self, buf: &mut [u8]) -> usize {
         let len = self.len() as u32;
         buf[..LENGTH_PREFIX_SIZE].copy_from_slice(&len.to_le_bytes());
         buf[LENGTH_PREFIX_SIZE..LENGTH_PREFIX_SIZE + self.len()].copy_from_slice(self);
+        LENGTH_PREFIX_SIZE + self.len()
     }
 
     fn deserialize(buf: &[u8]) -> Self {
@@ -192,10 +199,11 @@ impl Value for Vec<u8> {
         LENGTH_PREFIX_SIZE + self.len()
     }
 
-    fn serialize(&self, buf: &mut [u8]) {
+    fn serialize(&self, buf: &mut [u8]) -> usize {
         let len = self.len() as u32;
         buf[..LENGTH_PREFIX_SIZE].copy_from_slice(&len.to_le_bytes());
         buf[LENGTH_PREFIX_SIZE..LENGTH_PREFIX_SIZE + self.len()].copy_from_slice(self);
+        LENGTH_PREFIX_SIZE + self.len()
     }
 
     fn deserialize(buf: &[u8]) -> Self {
@@ -216,10 +224,11 @@ impl Key for String {
         LENGTH_PREFIX_SIZE + self.len()
     }
 
-    fn serialize(&self, buf: &mut [u8]) {
+    fn serialize(&self, buf: &mut [u8]) -> usize {
         let len = self.len() as u32;
         buf[..LENGTH_PREFIX_SIZE].copy_from_slice(&len.to_le_bytes());
         buf[LENGTH_PREFIX_SIZE..LENGTH_PREFIX_SIZE + self.len()].copy_from_slice(self.as_bytes());
+        LENGTH_PREFIX_SIZE + self.len()
     }
 
     fn deserialize(buf: &[u8]) -> Self {
@@ -239,10 +248,11 @@ impl Value for String {
         LENGTH_PREFIX_SIZE + self.len()
     }
 
-    fn serialize(&self, buf: &mut [u8]) {
+    fn serialize(&self, buf: &mut [u8]) -> usize {
         let len = self.len() as u32;
         buf[..LENGTH_PREFIX_SIZE].copy_from_slice(&len.to_le_bytes());
         buf[LENGTH_PREFIX_SIZE..LENGTH_PREFIX_SIZE + self.len()].copy_from_slice(self.as_bytes());
+        LENGTH_PREFIX_SIZE + self.len()
     }
 
     fn deserialize(buf: &[u8]) -> Self {

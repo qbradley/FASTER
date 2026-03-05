@@ -270,7 +270,7 @@ impl HashTable {
     ///    is found, invalidate our tentative entry and return the existing one.
     /// 6. Return with `created = true` if our tentative entry stands.
     ///
-    /// # Two-phase protocol
+    /// # Two-phase protocol — tentative → committed lifecycle
     ///
     /// The returned entry (when `created = true`) has the tentative bit set.
     /// The caller must:
@@ -280,6 +280,17 @@ impl HashTable {
     ///
     /// If the insert must be aborted, CAS the tentative entry back to
     /// [`HashBucketEntry::EMPTY`].
+    ///
+    /// **Between steps 1 and 2, the entry is intentionally tentative.** Any
+    /// external process that removes tentative entries (e.g., recovery
+    /// cleanup) MUST NOT run concurrently with active insert sessions.
+    /// Doing so can race with in-flight inserts: the cleanup CAS may delete
+    /// a live tentative entry before the inserter commits it, causing silent
+    /// data loss. See [`HashIndex::cleanup_tentative_entries_for_recovery`]
+    /// for details.
+    ///
+    /// Lookups ([`find_entry`](Self::find_entry)) skip tentative entries, so
+    /// partially-inserted records are never visible to readers.
     ///
     /// # Convergence guarantee
     ///

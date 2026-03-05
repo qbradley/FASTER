@@ -163,8 +163,11 @@ impl HashBucketEntry {
             address.raw() <= ADDRESS_MASK,
             "address exceeds 48 bits"
         );
-        let mut bits = address.raw();
-        bits |= (tag as u64) << TAG_SHIFT;
+        // Mask inputs to valid ranges for defense-in-depth in release builds.
+        let masked_tag = (tag & MAX_TAG) as u64;
+        let masked_addr = address.raw() & ADDRESS_MASK;
+        let mut bits = masked_addr;
+        bits |= masked_tag << TAG_SHIFT;
         if tentative {
             bits |= TENTATIVE_BIT;
         }
@@ -849,39 +852,32 @@ impl HashBucket {
         address: LogicalAddress,
         pool: &crate::overflow::OverflowBucketPool,
     ) -> Result<(), ()> {
-        // Try the primary bucket first.
-        if self.try_insert(tag, address).is_ok() {
-            return Ok(());
-        }
-
-        // Walk existing overflow chain.
         let mut current: &HashBucket = self;
+
         loop {
-            let overflow_addr = current.overflow_address.load(Ordering::Acquire);
-            if overflow_addr == LogicalAddress::ZERO {
-                // No more overflow buckets — need to create one.
-                break;
-            }
-            let overflow = pool.get(overflow_addr);
-            if overflow.try_insert(tag, address).is_ok() {
+            // Try every slot in this bucket.
+            if current.try_insert(tag, address).is_ok() {
                 return Ok(());
             }
-            current = overflow;
-        }
 
-        // All existing buckets are full. Create overflow and insert.
-        // `get_or_create_overflow` handles the race where two threads both
-        // try to create the overflow bucket — one wins, one reuses.
-        let new_overflow = current.get_or_create_overflow(pool);
-        // Try inserting into the new overflow. If this fails (extremely rare:
-        // another thread filled all 7 slots between our create and insert),
-        // recurse into the chain from the new overflow.
-        if new_overflow.try_insert(tag, address).is_ok() {
-            return Ok(());
+            // Walk to next overflow bucket if it exists.
+            let overflow_addr = current.overflow_address.load(Ordering::Acquire);
+            if overflow_addr != LogicalAddress::ZERO {
+                current = pool.get(overflow_addr);
+                continue;
+            }
+
+            // No overflow bucket — create one and try inserting there.
+            // `get_or_create_overflow` handles the race where two threads
+            // both try to create: one wins, the other reuses.
+            let new_overflow = current.get_or_create_overflow(pool);
+            if new_overflow.try_insert(tag, address).is_ok() {
+                return Ok(());
+            }
+            // Extremely rare: the new overflow was immediately filled by
+            // concurrent insertions. Continue iterating from it.
+            current = new_overflow;
         }
-        // Recursive case: the new overflow is already full (concurrent
-        // insertions). Continue from the new overflow.
-        new_overflow.insert_in_chain(tag, address, pool)
     }
 }
 
