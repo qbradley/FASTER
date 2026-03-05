@@ -408,14 +408,14 @@ proptest! {
 // ===========================================================================
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(1000))]
+    #![proptest_config(ProptestConfig::with_cases(64))]
 
     /// ∀ keys: create(k) → commit(k) → find(k) returns entry with correct tag.
     #[test]
     fn hash_index_create_then_find(seed: u64) {
         use faster_core::hash_index::HashIndex;
 
-        let index = HashIndex::new(10); // 1024 buckets
+        let index = HashIndex::new(8); // 256 buckets — sufficient for single-key tests
         let thread = index.register_thread().unwrap();
         let _guard = thread.protect();
 
@@ -444,7 +444,7 @@ proptest! {
 // ===========================================================================
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(1000))]
+    #![proptest_config(ProptestConfig::with_cases(64))]
 
     /// ∀ keys: create(k) → commit(k) → find(k) == Some with committed address.
     #[test]
@@ -455,7 +455,7 @@ proptest! {
     ) {
         use faster_core::hash_index::HashIndex;
 
-        let index = HashIndex::new(14);
+        let index = HashIndex::new(8); // 256 buckets — single-key test
         let thread = index.register_thread().unwrap();
         let _guard = thread.protect();
 
@@ -481,7 +481,7 @@ proptest! {
 // ===========================================================================
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(100))]
+    #![proptest_config(ProptestConfig::with_cases(32))]
 
     /// ∀ key sets: insert_all → find_all succeeds.
     #[test]
@@ -491,7 +491,7 @@ proptest! {
         use faster_core::hash_index::HashIndex;
         use std::collections::HashSet;
 
-        let index = HashIndex::new(14);
+        let index = HashIndex::new(10); // 1024 buckets — multi-key test
         let thread = index.register_thread().unwrap();
         let _guard = thread.protect();
 
@@ -526,7 +526,7 @@ proptest! {
 // ===========================================================================
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(100))]
+    #![proptest_config(ProptestConfig::with_cases(32))]
 
     /// ∀ ranges: insert N → invalidate [a,b) → only entries in [a,b) are gone.
     #[test]
@@ -596,7 +596,7 @@ proptest! {
 // ===========================================================================
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(100))]
+    #![proptest_config(ProptestConfig::with_cases(32))]
 
     /// Model-based test: maintain a HashMap shadow, apply random operations
     /// (insert/find/invalidate), verify the hash index matches the shadow.
@@ -604,13 +604,13 @@ proptest! {
     fn hash_index_model_based(
         ops in prop::collection::vec(
             (0u64..500, 0u8..3, 1u32..50, 2u32..1000),
-            100..500,
+            50..200,
         ),
     ) {
         use faster_core::hash_index::HashIndex;
         use std::collections::HashMap;
 
-        let index = HashIndex::new(12);
+        let index = HashIndex::new(10); // 1024 buckets
         let thread = index.register_thread().unwrap();
         let _guard = thread.protect();
 

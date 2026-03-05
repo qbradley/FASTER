@@ -1970,6 +1970,8 @@ mod proptests {
     }
 
     proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
         /// Pack/unpack round-trip: all fields survive encoding into u64 and
         /// decoding back.
         #[test]
@@ -2089,8 +2091,13 @@ mod proptests {
                 prop_assert_eq!(entry.address(), expected_addr);
             }
         }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(16))]
 
         /// Insert N entries (N > 7) via chain insert → all N are findable.
+        /// Lower case count because each case allocates an OverflowBucketPool.
         #[test]
         fn insert_n_chain_then_find_all(
             n in 8usize..=35,

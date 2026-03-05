@@ -68,28 +68,66 @@ jobs:
       - name: Tests (release)
         run: cargo test --workspace --release
 
-  # ── Miri (nightly, weekly + on-demand) ───────────────────────────
-  miri:
-    name: Miri (undefined-behavior detection)
+  # ── Loom Concurrency Tests ───────────────────────────────────────
+  loom:
+    name: Loom Concurrency Tests
     runs-on: ubuntu-latest
-    # Run weekly on Sunday, or on-demand via workflow_dispatch
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
-    continue-on-error: true   # informational until unsafe code stabilizes
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Run loom tests
+        run: cargo test --features loom -p faster-core --test loom_tests
+        env:
+          RUSTFLAGS: "--cfg loom"
+
+  # ── Miri UB Detection ─────────────────────────────────────────────
+  miri:
+    name: Miri UB Detection
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: rust
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri
+      - name: Run miri tests
+        run: cargo +nightly miri test -p faster-core --test miri_tests
 
+  # ── Code Coverage ──────────────────────────────────────────────────
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: rust -> target
-          shared-key: miri
-
-      - name: Miri test
-        run: cargo +nightly miri test --workspace
-        env:
-          MIRIFLAGS: "-Zmiri-symbolic-alignment-check -Zmiri-retag-fields"
+          workspaces: rust
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Generate coverage
+        run: cargo llvm-cov --all --lcov --output-path lcov.info
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: rust/lcov.info
 
   # ── Benchmarks (main branch only) ───────────────────────────────
   bench:

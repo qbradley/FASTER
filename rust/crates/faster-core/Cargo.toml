@@ -11,9 +11,13 @@ keywords = ["kv-store", "hash-map", "concurrent", "epoch", "hybrid-log"]
 categories.workspace = true
 publish = false
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
 [dependencies]
 crossbeam-utils = { workspace = true }
 cfg-if = { workspace = true }
+loom = { version = "0.7", optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
@@ -25,6 +29,8 @@ default = []
 paranoid = []
 # Enable metrics collection (operation counters, cache-hit rates)
 metrics = []
+# Enable loom-based deterministic concurrency testing
+loom = ["dep:loom"]
 
 [[bench]]
 name = "core_benchmarks"

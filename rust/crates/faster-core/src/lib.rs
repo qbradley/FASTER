@@ -22,6 +22,8 @@
 #![warn(missing_docs)]
 #![forbid(clippy::undocumented_unsafe_blocks)]
 
+pub(crate) mod sync;
+
 pub mod address;
 pub mod allocator;
 pub mod device;

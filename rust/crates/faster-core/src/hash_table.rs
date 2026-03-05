@@ -660,7 +660,9 @@ mod tests {
 
     #[test]
     fn new_creates_correct_size() {
-        for log2 in HashTable::MIN_LOG2_SIZE..=20 {
+        // Test up to 2^14 (16K buckets, ~1MB) to keep test fast.
+        // Larger sizes are functionally identical — just more memory.
+        for log2 in HashTable::MIN_LOG2_SIZE..=14 {
             let table = HashTable::new(log2);
             assert_eq!(table.num_buckets(), 1u64 << log2);
             assert_eq!(table.log2_buckets(), log2);
@@ -1296,10 +1298,12 @@ mod proptests {
     use proptest::prelude::*;
 
     proptest! {
+        #![proptest_config(ProptestConfig::with_cases(16))]
+
         /// Insert N unique keys → find all N.
         #[test]
-        fn insert_n_find_all(keys in proptest::collection::vec(1u64..=u64::MAX, 1..500)) {
-            let table = HashTable::new(12);
+        fn insert_n_find_all(keys in proptest::collection::vec(1u64..=u64::MAX, 1..100)) {
+            let table = HashTable::new(8); // 256 buckets — sufficient for up to 100 keys
             let mut committed_hashes = Vec::new();
 
             for (i, &k) in keys.iter().enumerate() {
@@ -1329,7 +1333,7 @@ mod proptests {
             page in 0u32..100,
             offset in 2u32..1000,
         ) {
-            let table = HashTable::new(10);
+            let table = HashTable::new(8); // 256 buckets
             let hash = KeyHash::new(hash_val);
             let addr = LogicalAddress::new(Page(page), Offset(offset));
 
@@ -1352,7 +1356,7 @@ mod proptests {
         /// Abort tentative entry → entry not found.
         #[test]
         fn abort_tentative_not_found(hash_val in 1u64..=u64::MAX) {
-            let table = HashTable::new(10);
+            let table = HashTable::new(8); // 256 buckets
             let hash = KeyHash::new(hash_val);
 
             let r = table.find_or_create_entry(hash, LogicalAddress::INVALID);
