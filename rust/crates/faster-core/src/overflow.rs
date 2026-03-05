@@ -109,6 +109,12 @@ impl OverflowBucketPool {
             .overflow_address()
             .store(LogicalAddress::ZERO, Ordering::Relaxed);
 
+        // Ensure all zeroed entries are visible before this bucket is installed
+        // into an overflow chain (via a Release store of the overflow pointer).
+        // Without this fence, a concurrent reader on ARM/POWER could observe
+        // stale entry data from the bucket's previous lifetime.
+        core::sync::atomic::fence(Ordering::Release);
+
         addr
     }
 

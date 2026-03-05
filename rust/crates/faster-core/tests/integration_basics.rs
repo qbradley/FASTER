@@ -79,7 +79,7 @@ fn record_info_mutation_chain() {
 // ===========================================================================
 
 /// A 128-byte item (large enough for a small record).
-#[repr(C)]
+#[repr(C, align(8))]
 struct RecordSlot {
     data: [u8; 128],
 }

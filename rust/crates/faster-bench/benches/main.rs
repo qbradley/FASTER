@@ -7,7 +7,7 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 // ---------------------------------------------------------------------------
 
 /// 128-byte item for allocator benchmarks.
-#[repr(C)]
+#[repr(C, align(8))]
 struct RecordSlot {
     data: [u8; 128],
 }
