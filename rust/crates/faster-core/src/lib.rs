@@ -30,10 +30,10 @@ pub mod device;
 pub mod epoch;
 pub mod error;
 pub mod hash;
-pub mod hash_bucket;
-pub mod hash_index;
-pub mod hash_table;
-pub mod overflow;
+pub use self::hash::bucket as hash_bucket;
+pub use self::hash::index as hash_index;
+pub use self::hash::overflow;
+pub use self::hash::table as hash_table;
 pub mod record;
 pub mod status;
 
