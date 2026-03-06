@@ -10,6 +10,8 @@
 
 pub mod log_allocator;
 pub mod page;
+pub mod regions;
 
 pub use log_allocator::HybridLogAllocator;
 pub use page::{AtomicPageState, PageFrame, PageState, PageTable};
+pub use regions::{AddressInfo, AddressRegion};
