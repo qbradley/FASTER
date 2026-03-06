@@ -265,6 +265,7 @@ impl HashIndex {
         hash: KeyHash,
         initial_address: LogicalAddress,
     ) -> FindOrCreateResult<'_> {
+        trace_span!("hash_lookup");
         self.table.find_or_create_entry(hash, initial_address)
     }
 
@@ -313,6 +314,7 @@ impl HashIndex {
         old: HashBucketEntry,
         new: HashBucketEntry,
     ) -> bool {
+        trace_span!("hash_update");
         self.table.update_entry(slot, old, new)
     }
 

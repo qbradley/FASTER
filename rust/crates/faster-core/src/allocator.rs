@@ -477,6 +477,7 @@ impl<T> MallocFixedPageSize<T> {
     ///
     /// Panics on address-space exhaustion (> 8 million pages × 1 million items).
     pub fn allocate(&self) -> LogicalAddress {
+        trace_span!("allocator_alloc");
         // Fast path: try the free list first.
         if let Some(addr) = self.pop_free_list() {
             return addr;
@@ -564,6 +565,7 @@ impl<T> MallocFixedPageSize<T> {
     /// - No thread will access the item after this call (enforced by epoch
     ///   protection at a higher level).
     pub fn free(&self, addr: LogicalAddress) {
+        trace_span!("allocator_free");
         if let Some(ref epoch) = self.epoch {
             // Epoch-gated: defer the free-list push until all threads have
             // advanced past the current epoch, preventing ABA.

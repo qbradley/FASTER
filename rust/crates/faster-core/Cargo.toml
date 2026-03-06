@@ -12,12 +12,13 @@ categories.workspace = true
 publish = false
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(feature, values("tracing"))'] }
 
 [dependencies]
 crossbeam-utils = { workspace = true }
 cfg-if = { workspace = true }
 loom = { version = "0.7", optional = true }
+tracing = { version = "0.1", optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
@@ -31,6 +32,8 @@ paranoid = []
 metrics = []
 # Enable loom-based deterministic concurrency testing
 loom = ["dep:loom"]
+# Enable tracing spans/events for observability (zero overhead when disabled)
+tracing = ["dep:tracing"]
 
 [[bench]]
 name = "core_benchmarks"
