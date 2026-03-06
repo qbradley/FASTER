@@ -3,28 +3,85 @@
 //! These tests verify that upsert, RMW, and delete operations on records that
 //! have been evicted to disk are properly completed when the async I/O finishes.
 //!
-//! Each page is 32 MiB and a `u64+u64` record is 24 bytes, so we need
-//! millions of records to span multiple pages and trigger eviction.
+//! **Performance note:** Pages are 32 MiB (compile-time constant). To trigger
+//! eviction quickly, we use a 4 KiB padded value type so each record fills
+//! ~4 KiB instead of 24 bytes. This means ~8K records per page instead of
+//! ~1.4M, reducing the fill from 7M records (~18s) to ~40K records (<1s).
 
 use faster_core::InMemoryDevice;
 use faster_core::grow::GrowConfig;
 use faster_core::hybrid_log::EvictionPolicy;
+use faster_core::record::Value;
 use faster_core::status::OperationStatus;
-use faster_core::store::{CounterFunctions, FasterKv, FasterKvConfig, SimpleFunctions};
+use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
 
-/// Number of records needed to fill ~5 pages and force eviction.
-/// Each page = 32 MiB, each record (u64, u64) = 24 bytes.
-/// ~1.4M records per page × 5 pages ≈ 7M records.
-const RECORD_COUNT: u64 = 7_000_000;
+// ── Padded value type for fast page filling ──────────────────────────
 
-/// Create an in-memory-device-backed store.
-///
-/// Uses `InMemoryDevice` which completes I/O synchronously — no async
-/// timing issues. Pages flush instantly to the device's internal buffer.
-fn test_store() -> FasterKv<SimpleFunctions<u64, u64>> {
+const PAD_SIZE: usize = 4096;
+
+/// A 4 KiB value that carries a `u64` payload in its first 8 bytes.
+/// The padding ensures each record fills ~4 KiB, so pages fill with
+/// far fewer records than tiny `u64` values.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+struct BigVal {
+    payload: u64,
+    _pad: [u8; PAD_SIZE - 8],
+}
+
+impl Default for BigVal {
+    fn default() -> Self {
+        Self {
+            payload: 0,
+            _pad: [0u8; PAD_SIZE - 8],
+        }
+    }
+}
+
+impl std::fmt::Debug for BigVal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BigVal")
+            .field("payload", &self.payload)
+            .finish()
+    }
+}
+
+impl BigVal {
+    fn new(v: u64) -> Self {
+        Self {
+            payload: v,
+            _pad: [0u8; PAD_SIZE - 8],
+        }
+    }
+}
+
+impl Value for BigVal {
+    fn serialized_size(&self) -> usize {
+        PAD_SIZE
+    }
+
+    fn serialize(&self, buf: &mut [u8]) -> usize {
+        buf[..8].copy_from_slice(&self.payload.to_le_bytes());
+        buf[8..PAD_SIZE].fill(0);
+        PAD_SIZE
+    }
+
+    fn deserialize(buf: &[u8]) -> Self {
+        let payload = u64::from_le_bytes(buf[..8].try_into().unwrap());
+        Self::new(payload)
+    }
+}
+
+/// Number of records to fill ~5 pages and force eviction.
+/// Each page = 32 MiB, each record ≈ 4 KiB → ~8192 records/page.
+/// 5 pages × 8192 ≈ 40960 records.
+const RECORD_COUNT: u64 = 42_000;
+
+/// Create an in-memory-device-backed store with BigVal values.
+fn test_store() -> FasterKv<SimpleFunctions<u64, BigVal>> {
     let config = FasterKvConfig {
         grow_config: GrowConfig::default(),
-        hash_index_size_log2: 22, // 4M buckets
+        hash_index_size_log2: 18, // 256K buckets (smaller — fewer keys)
         buffer_size_pages: 8,
         mutable_fraction: 0.5,
         sector_size: 512,
@@ -36,31 +93,14 @@ fn test_store() -> FasterKv<SimpleFunctions<u64, u64>> {
     FasterKv::new(config, SimpleFunctions::default(), InMemoryDevice::new())
 }
 
-/// Create an in-memory-device-backed counter store.
-fn counter_test_store() -> FasterKv<CounterFunctions<u64>> {
-    let config = FasterKvConfig {
-        grow_config: GrowConfig::default(),
-        hash_index_size_log2: 22,
-        buffer_size_pages: 8,
-        mutable_fraction: 0.5,
-        sector_size: 512,
-        eviction_policy: EvictionPolicy {
-            max_in_memory_pages: 4,
-            eviction_batch_size: 4,
-        },
-    };
-    FasterKv::new(config, CounterFunctions::new(), InMemoryDevice::new())
-}
-
 /// Insert records then force eviction via maintenance.
-fn fill_then_evict<F: faster_core::store::Functions>(
-    store: &FasterKv<F>,
-    session: &mut faster_core::store::FasterSession<F>,
+fn fill_then_evict(
+    store: &FasterKv<SimpleFunctions<u64, BigVal>>,
+    session: &mut faster_core::store::FasterSession<SimpleFunctions<u64, BigVal>>,
     count: u64,
-    mut insert_fn: impl FnMut(&FasterKv<F>, &mut faster_core::store::FasterSession<F>, u64),
 ) {
     for i in 0..count {
-        insert_fn(store, session, i);
+        let _ = store.upsert(session, &i, &BigVal::new(i * 7), ());
     }
     // With InMemoryDevice, flush completes synchronously. Each maintenance
     // cycle shifts RO, flushes sealed pages (instantly), and evicts flushed.
@@ -70,14 +110,14 @@ fn fill_then_evict<F: faster_core::store::Functions>(
 }
 
 /// Find a key that is currently evicted (on-disk).
-fn find_evicted_key<F: faster_core::store::Functions>(
-    store: &FasterKv<F>,
-    session: &mut faster_core::store::FasterSession<F>,
+fn find_evicted_key(
+    store: &FasterKv<SimpleFunctions<u64, BigVal>>,
+    session: &mut faster_core::store::FasterSession<SimpleFunctions<u64, BigVal>>,
     range: std::ops::Range<u64>,
-    read_fn: impl Fn(&FasterKv<F>, &mut faster_core::store::FasterSession<F>, u64) -> OperationStatus,
 ) -> Option<u64> {
     for i in range {
-        let status = read_fn(store, session, i);
+        let mut out: Option<BigVal> = None;
+        let status = store.read(session, &i, &BigVal::default(), &mut out, ());
         if status == OperationStatus::Pending {
             // Drain this pending read so it doesn't interfere.
             let _ = store.try_complete_pending(session, true);
@@ -97,19 +137,14 @@ fn test_upsert_on_disk_record() {
     let mut s = store.new_session();
 
     // Fill then evict.
-    fill_then_evict(&store, &mut s, RECORD_COUNT, |st, sess, i| {
-        let _ = st.upsert(sess, &i, &(i * 7), ());
-    });
+    fill_then_evict(&store, &mut s, RECORD_COUNT);
 
     // Find an evicted key (scan early keys — they're the oldest).
-    let target_key = find_evicted_key(&store, &mut s, 0..RECORD_COUNT, |st, sess, i| {
-        let mut out: Option<u64> = None;
-        st.read(sess, &i, &0u64, &mut out, ())
-    })
-    .expect("expected at least one evicted key");
+    let target_key = find_evicted_key(&store, &mut s, 0..RECORD_COUNT)
+        .expect("expected at least one evicted key");
 
     // Upsert a new value to the evicted key.
-    let new_value = 999_999u64;
+    let new_value = BigVal::new(999_999);
     let status = store.upsert(&mut s, &target_key, &new_value, ());
     assert_eq!(
         status,
@@ -122,24 +157,24 @@ fn test_upsert_on_disk_record() {
     assert!(result.is_done(), "all pending ops should be done");
 
     // Read back — the upserted value must be visible.
-    let mut out: Option<u64> = None;
-    let status = store.read(&mut s, &target_key, &0u64, &mut out, ());
+    let mut out: Option<BigVal> = None;
+    let status = store.read(&mut s, &target_key, &BigVal::default(), &mut out, ());
     match status {
         OperationStatus::Ok => {
             assert_eq!(
-                out,
-                Some(new_value),
+                out.map(|v| v.payload),
+                Some(999_999),
                 "upsert on disk record should have written new value"
             );
         }
         OperationStatus::Pending => {
             let _ = store.try_complete_pending(&mut s, true);
-            let mut out2: Option<u64> = None;
-            let status2 = store.read(&mut s, &target_key, &0u64, &mut out2, ());
+            let mut out2: Option<BigVal> = None;
+            let status2 = store.read(&mut s, &target_key, &BigVal::default(), &mut out2, ());
             assert_eq!(status2, OperationStatus::Ok);
             assert_eq!(
-                out2,
-                Some(new_value),
+                out2.map(|v| v.payload),
+                Some(999_999),
                 "upsert on disk record: new value after pending read"
             );
         }
@@ -155,26 +190,20 @@ fn test_upsert_on_disk_record() {
 
 #[test]
 fn test_rmw_on_disk_record() {
-    let store = counter_test_store();
+    let store = test_store();
     let mut s = store.new_session();
 
-    // Fill then evict. CounterFunctions uses rmw.
-    fill_then_evict(&store, &mut s, RECORD_COUNT, |st, sess, i| {
-        let mut out = 0i64;
-        let _ = st.rmw(sess, &i, &(i as i64), &mut out, ());
-    });
+    // Fill then evict.
+    fill_then_evict(&store, &mut s, RECORD_COUNT);
 
     // Find an evicted key.
-    let target_key = find_evicted_key(&store, &mut s, 0..RECORD_COUNT, |st, sess, i| {
-        let mut out = 0i64;
-        st.read(sess, &i, &0i64, &mut out, ())
-    })
-    .expect("expected at least one evicted key");
+    let target_key = find_evicted_key(&store, &mut s, 0..RECORD_COUNT)
+        .expect("expected at least one evicted key");
 
-    // Apply RMW (add 100) to the evicted key.
-    let delta = 100i64;
-    let mut rmw_out = 0i64;
-    let status = store.rmw(&mut s, &target_key, &delta, &mut rmw_out, ());
+    // Apply RMW to the evicted key — SimpleFunctions replaces the value.
+    let new_value = BigVal::new(42_42_42);
+    let mut rmw_out: Option<BigVal> = None;
+    let status = store.rmw(&mut s, &target_key, &new_value, &mut rmw_out, ());
     assert_eq!(
         status,
         OperationStatus::Pending,
@@ -185,25 +214,26 @@ fn test_rmw_on_disk_record() {
     let result = store.try_complete_pending(&mut s, true);
     assert!(result.is_done(), "all pending ops should be done");
 
-    // Read back — the counter should be old_value + delta.
-    let expected = target_key as i64 + delta;
-    let mut read_out = 0i64;
-    let status = store.read(&mut s, &target_key, &0i64, &mut read_out, ());
+    // Read back — the RMW should have replaced the value.
+    let mut read_out: Option<BigVal> = None;
+    let status = store.read(&mut s, &target_key, &BigVal::default(), &mut read_out, ());
     match status {
         OperationStatus::Ok => {
             assert_eq!(
-                read_out, expected,
-                "RMW on disk record: expected {expected}, got {read_out}"
+                read_out.map(|v| v.payload),
+                Some(42_42_42),
+                "RMW on disk record: expected new payload"
             );
         }
         OperationStatus::Pending => {
             let _ = store.try_complete_pending(&mut s, true);
-            let mut read_out2 = 0i64;
-            let status2 = store.read(&mut s, &target_key, &0i64, &mut read_out2, ());
+            let mut read_out2: Option<BigVal> = None;
+            let status2 = store.read(&mut s, &target_key, &BigVal::default(), &mut read_out2, ());
             assert_eq!(status2, OperationStatus::Ok);
             assert_eq!(
-                read_out2, expected,
-                "RMW on disk record (after pending read): expected {expected}, got {read_out2}"
+                read_out2.map(|v| v.payload),
+                Some(42_42_42),
+                "RMW on disk record (after pending read): expected new payload"
             );
         }
         other => panic!("unexpected read status: {other:?}"),
@@ -222,16 +252,11 @@ fn test_delete_on_disk_record() {
     let mut s = store.new_session();
 
     // Fill then evict.
-    fill_then_evict(&store, &mut s, RECORD_COUNT, |st, sess, i| {
-        let _ = st.upsert(sess, &i, &(i * 7), ());
-    });
+    fill_then_evict(&store, &mut s, RECORD_COUNT);
 
     // Find an evicted key.
-    let target_key = find_evicted_key(&store, &mut s, 0..RECORD_COUNT, |st, sess, i| {
-        let mut out: Option<u64> = None;
-        st.read(sess, &i, &0u64, &mut out, ())
-    })
-    .expect("expected at least one evicted key");
+    let target_key = find_evicted_key(&store, &mut s, 0..RECORD_COUNT)
+        .expect("expected at least one evicted key");
 
     // Delete the evicted key.
     let status = store.delete(&mut s, &target_key, ());
@@ -247,24 +272,25 @@ fn test_delete_on_disk_record() {
 
     // Read back — the key should be gone (NotFound) or the tombstone
     // should be visible after completing pending reads.
-    let mut out: Option<u64> = None;
-    let status = store.read(&mut s, &target_key, &0u64, &mut out, ());
+    let mut out: Option<BigVal> = None;
+    let status = store.read(&mut s, &target_key, &BigVal::default(), &mut out, ());
     match status {
         OperationStatus::NotFound => { /* correct */ }
         OperationStatus::Ok => {
             panic!(
                 "deleted key {target_key} should be NotFound, got Ok({:?})",
-                out
+                out.map(|v| v.payload)
             );
         }
         OperationStatus::Pending => {
             let _ = store.try_complete_pending(&mut s, true);
-            let mut out2: Option<u64> = None;
-            let status2 = store.read(&mut s, &target_key, &0u64, &mut out2, ());
+            let mut out2: Option<BigVal> = None;
+            let status2 = store.read(&mut s, &target_key, &BigVal::default(), &mut out2, ());
             assert_eq!(
                 status2,
                 OperationStatus::NotFound,
-                "deleted key should be NotFound after completion, got {status2:?} val={out2:?}"
+                "deleted key should be NotFound after completion, got {status2:?} val={:?}",
+                out2.map(|v| v.payload)
             );
         }
         other => panic!("unexpected read status: {other:?}"),
