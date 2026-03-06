@@ -10,10 +10,15 @@
 //! The [`index_recovery`] submodule provides [`IndexRecoveryEngine`] for
 //! restoring the hash index from a binary checkpoint file.
 //!
+//! The [`log_recovery`] submodule provides [`LogRecoveryEngine`] for
+//! restoring the hybrid log from a fold-over checkpoint.
+//!
 //! [`CheckpointMetadataStore`]: crate::checkpoint::CheckpointMetadataStore
 //! [`IndexRecoveryEngine`]: index_recovery::IndexRecoveryEngine
+//! [`LogRecoveryEngine`]: log_recovery::LogRecoveryEngine
 
 pub mod index_recovery;
+pub mod log_recovery;
 
 use std::fmt;
 use std::path::PathBuf;
