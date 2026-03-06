@@ -281,7 +281,7 @@ impl<F: Functions> FasterKv<F> {
     /// use faster_core::NullDevice;
     ///
     /// let store: FasterKv<SimpleFunctions<u64, u64>> =
-    ///     FasterKv::builder()
+    ///     FasterKv::<SimpleFunctions<u64, u64>>::builder()
     ///         .hash_index_size_log2(16)
     ///         .mutable_fraction(0.9)
     ///         .build(SimpleFunctions::default(), NullDevice::new())

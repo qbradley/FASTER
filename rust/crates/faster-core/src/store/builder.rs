@@ -12,7 +12,7 @@
 //! use faster_core::NullDevice;
 //!
 //! let store: FasterKv<SimpleFunctions<u64, u64>> =
-//!     FasterKv::<TestFunctions>::builder()
+//!     FasterKv::<SimpleFunctions<u64, u64>>::builder()
 //!         .hash_index_size_log2(16)
 //!         .buffer_size_pages(8)
 //!         .mutable_fraction(0.9)
@@ -29,7 +29,7 @@ use crate::store::kv::{FasterKv, FasterKvConfig};
 
 /// A builder for constructing [`FasterKv`] instances with validation.
 ///
-/// Obtain a builder via [`FasterKv::<TestFunctions>::builder()`], configure it with fluent
+/// Obtain a builder via [`FasterKv::builder()`], configure it with fluent
 /// method chaining, then call [`build()`](Self::build) to create the store.
 ///
 /// All fields have sensible defaults matching [`FasterKvConfig::default()`].
@@ -41,7 +41,7 @@ use crate::store::kv::{FasterKv, FasterKvConfig};
 /// use faster_core::NullDevice;
 ///
 /// let store: FasterKv<SimpleFunctions<u64, u64>> =
-///     FasterKv::<TestFunctions>::builder()
+///     FasterKv::<SimpleFunctions<u64, u64>>::builder()
 ///         .hash_index_size_log2(16)
 ///         .mutable_fraction(0.9)
 ///         .build(SimpleFunctions::default(), NullDevice::new())
@@ -189,10 +189,10 @@ impl FasterKvBuilder {
     /// use faster_core::store::{FasterKv, SimpleFunctions};
     /// use faster_core::NullDevice;
     ///
-    /// let result = FasterKv::<TestFunctions>::builder()
+    /// let result = FasterKv::<SimpleFunctions<u64, u64>>::builder()
     ///     .hash_index_size_log2(2) // too small
-    ///     .build::<SimpleFunctions<u64, u64>>(
-    ///         SimpleFunctions::default(),
+    ///     .build(
+    ///         SimpleFunctions::<u64, u64>::default(),
     ///         NullDevice::new(),
     ///     );
     /// assert!(result.is_err());

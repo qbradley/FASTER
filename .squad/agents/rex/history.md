@@ -172,3 +172,20 @@
 
 ---
 
+
+## 2026-03-06: AI-7 — thread::sleep Audit in faster-core
+
+**What:** Audited all `thread::sleep` usage across `faster-core` (src, tests, benches).
+
+**Findings:**
+- **Zero sleeps in test code.** The retrospective goal is already met — no test code uses `thread::sleep`.
+- **Zero sleeps in benchmark code.**
+- **Two sleeps in production code, both justified:**
+  1. `src/checkpoint/orchestrator.rs:282` — 1ms poll loop waiting for flush completion with a deadline timeout. Proper polling pattern for I/O wait.
+  2. `src/store/kv.rs:263` — 1ms poll loop in `Drop` impl waiting for in-flight I/O before device close. Necessary cleanup pattern.
+
+**No changes required.** Both production sleeps are short (1ms), bounded by deadlines, and are standard I/O polling patterns where no better signaling mechanism is available from the underlying APIs.
+
+**Validation:** 1161 tests pass, clippy clean.
+
+**Learning:** The write_pending_completion tests (previously 18.5s, now ~2s each) use proper synchronization — no sleeps. The convention "no thread::sleep in tests" is already upheld.
