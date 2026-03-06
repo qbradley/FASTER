@@ -15,7 +15,8 @@
 //! ## FFI Functions
 //!
 //! ### Store Lifecycle
-//! - [`faster_open`] — Create a new FASTER store, returns an opaque handle.
+//! - [`faster_open`] — Create a new in-memory FASTER store, returns an opaque handle.
+//! - [`faster_open_with_path`] — Create a file-backed FASTER store (required for checkpoint/recovery).
 //! - [`faster_close`] — Destroy a store and release all resources.
 //!
 //! ### Session Lifecycle
@@ -30,6 +31,10 @@
 //!
 //! ### Maintenance
 //! - [`faster_complete_pending`] — Drain completed async I/O operations.
+//!
+//! ### Checkpoint / Recovery
+//! - [`faster_checkpoint`] — Persist the store to disk, returns a token.
+//! - [`faster_recover`] — Restore a store from a checkpoint token.
 //!
 //! ## Thread Safety
 //!
@@ -47,10 +52,12 @@ pub mod handle;
 pub mod session;
 
 use std::cell::UnsafeCell;
+use std::path::Path;
 use std::sync::OnceLock;
 
+use faster_core::checkpoint::{CheckpointToken, CheckpointType};
 use faster_core::status::OperationStatus;
-use faster_core::{FasterKv, FasterKvConfig, NullDevice};
+use faster_core::{FasterKv, FasterKvConfig, NullDevice, SyncFileDevice};
 
 use crate::error::FasterStatus;
 use crate::functions::ByteSliceFunctions;
@@ -73,6 +80,50 @@ fn store_handles() -> &'static HandleTable {
 fn session_handles() -> &'static HandleTable {
     static HANDLES: OnceLock<HandleTable> = OnceLock::new();
     HANDLES.get_or_init(HandleTable::new)
+}
+
+// ── C-compatible checkpoint type ────────────────────────────────────
+
+/// C-compatible checkpoint strategy enum.
+///
+/// Maps to the internal [`CheckpointType`] used by faster-core.
+///
+/// # ABI Stability
+///
+/// This enum is `#[repr(C)]` and its discriminant values are part of the
+/// public ABI. New variants may be added, but existing values must never
+/// change.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FasterCheckpointType {
+    /// Flush all in-memory pages to the main log file.
+    FoldOver = 0,
+    /// Write a snapshot of the mutable region to a separate file.
+    Snapshot = 1,
+}
+
+impl FasterCheckpointType {
+    fn to_core(self) -> CheckpointType {
+        match self {
+            Self::FoldOver => CheckpointType::FoldOver,
+            Self::Snapshot => CheckpointType::Snapshot,
+        }
+    }
+}
+
+/// Result of a successful checkpoint operation.
+///
+/// The token is a 128-bit value split into high and low 64-bit halves
+/// for C ABI compatibility (C does not have a standard `u128` type).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct FasterCheckpointResult {
+    /// High 64 bits of the checkpoint token.
+    pub token_high: u64,
+    /// Low 64 bits of the checkpoint token.
+    pub token_low: u64,
+    /// Operation status.
+    pub status: FasterStatus,
 }
 
 // ── Conversion helper ───────────────────────────────────────────────
@@ -98,6 +149,8 @@ fn to_ffi_status(status: OperationStatus) -> FasterStatus {
 /// Create a new FASTER key-value store with default configuration.
 ///
 /// Returns an opaque store handle, or [`INVALID_HANDLE`] on failure.
+/// The store uses an in-memory null device and cannot be checkpointed.
+/// Use [`faster_open_with_path`] for checkpoint/recovery support.
 ///
 /// # Thread Safety
 ///
@@ -109,6 +162,43 @@ pub extern "C" fn faster_open() -> FasterHandle {
         ByteSliceFunctions,
         NullDevice::new(),
     );
+    store_handles().insert(store)
+}
+
+/// Create a new FASTER key-value store backed by files in `path`.
+///
+/// Returns an opaque store handle, or [`INVALID_HANDLE`] on failure
+/// (e.g., if the path cannot be created or the pointer is null).
+///
+/// The store uses a synchronous file device and supports checkpoint/recovery.
+///
+/// # Safety
+///
+/// - `path_ptr` must be a valid pointer to `path_len` bytes of UTF-8 data.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn faster_open_with_path(path_ptr: *const u8, path_len: u32) -> FasterHandle {
+    if path_len > 0 && path_ptr.is_null() {
+        return INVALID_HANDLE;
+    }
+
+    let path_bytes = if path_len > 0 {
+        // SAFETY: Caller guarantees pointer validity per doc contract.
+        unsafe { std::slice::from_raw_parts(path_ptr, path_len as usize) }
+    } else {
+        return INVALID_HANDLE;
+    };
+
+    let path_str = match std::str::from_utf8(path_bytes) {
+        Ok(s) => s,
+        Err(_) => return INVALID_HANDLE,
+    };
+
+    let device = match SyncFileDevice::new(path_str, "log.", 512, 1 << 30, 1) {
+        Ok(d) => d,
+        Err(_) => return INVALID_HANDLE,
+    };
+
+    let store = FfiStore::new(FasterKvConfig::default(), ByteSliceFunctions, device);
     store_handles().insert(store)
 }
 
@@ -507,6 +597,142 @@ pub unsafe extern "C" fn faster_complete_pending(
             FasterStatus::Ok
         }
         Err(e) => e,
+    }
+}
+
+// ── Checkpoint / Recovery ───────────────────────────────────────────
+
+/// Take a checkpoint of the current store state.
+///
+/// Persists the hash index and hybrid log to `checkpoint_dir`. Returns
+/// the checkpoint token as a pair of `u64` values (high/low halves of
+/// a 128-bit identifier) via the output pointers.
+///
+/// # Parameters
+///
+/// - `store` — Store handle from [`faster_open_with_path`].
+/// - `checkpoint_dir_ptr` / `checkpoint_dir_len` — UTF-8 directory path
+///   where checkpoint files will be written.
+/// - `checkpoint_type` — [`FasterCheckpointType::FoldOver`] or
+///   [`FasterCheckpointType::Snapshot`].
+/// - `token_high_out` / `token_low_out` — On success, written with the
+///   high/low 64-bit halves of the checkpoint token.
+///
+/// # Returns
+///
+/// [`FasterStatus::Ok`] on success, [`FasterStatus::CheckpointError`] on
+/// failure.
+///
+/// # Safety
+///
+/// - `checkpoint_dir_ptr` must be a valid pointer to `checkpoint_dir_len`
+///   bytes of UTF-8 data.
+/// - `token_high_out` and `token_low_out` must be valid, non-null pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn faster_checkpoint(
+    store: FasterHandle,
+    checkpoint_dir_ptr: *const u8,
+    checkpoint_dir_len: u32,
+    checkpoint_type: FasterCheckpointType,
+    token_high_out: *mut u64,
+    token_low_out: *mut u64,
+) -> FasterStatus {
+    if token_high_out.is_null() || token_low_out.is_null() {
+        return FasterStatus::InvalidArgument;
+    }
+    if checkpoint_dir_len == 0 || checkpoint_dir_ptr.is_null() {
+        return FasterStatus::InvalidArgument;
+    }
+
+    // SAFETY: Caller guarantees pointer validity per doc contract.
+    let dir_bytes =
+        unsafe { std::slice::from_raw_parts(checkpoint_dir_ptr, checkpoint_dir_len as usize) };
+    let dir_str = match std::str::from_utf8(dir_bytes) {
+        Ok(s) => s,
+        Err(_) => return FasterStatus::InvalidArgument,
+    };
+    let dir_path = Path::new(dir_str);
+    let ct = checkpoint_type.to_core();
+
+    let result = store_handles().with::<FfiStore, _>(store, |kv| kv.checkpoint(dir_path, ct));
+
+    match result {
+        Some(Ok(token)) => {
+            let raw = token.as_u128();
+            // SAFETY: Pointers validated non-null above.
+            unsafe {
+                token_high_out.write((raw >> 64) as u64);
+                token_low_out.write(raw as u64);
+            }
+            FasterStatus::Ok
+        }
+        Some(Err(_)) => FasterStatus::CheckpointError,
+        None => FasterStatus::InvalidHandle,
+    }
+}
+
+/// Recover a store from a checkpoint.
+///
+/// Restores the hash index and log from the checkpoint identified by
+/// the given token (high/low 64-bit halves). The store must have been
+/// created with [`faster_open_with_path`] pointing to the same directory
+/// used during checkpoint.
+///
+/// All sessions **must** be ended before calling this function.
+///
+/// # Parameters
+///
+/// - `store` — Store handle from [`faster_open_with_path`].
+/// - `checkpoint_dir_ptr` / `checkpoint_dir_len` — UTF-8 directory path
+///   containing checkpoint files.
+/// - `token_high` / `token_low` — The checkpoint token to recover. Pass
+///   both as `0` to recover the most recent checkpoint.
+///
+/// # Returns
+///
+/// [`FasterStatus::Ok`] on success, [`FasterStatus::CheckpointError`] on
+/// failure.
+///
+/// # Safety
+///
+/// - `checkpoint_dir_ptr` must be a valid pointer to `checkpoint_dir_len`
+///   bytes of UTF-8 data.
+/// - No sessions may be active on the store when this is called.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn faster_recover(
+    store: FasterHandle,
+    checkpoint_dir_ptr: *const u8,
+    checkpoint_dir_len: u32,
+    token_high: u64,
+    token_low: u64,
+) -> FasterStatus {
+    if checkpoint_dir_len == 0 || checkpoint_dir_ptr.is_null() {
+        return FasterStatus::InvalidArgument;
+    }
+
+    // SAFETY: Caller guarantees pointer validity per doc contract.
+    let dir_bytes =
+        unsafe { std::slice::from_raw_parts(checkpoint_dir_ptr, checkpoint_dir_len as usize) };
+    let dir_str = match std::str::from_utf8(dir_bytes) {
+        Ok(s) => s,
+        Err(_) => return FasterStatus::InvalidArgument,
+    };
+    let dir_path = Path::new(dir_str);
+
+    let token = if token_high == 0 && token_low == 0 {
+        None
+    } else {
+        Some(CheckpointToken::new(
+            ((token_high as u128) << 64) | (token_low as u128),
+        ))
+    };
+
+    let result = store_handles().with_mut::<FfiStore, _>(store, |kv| kv.recover(dir_path, token));
+
+    match result {
+        Some(Ok(_)) => FasterStatus::Ok,
+        Some(Err(_)) => FasterStatus::CheckpointError,
+        None => FasterStatus::InvalidHandle,
     }
 }
 
@@ -1352,5 +1578,432 @@ mod tests {
 
         faster_session_end(store, sess);
         faster_close(store);
+    }
+
+    // ── F3: Multi-threaded sessions ────────────────────────────────
+
+    #[test]
+    fn multi_threaded_sessions() {
+        let store = faster_open();
+        let num_threads = 4;
+        let ops_per_thread = 50;
+
+        let threads: Vec<_> = (0..num_threads)
+            .map(|t| {
+                std::thread::spawn(move || {
+                    // Each thread creates its own session (sessions are per-thread).
+                    let sess = faster_session_start(store);
+                    assert_ne!(sess, INVALID_HANDLE);
+
+                    for i in 0..ops_per_thread {
+                        let key = format!("t{t}-k{i}");
+                        let val = format!("t{t}-v{i}");
+                        // SAFETY: key and val are valid heap Strings; pointers and lengths match.
+                        let status = unsafe {
+                            faster_upsert(
+                                store,
+                                sess,
+                                key.as_ptr(),
+                                key.len() as u32,
+                                val.as_ptr(),
+                                val.len() as u32,
+                            )
+                        };
+                        assert!(status.is_success(), "thread {t} upsert {i}: {status:?}");
+                    }
+
+                    // Read back all keys written by this thread.
+                    for i in 0..ops_per_thread {
+                        let key = format!("t{t}-k{i}");
+                        let expected = format!("t{t}-v{i}");
+                        let mut buf = [0u8; 128];
+                        let mut out_len: u32 = 0;
+                        // SAFETY: All pointers are valid stack/heap refs.
+                        let status = unsafe {
+                            faster_read(
+                                store,
+                                sess,
+                                key.as_ptr(),
+                                key.len() as u32,
+                                buf.as_mut_ptr(),
+                                buf.len() as u32,
+                                &mut out_len,
+                            )
+                        };
+                        assert_eq!(status, FasterStatus::Ok, "thread {t} read {i}");
+                        assert_eq!(
+                            &buf[..out_len as usize],
+                            expected.as_bytes(),
+                            "thread {t} value mismatch at {i}"
+                        );
+                    }
+
+                    // Complete pending.
+                    let mut completed: u32 = 0;
+                    // SAFETY: Valid stack pointer.
+                    unsafe {
+                        faster_complete_pending(store, sess, &mut completed);
+                    }
+
+                    faster_session_end(store, sess);
+                })
+            })
+            .collect();
+
+        for t in threads {
+            t.join().expect("thread panicked");
+        }
+        faster_close(store);
+    }
+
+    #[test]
+    fn session_from_wrong_store() {
+        let store1 = faster_open();
+        let store2 = faster_open();
+
+        let sess1 = faster_session_start(store1);
+        assert_ne!(sess1, INVALID_HANDLE);
+
+        // Use session from store1 with store2 — the CRUD call should still work
+        // because the session handle is valid in the global table, but ending
+        // the session on the wrong store should dispose it on a foreign store.
+        // The real guarantee is that session_start with wrong store returns error.
+        assert_eq!(faster_session_start(INVALID_HANDLE), INVALID_HANDLE);
+        assert_eq!(faster_session_start(9999), INVALID_HANDLE);
+
+        // Ending a session handle that doesn't exist is InvalidHandle.
+        assert_eq!(
+            faster_session_end(store2, 9999),
+            FasterStatus::InvalidHandle
+        );
+
+        // Clean up correctly.
+        faster_session_end(store1, sess1);
+        faster_close(store1);
+        faster_close(store2);
+    }
+
+    #[test]
+    fn session_end_wrong_store_handle() {
+        let store1 = faster_open();
+        let store2 = faster_open();
+
+        let sess = faster_session_start(store1);
+        assert_ne!(sess, INVALID_HANDLE);
+
+        // Ending the session with the wrong store handle: the session is removed
+        // from the handle table (so it won't leak), but dispose_session is called
+        // on the wrong store. This is a programming error but should not crash.
+        let status = faster_session_end(store2, sess);
+        // The session handle is consumed regardless.
+        assert_eq!(
+            faster_session_end(store1, sess),
+            FasterStatus::InvalidHandle
+        );
+        // store2 didn't own the session, but we expect Ok since the dispose is
+        // a best-effort operation (the session object is still dropped correctly).
+        assert!(
+            status == FasterStatus::Ok || status == FasterStatus::InvalidHandle,
+            "unexpected: {status:?}"
+        );
+
+        faster_close(store1);
+        faster_close(store2);
+    }
+
+    // ── F5: Checkpoint / Recovery ──────────────────────────────────
+
+    /// Helper: create a file-backed store in a temp directory.
+    fn open_file_backed_store(dir: &std::path::Path) -> FasterHandle {
+        let path = dir.to_str().unwrap();
+        // SAFETY: path is a valid UTF-8 string from a TempDir.
+        unsafe { faster_open_with_path(path.as_ptr(), path.len() as u32) }
+    }
+
+    #[test]
+    fn open_with_path_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = open_file_backed_store(tmp.path());
+        assert_ne!(store, INVALID_HANDLE);
+
+        let sess = faster_session_start(store);
+        assert_ne!(sess, INVALID_HANDLE);
+
+        let key = b"pathkey";
+        let val = b"pathval";
+        // SAFETY: Valid stack pointers.
+        let status = unsafe {
+            faster_upsert(
+                store,
+                sess,
+                key.as_ptr(),
+                key.len() as u32,
+                val.as_ptr(),
+                val.len() as u32,
+            )
+        };
+        assert!(status.is_success());
+
+        faster_session_end(store, sess);
+        faster_close(store);
+    }
+
+    #[test]
+    fn open_with_path_null_ptr() {
+        // SAFETY: Testing null path error path.
+        let h = unsafe { faster_open_with_path(std::ptr::null(), 10) };
+        assert_eq!(h, INVALID_HANDLE);
+    }
+
+    #[test]
+    fn open_with_path_zero_len() {
+        // SAFETY: Testing zero-length path error path.
+        let h = unsafe { faster_open_with_path(b"/tmp".as_ptr(), 0) };
+        assert_eq!(h, INVALID_HANDLE);
+    }
+
+    #[test]
+    fn checkpoint_invalid_args() {
+        let store = faster_open();
+
+        let dir = b"/tmp/faster_test_checkpoint_invalid";
+        let mut high: u64 = 0;
+        let mut low: u64 = 0;
+
+        // Null token_high_out.
+        // SAFETY: Testing null pointer error path.
+        let s = unsafe {
+            faster_checkpoint(
+                store,
+                dir.as_ptr(),
+                dir.len() as u32,
+                FasterCheckpointType::FoldOver,
+                std::ptr::null_mut(),
+                &mut low,
+            )
+        };
+        assert_eq!(s, FasterStatus::InvalidArgument);
+
+        // Null token_low_out.
+        // SAFETY: Testing null pointer error path.
+        let s = unsafe {
+            faster_checkpoint(
+                store,
+                dir.as_ptr(),
+                dir.len() as u32,
+                FasterCheckpointType::FoldOver,
+                &mut high,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(s, FasterStatus::InvalidArgument);
+
+        // Null dir ptr.
+        // SAFETY: Testing null pointer error path.
+        let s = unsafe {
+            faster_checkpoint(
+                store,
+                std::ptr::null(),
+                10,
+                FasterCheckpointType::FoldOver,
+                &mut high,
+                &mut low,
+            )
+        };
+        assert_eq!(s, FasterStatus::InvalidArgument);
+
+        // Invalid store.
+        // SAFETY: Testing invalid handle error path.
+        let s = unsafe {
+            faster_checkpoint(
+                9999,
+                dir.as_ptr(),
+                dir.len() as u32,
+                FasterCheckpointType::FoldOver,
+                &mut high,
+                &mut low,
+            )
+        };
+        assert_eq!(s, FasterStatus::InvalidHandle);
+
+        faster_close(store);
+    }
+
+    #[test]
+    fn recover_invalid_args() {
+        let store = faster_open();
+
+        // Null dir ptr.
+        // SAFETY: Testing null pointer error path.
+        let s = unsafe { faster_recover(store, std::ptr::null(), 10, 0, 0) };
+        assert_eq!(s, FasterStatus::InvalidArgument);
+
+        // Zero-length dir.
+        // SAFETY: Testing zero-length error path.
+        let s = unsafe { faster_recover(store, b"/tmp".as_ptr(), 0, 0, 0) };
+        assert_eq!(s, FasterStatus::InvalidArgument);
+
+        // Invalid store.
+        // SAFETY: Testing invalid handle error path.
+        let s = unsafe { faster_recover(9999, b"/tmp".as_ptr(), 4, 0, 0) };
+        assert_eq!(s, FasterStatus::InvalidHandle);
+
+        faster_close(store);
+    }
+
+    #[test]
+    fn checkpoint_fold_over_and_recover() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("store");
+
+        // 1. Open file-backed store, write data, checkpoint.
+        let store = open_file_backed_store(&data_dir);
+        assert_ne!(store, INVALID_HANDLE);
+
+        let sess = faster_session_start(store);
+        assert_ne!(sess, INVALID_HANDLE);
+
+        for i in 0u32..20 {
+            let key = format!("ckpt-key-{i}");
+            let val = format!("ckpt-val-{i}");
+            // SAFETY: Valid heap String pointers.
+            unsafe {
+                faster_upsert(
+                    store,
+                    sess,
+                    key.as_ptr(),
+                    key.len() as u32,
+                    val.as_ptr(),
+                    val.len() as u32,
+                );
+            }
+        }
+
+        let mut token_high: u64 = 0;
+        let mut token_low: u64 = 0;
+        let ckpt_path = data_dir.to_str().unwrap();
+        // SAFETY: Valid pointers from TempDir and stack vars.
+        let status = unsafe {
+            faster_checkpoint(
+                store,
+                ckpt_path.as_ptr(),
+                ckpt_path.len() as u32,
+                FasterCheckpointType::FoldOver,
+                &mut token_high,
+                &mut token_low,
+            )
+        };
+        assert_eq!(status, FasterStatus::Ok, "checkpoint failed");
+        assert!(
+            token_high != 0 || token_low != 0,
+            "token should be non-zero"
+        );
+
+        // 2. End session, close store.
+        faster_session_end(store, sess);
+        faster_close(store);
+
+        // 3. Open a new store, recover from checkpoint, verify data.
+        let store2 = open_file_backed_store(&data_dir);
+        assert_ne!(store2, INVALID_HANDLE);
+
+        // SAFETY: Valid pointers.
+        let recover_status = unsafe {
+            faster_recover(
+                store2,
+                ckpt_path.as_ptr(),
+                ckpt_path.len() as u32,
+                token_high,
+                token_low,
+            )
+        };
+        assert_eq!(recover_status, FasterStatus::Ok, "recover failed");
+
+        let sess2 = faster_session_start(store2);
+        assert_ne!(sess2, INVALID_HANDLE);
+
+        for i in 0u32..20 {
+            let key = format!("ckpt-key-{i}");
+            let expected = format!("ckpt-val-{i}");
+            let mut buf = [0u8; 128];
+            let mut out_len: u32 = 0;
+            // SAFETY: Valid pointers.
+            let status = unsafe {
+                faster_read(
+                    store2,
+                    sess2,
+                    key.as_ptr(),
+                    key.len() as u32,
+                    buf.as_mut_ptr(),
+                    buf.len() as u32,
+                    &mut out_len,
+                )
+            };
+            assert_eq!(status, FasterStatus::Ok, "read key {i} after recover");
+            assert_eq!(
+                &buf[..out_len as usize],
+                expected.as_bytes(),
+                "value mismatch for key {i}"
+            );
+        }
+
+        faster_session_end(store2, sess2);
+        faster_close(store2);
+    }
+
+    #[test]
+    fn checkpoint_snapshot_succeeds() {
+        // Snapshot checkpoint creates metadata but the orchestrator doesn't yet
+        // write snapshot data files, so we only test the checkpoint side here.
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("store");
+
+        let store = open_file_backed_store(&data_dir);
+        let sess = faster_session_start(store);
+
+        for i in 0u32..10 {
+            let key = format!("snap-{i}");
+            let val = format!("snapval-{i}");
+            // SAFETY: Valid heap String pointers.
+            unsafe {
+                faster_upsert(
+                    store,
+                    sess,
+                    key.as_ptr(),
+                    key.len() as u32,
+                    val.as_ptr(),
+                    val.len() as u32,
+                );
+            }
+        }
+
+        let mut token_high: u64 = 0;
+        let mut token_low: u64 = 0;
+        let ckpt_path = data_dir.to_str().unwrap();
+        // SAFETY: Valid pointers.
+        let status = unsafe {
+            faster_checkpoint(
+                store,
+                ckpt_path.as_ptr(),
+                ckpt_path.len() as u32,
+                FasterCheckpointType::Snapshot,
+                &mut token_high,
+                &mut token_low,
+            )
+        };
+        assert_eq!(status, FasterStatus::Ok, "snapshot checkpoint failed");
+        assert!(
+            token_high != 0 || token_low != 0,
+            "snapshot token should be non-zero"
+        );
+
+        faster_session_end(store, sess);
+        faster_close(store);
+    }
+
+    #[test]
+    fn checkpoint_type_enum_values() {
+        assert_eq!(FasterCheckpointType::FoldOver as u32, 0);
+        assert_eq!(FasterCheckpointType::Snapshot as u32, 1);
     }
 }

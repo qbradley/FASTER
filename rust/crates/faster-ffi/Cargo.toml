@@ -17,3 +17,6 @@ crate-type = ["cdylib", "staticlib"]
 [dependencies]
 faster-core = { path = "../faster-core" }
 faster-device = { path = "../faster-device" }
+
+[dev-dependencies]
+tempfile = "3"
