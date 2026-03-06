@@ -53,7 +53,7 @@ mod session;
 
 pub use builder::FasterKvBuilder;
 pub use functions::{CounterFunctions, Functions, RmwInPlaceResult, SimpleFunctions};
-pub use kv::{FasterKv, FasterKvConfig};
+pub use kv::{FasterKv, FasterKvConfig, RecoveryInfo};
 pub use pending_io::{
     CompletedIo, PendingIoConfig, PendingIoContext, PendingIoError, PendingIoManager,
 };

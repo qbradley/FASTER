@@ -21,6 +21,8 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::address::{AtomicLogicalAddress, LogicalAddress, MAX_PAGE, OFFSET_BITS, Offset, Page};
+use crate::device::Device;
+use crate::recovery::log_recovery::LogRecoveryResult;
 
 use super::page::{PageState, PageTable};
 
@@ -390,6 +392,69 @@ impl HybridLogAllocator {
                 Err(_) => continue,
             }
         }
+    }
+
+    /// Restore all address boundaries from a [`LogRecoveryResult`].
+    ///
+    /// Must be called **before** any concurrent access (i.e. before sessions
+    /// are created). Sets all six atomic address boundaries to match the
+    /// recovered state and clears the sealed flag.
+    pub fn restore_from_recovery(&self, result: &LogRecoveryResult) {
+        self.begin_address
+            .store(result.begin_address, Ordering::Release);
+        self.head_address
+            .store(result.head_address, Ordering::Release);
+        self.read_only_address
+            .store(result.read_only_address, Ordering::Release);
+        self.safe_read_only_address
+            .store(result.read_only_address, Ordering::Release);
+        self.tail_address
+            .store(result.tail_address, Ordering::Release);
+        self.flushed_until_address
+            .store(result.flushed_until, Ordering::Release);
+        self.sealed.store(false, Ordering::Release);
+    }
+
+    /// Load pages from a storage device into in-memory page frames.
+    ///
+    /// Reads pages between `head` (inclusive) and `tail` (inclusive page)
+    /// from the device and marks them as [`PageState::Closed`]. This is
+    /// used during recovery so that reads work immediately without going
+    /// through the pending I/O path.
+    ///
+    /// Returns the number of pages loaded.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if any `device.read_sync()` call fails.
+    pub fn load_pages_from_device(
+        &self,
+        device: &dyn Device,
+        head: LogicalAddress,
+        tail: LogicalAddress,
+    ) -> Result<u32, std::io::Error> {
+        let page_size = self.page_size as u64;
+        let first_page = head.page().0;
+        let last_page = tail.page().0;
+        let mut pages_loaded: u32 = 0;
+
+        for p in first_page..=last_page {
+            let frame = self.page_table.get_or_allocate_frame(Page(p));
+
+            // SAFETY: We are the only accessor during recovery (no concurrent
+            // sessions). The frame was just allocated or recycled by
+            // get_or_allocate_frame, so we have exclusive logical access.
+            let buf = unsafe { core::slice::from_raw_parts_mut(frame.as_mut_ptr(), frame.size()) };
+            let device_offset = p as u64 * page_size;
+            device.read_sync(device_offset, buf)?;
+
+            // Mark recovered pages as Flushed (they are on disk and
+            // read-only — not open for new writes).
+            frame.state().store(PageState::Flushed, Ordering::Release);
+            pages_loaded += 1;
+        }
+
+        Ok(pages_loaded)
     }
 
     /// Take a consistent snapshot of the current address boundaries.
