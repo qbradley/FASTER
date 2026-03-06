@@ -40,6 +40,9 @@ cargo fmt --check
 cargo bench --package faster-bench
 ```
 
+> **Before committing**, run the full quality gate (nextest + doctests + clippy + fmt).
+> See [CONTRIBUTING.md](CONTRIBUTING.md) for the exact commands and conventions.
+
 ## Design Principles
 
 - **No async in core.** The core engine uses callbacks and synchronous primitives.

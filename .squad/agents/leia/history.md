@@ -12,6 +12,16 @@
 
 ---
 
+## 2026-03-06: Quality Gate & Doc Conventions Documented (AI-2, AI-3, AI-6)
+
+**What:** Created `rust/CONTRIBUTING.md` with quality gate (nextest + doctests + clippy + fmt), doc example rules (public API only, no internal test types), and documentation timing convention (inline doc-comments with code, user-facing docs after stabilization). Updated `rust/README.md` to reference the contributing guide.
+
+**Key insight:** `cargo nextest` does not run doctests — an explicit `cargo test --doc` step is essential. Without it, broken doc examples go unnoticed.
+
+**Existing docs:** `rust/TESTING.md` already covers test categories, time budgets, and tooling in depth. CONTRIBUTING.md complements it with the contributor-facing quality gate and conventions.
+
+---
+
 ## 2026-03-05T18:33: Thrawn Rust FASTER Architecture Finalized
 
 **What:** Thrawn completed 288 KB comprehensive Rust FASTER architecture specification (6101 lines, 14 sections). 3-part parallel document (Thrawn-A/B/C) due to massive context requirements.

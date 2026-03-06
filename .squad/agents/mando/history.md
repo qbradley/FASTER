@@ -10,6 +10,8 @@
 
 <!-- Append new learnings below. Each entry is something lasting about the project. -->
 
+- **Doctest type inference pitfall:** `FasterKv::builder()` is on `impl<F: Functions> FasterKv<F>`, but `builder()` returns the non-generic `FasterKvBuilder`. The compiler can't infer `F` from context alone — doctests must use the turbofish `FasterKv::<SimpleFunctions<u64, u64>>::builder()`. Similarly, `SimpleFunctions::default()` in a `build()` call needs explicit type params when the result type isn't annotated.
+
 - **Status vs Error separation:** FASTER's operational outcomes (Ok, Pending, NotFound) are *not* errors — they're control-flow signals. True errors (I/O failure, corruption) go in `FasterError`. This matches C++ FASTER's split between external `Status` and internal error handling, and aligns with Rust `Result` idioms.
 - **No thiserror needed for small enums:** Manual `Display`, `Error`, `From` impls are ~40 lines for a 6-variant enum. Avoids a build-time proc-macro dependency. Can always add thiserror later if the enum grows significantly.
 - **`OperationStatus` variant set:** The final set merges C++ `Status` (Ok, NotFound, Pending, Aborted), C# `Status` (InPlaceUpdated, Created, CopyUpdated), and architecture `OkKind::Deleted` into one flat enum. This is more ergonomic than nested `Ok(OkKind)` — callers match directly on the variant they care about.
