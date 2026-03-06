@@ -187,6 +187,9 @@ pub struct FasterKv<F: Functions> {
     grow_manager: GrowManager,
     /// Configuration snapshot.
     config: FasterKvConfig,
+    /// Observable operation counters (gated by `metrics` feature).
+    #[cfg(feature = "metrics")]
+    metrics: crate::metrics::Metrics,
 }
 
 // SAFETY: FasterKv is Send+Sync because all its fields are Send+Sync.
@@ -352,6 +355,8 @@ impl<F: Functions> FasterKv<F> {
             pending_io_mgr,
             grow_manager,
             config,
+            #[cfg(feature = "metrics")]
+            metrics: crate::metrics::Metrics::new(),
         }
     }
 
@@ -645,6 +650,7 @@ impl<F: Functions> FasterKv<F> {
             std::fs::rename(&src, &dst).map_err(CheckpointError::IoError)?;
         }
 
+        metrics_inc!(self.metrics, checkpoint_count);
         Ok(token)
     }
 
@@ -751,6 +757,7 @@ impl<F: Functions> FasterKv<F> {
             context,
         );
         drop(guard);
+        metrics_inc!(self.metrics, total_operations);
         if status == OperationStatus::Pending {
             self.dispatch_pending_io(session);
         }
@@ -791,6 +798,7 @@ impl<F: Functions> FasterKv<F> {
             context,
         );
         drop(guard);
+        metrics_inc!(self.metrics, total_operations);
         if status == OperationStatus::Pending {
             self.dispatch_pending_io(session);
         }
@@ -833,6 +841,7 @@ impl<F: Functions> FasterKv<F> {
             context,
         );
         drop(guard);
+        metrics_inc!(self.metrics, total_operations);
         if status == OperationStatus::Pending {
             self.dispatch_pending_io(session);
         }
@@ -863,6 +872,7 @@ impl<F: Functions> FasterKv<F> {
         };
         let status = internal_delete(&ctx, guard.session_mut(), &self.functions, key, context);
         drop(guard);
+        metrics_inc!(self.metrics, total_operations);
         if status == OperationStatus::Pending {
             self.dispatch_pending_io(session);
         }
@@ -884,12 +894,11 @@ impl<F: Functions> FasterKv<F> {
         let ops = session.drain_pending_ops();
         for op in ops {
             match self.pending_io_mgr.issue_read(op, self.device.as_ref()) {
-                Ok(io_ctx) => session.enqueue_io_context(io_ctx),
+                Ok(io_ctx) => {
+                    metrics_inc!(self.metrics, pending_io_inflight);
+                    session.enqueue_io_context(io_ctx);
+                }
                 Err(_err) => {
-                    // I/O dispatch failed (queue full, device error, etc.).
-                    // The operation is lost — the caller will not receive a
-                    // completion callback. In a production system we would
-                    // retry or report the error. For the MVP, log and drop.
                     #[cfg(debug_assertions)]
                     eprintln!("dispatch_pending_io: I/O dispatch failed: {_err}");
                 }
@@ -1249,9 +1258,16 @@ impl<F: Functions> FasterKv<F> {
     ///
     /// Returns the number of pages flushed.
     pub fn flush(&self) -> u32 {
-        self.flusher
+        trace_span!("store_flush");
+        let count = self
+            .flusher
             .flush_sealed_pages(&self.allocator, self.device.as_ref())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        #[cfg(feature = "metrics")]
+        self.metrics
+            .flush_count
+            .fetch_add(u64::from(count), std::sync::atomic::Ordering::Relaxed);
+        count
     }
 
     /// Evict flushed pages from memory.
@@ -1420,6 +1436,22 @@ impl<F: Functions> FasterKv<F> {
     #[inline]
     pub fn config(&self) -> &FasterKvConfig {
         &self.config
+    }
+
+    /// Get a reference to the observable metrics counters.
+    ///
+    /// Only available when the `metrics` feature is enabled.
+    /// Returns `None` when compiled without the feature.
+    #[inline]
+    pub fn metrics(&self) -> Option<&crate::metrics::Metrics> {
+        #[cfg(feature = "metrics")]
+        {
+            Some(&self.metrics)
+        }
+        #[cfg(not(feature = "metrics"))]
+        {
+            None
+        }
     }
 }
 

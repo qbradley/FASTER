@@ -924,4 +924,62 @@ mod tests {
             "all worker handles should be joined",
         );
     }
+
+    // -- H1: Alignment validation tests -----------------------------------
+
+    #[test]
+    fn read_sync_rejects_misaligned_offset() {
+        let dir = TempDir::new().unwrap();
+        let dev = SyncFileDevice::new(dir.path(), "test", 512, 1 << 20, 2).unwrap();
+        let mut buf = vec![0u8; 512];
+        let result = dev.read_sync(1, &mut buf); // offset 1 is not 512-aligned
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn read_sync_rejects_misaligned_len() {
+        let dir = TempDir::new().unwrap();
+        let dev = SyncFileDevice::new(dir.path(), "test", 512, 1 << 20, 2).unwrap();
+        let mut buf = vec![0u8; 100]; // 100 is not 512-aligned
+        let result = dev.read_sync(0, &mut buf);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn read_sync_rejects_zero_len() {
+        let dir = TempDir::new().unwrap();
+        let dev = SyncFileDevice::new(dir.path(), "test", 512, 1 << 20, 2).unwrap();
+        let mut buf = vec![];
+        let result = dev.read_sync(0, &mut buf);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn write_sync_rejects_misaligned_offset() {
+        let dir = TempDir::new().unwrap();
+        let dev = SyncFileDevice::new(dir.path(), "test", 512, 1 << 20, 2).unwrap();
+        let buf = vec![0u8; 512];
+        let result = dev.write_sync(3, &buf); // offset 3 is not aligned
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn write_sync_rejects_misaligned_len() {
+        let dir = TempDir::new().unwrap();
+        let dev = SyncFileDevice::new(dir.path(), "test", 512, 1 << 20, 2).unwrap();
+        let buf = vec![0u8; 100];
+        let result = dev.write_sync(0, &buf);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn write_sync_rejects_zero_len() {
+        let dir = TempDir::new().unwrap();
+        let dev = SyncFileDevice::new(dir.path(), "test", 512, 1 << 20, 2).unwrap();
+        let buf = vec![];
+        let result = dev.write_sync(0, &buf);
+        assert!(result.is_err());
+    }
 }

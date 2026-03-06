@@ -52,7 +52,9 @@ macro_rules! metrics_inc {
     ($metrics:expr, $field:ident) => {
         #[cfg(feature = "metrics")]
         {
-            $metrics.$field.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            $metrics
+                .$field
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     };
 }
