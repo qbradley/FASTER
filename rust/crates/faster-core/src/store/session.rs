@@ -46,7 +46,7 @@ use crate::hash::KeyHash;
 use crate::record::RecordLayout;
 
 use super::Functions;
-use super::pending_io::{CompletedIo, PendingIoContext};
+use super::pending_io::{CompletedIo, PendingIoContext, PendingIoError};
 
 // ── CompletePendingResult ───────────────────────────────────────────
 
@@ -359,6 +359,59 @@ impl<F: Functions> FasterSession<F> {
     pub fn clear_pending(&mut self) {
         self.pending_ops.clear();
         self.io_contexts.clear();
+    }
+
+    /// Returns the number of in-flight I/O operations that have exceeded
+    /// their timeout.
+    ///
+    /// This is a read-only check — call
+    /// [`cancel_all_expired`](Self::cancel_all_expired) to actually remove
+    /// and return the expired contexts.
+    #[inline]
+    pub fn expired_pending_count(&self) -> usize {
+        self.io_contexts.iter().filter(|ctx| ctx.is_expired()).count()
+    }
+
+    /// Cancel a specific pending I/O operation by its context ID.
+    ///
+    /// Removes the context from the session's in-flight I/O queue. The
+    /// underlying device read (if still in progress) will complete into
+    /// dangling `Arc`-shared atomics, which is harmless.
+    ///
+    /// Returns `Ok(())` if the context was found and removed, or
+    /// `Err(PendingIoError::Cancelled { .. })` if no context with that ID
+    /// exists (it may have already completed or been cancelled).
+    pub fn cancel_pending(&mut self, context_id: u64) -> Result<(), PendingIoError> {
+        let pos = self.io_contexts.iter().position(|ctx| ctx.id() == context_id);
+        match pos {
+            Some(idx) => {
+                let _removed = self.io_contexts.swap_remove(idx);
+                Ok(())
+            }
+            None => Err(PendingIoError::Cancelled { context_id }),
+        }
+    }
+
+    /// Cancel all expired I/O operations and return them.
+    ///
+    /// Removes every context whose [`is_expired`](PendingIoContext::is_expired)
+    /// returns `true`. Non-expired and already-completed contexts are left
+    /// in the queue. The caller can inspect the returned contexts to log
+    /// timeouts or invoke error callbacks.
+    pub fn cancel_all_expired(&mut self) -> Vec<PendingIoContext<F>> {
+        let mut expired = Vec::new();
+        let mut still_valid = Vec::new();
+
+        for ctx in self.io_contexts.drain(..) {
+            if ctx.is_expired() {
+                expired.push(ctx);
+            } else {
+                still_valid.push(ctx);
+            }
+        }
+
+        self.io_contexts = still_valid;
+        expired
     }
 
     /// Returns whether this session is currently in an epoch-protected region.
@@ -856,5 +909,186 @@ mod tests {
         let done = session.take_completed_io();
         assert_eq!(done.len(), 1);
         assert_eq!(session.io_pending_count(), 1); // one still in-flight
+    }
+
+    // ── L4: Timeout & Cancellation ──────────────────────────────────
+
+    use std::sync::atomic::{AtomicBool, AtomicU32};
+    use std::sync::{Arc, Mutex};
+    use crate::buffer_pool::AlignedBuffer;
+    use crate::device::IoStatus;
+
+    #[test]
+    fn expired_pending_count_with_no_expired() {
+        let (_, pool) = make_pool();
+        let mut session = pool.create_session();
+        let ctx = PendingIoContext::<TestFunctions>::new_for_test(
+            make_pending_op(1), AlignedBuffer::new(512, 512), 0,
+            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
+        );
+        session.enqueue_io_context(ctx);
+        assert_eq!(session.expired_pending_count(), 0);
+    }
+
+    #[test]
+    fn expired_pending_count_detects_expired() {
+        use std::time::{Duration, Instant};
+        let (_, pool) = make_pool();
+        let mut session = pool.create_session();
+        let expired_ctx = PendingIoContext::<TestFunctions>::new_for_test_with_timeout(
+            make_pending_op(1), AlignedBuffer::new(512, 512), 0,
+            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
+            Duration::ZERO, Instant::now() - Duration::from_millis(1),
+        );
+        let fresh_ctx = PendingIoContext::<TestFunctions>::new_for_test(
+            make_pending_op(2), AlignedBuffer::new(512, 512), 0,
+            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
+        );
+        session.enqueue_io_context(expired_ctx);
+        session.enqueue_io_context(fresh_ctx);
+        assert_eq!(session.expired_pending_count(), 1);
+        assert_eq!(session.io_pending_count(), 2);
+    }
+
+    #[test]
+    fn cancel_pending_removes_context() {
+        let (_, pool) = make_pool();
+        let mut session = pool.create_session();
+        let ctx = PendingIoContext::<TestFunctions>::new_for_test(
+            make_pending_op(1), AlignedBuffer::new(512, 512), 0,
+            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
+        );
+        let ctx_id = ctx.id();
+        session.enqueue_io_context(ctx);
+        assert_eq!(session.io_pending_count(), 1);
+        assert!(session.cancel_pending(ctx_id).is_ok());
+        assert_eq!(session.io_pending_count(), 0);
+    }
+
+    #[test]
+    fn cancel_pending_nonexistent_returns_error() {
+        let (_, pool) = make_pool();
+        let mut session = pool.create_session();
+        let result = session.cancel_pending(99999);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PendingIoError::Cancelled { context_id } => assert_eq!(context_id, 99999),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn cancel_pending_does_not_affect_others() {
+        let (_, pool) = make_pool();
+        let mut session = pool.create_session();
+        let ctx1 = PendingIoContext::<TestFunctions>::new_for_test(
+            make_pending_op(1), AlignedBuffer::new(512, 512), 0,
+            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
+        );
+        let id1 = ctx1.id();
+        let ctx2 = PendingIoContext::<TestFunctions>::new_for_test(
+            make_pending_op(2), AlignedBuffer::new(512, 512), 0,
+            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
+        );
+        session.enqueue_io_context(ctx1);
+        session.enqueue_io_context(ctx2);
+        session.cancel_pending(id1).unwrap();
+        assert_eq!(session.io_pending_count(), 1);
+    }
+
+    #[test]
+    fn cancel_all_expired_removes_only_expired() {
+        use std::time::{Duration, Instant};
+        let (_, pool) = make_pool();
+        let mut session = pool.create_session();
+        let expired1 = PendingIoContext::<TestFunctions>::new_for_test_with_timeout(
+            make_pending_op(1), AlignedBuffer::new(512, 512), 0,
+            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
+            Duration::ZERO, Instant::now() - Duration::from_millis(10),
+        );
+        let expired2 = PendingIoContext::<TestFunctions>::new_for_test_with_timeout(
+            make_pending_op(2), AlignedBuffer::new(512, 512), 0,
+            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
+            Duration::from_millis(1), Instant::now() - Duration::from_secs(1),
+        );
+        let fresh = PendingIoContext::<TestFunctions>::new_for_test(
+            make_pending_op(3), AlignedBuffer::new(512, 512), 0,
+            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
+        );
+        session.enqueue_io_context(expired1);
+        session.enqueue_io_context(expired2);
+        session.enqueue_io_context(fresh);
+        assert_eq!(session.expired_pending_count(), 2);
+        let cancelled = session.cancel_all_expired();
+        assert_eq!(cancelled.len(), 2);
+        assert_eq!(session.io_pending_count(), 1);
+        assert_eq!(session.expired_pending_count(), 0);
+    }
+
+    #[test]
+    fn cancel_all_expired_empty_when_none_expired() {
+        let (_, pool) = make_pool();
+        let mut session = pool.create_session();
+        let ctx = PendingIoContext::<TestFunctions>::new_for_test(
+            make_pending_op(1), AlignedBuffer::new(512, 512), 0,
+            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
+        );
+        session.enqueue_io_context(ctx);
+        let cancelled = session.cancel_all_expired();
+        assert!(cancelled.is_empty());
+        assert_eq!(session.io_pending_count(), 1);
+    }
+
+    #[test]
+    fn cancel_all_expired_on_empty_session() {
+        let (_, pool) = make_pool();
+        let mut session = pool.create_session();
+        assert!(session.cancel_all_expired().is_empty());
+    }
+
+    #[test]
+    fn take_completed_io_does_not_remove_expired() {
+        use std::time::{Duration, Instant};
+        let (_, pool) = make_pool();
+        let mut session = pool.create_session();
+        let expired = PendingIoContext::<TestFunctions>::new_for_test_with_timeout(
+            make_pending_op(1), AlignedBuffer::new(512, 512), 0,
+            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
+            Duration::ZERO, Instant::now() - Duration::from_millis(10),
+        );
+        session.enqueue_io_context(expired);
+        let done = session.take_completed_io();
+        assert!(done.is_empty());
+        assert_eq!(session.io_pending_count(), 1);
+        assert_eq!(session.expired_pending_count(), 1);
+    }
+
+    #[test]
+    fn complete_then_cancel_expired_integration() {
+        use std::time::{Duration, Instant};
+        let (_, pool) = make_pool();
+        let mut session = pool.create_session();
+        let completed_ctx = PendingIoContext::<TestFunctions>::new_for_test(
+            make_pending_op(1), AlignedBuffer::new(512, 512), 0,
+            Arc::new(AtomicBool::new(true)), Arc::new(Mutex::new(Some(IoStatus::Success))), Arc::new(AtomicU32::new(512)),
+        );
+        let expired_ctx = PendingIoContext::<TestFunctions>::new_for_test_with_timeout(
+            make_pending_op(2), AlignedBuffer::new(512, 512), 0,
+            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
+            Duration::ZERO, Instant::now() - Duration::from_millis(10),
+        );
+        let fresh_ctx = PendingIoContext::<TestFunctions>::new_for_test(
+            make_pending_op(3), AlignedBuffer::new(512, 512), 0,
+            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
+        );
+        session.enqueue_io_context(completed_ctx);
+        session.enqueue_io_context(expired_ctx);
+        session.enqueue_io_context(fresh_ctx);
+        let done = session.take_completed_io();
+        assert_eq!(done.len(), 1);
+        let expired = session.cancel_all_expired();
+        assert_eq!(expired.len(), 1);
+        assert_eq!(session.io_pending_count(), 1);
+        assert_eq!(session.expired_pending_count(), 0);
     }
 }

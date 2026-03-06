@@ -22,8 +22,9 @@
 //! 4. The [`CompletedIo`] contains the data buffer and record offset, allowing
 //!    the caller to extract the key/value and retry the operation.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::buffer_pool::{AlignedBuffer, BufferPool};
 use crate::device::{Device, IoCompletionCallback, IoRequestResult, IoStatus};
@@ -35,6 +36,38 @@ use super::session::PendingOperation;
 /// Default read chunk size (8 KiB). Covers most records without reading an
 /// entire 32 MiB page.
 const DEFAULT_READ_CHUNK: u32 = 8192;
+
+/// Default timeout for pending I/O operations (30 seconds).
+pub const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Global counter for assigning unique context IDs.
+static NEXT_IO_CONTEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Returns a unique context ID for a new pending I/O operation.
+fn next_context_id() -> u64 {
+    NEXT_IO_CONTEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Configuration for pending I/O behavior.
+#[derive(Debug, Clone)]
+pub struct PendingIoConfig {
+    /// How long to wait before considering a pending I/O timed out.
+    pub default_timeout: Duration,
+    /// Maximum number of retry attempts for a failed I/O.
+    pub max_retries: u32,
+    /// Whether to cancel pending I/O when the session is dropped.
+    pub cancel_on_drop: bool,
+}
+
+impl Default for PendingIoConfig {
+    fn default() -> Self {
+        Self {
+            default_timeout: DEFAULT_IO_TIMEOUT,
+            max_retries: 3,
+            cancel_on_drop: true,
+        }
+    }
+}
 
 // ── align_to_sector ─────────────────────────────────────────────────
 
@@ -61,6 +94,25 @@ pub enum PendingIoError {
     DeviceError(IoStatus),
     /// The read-back record data was invalid.
     InvalidRecord,
+    /// The pending I/O operation timed out.
+    TimedOut {
+        /// ID of the context that timed out.
+        context_id: u64,
+        /// How long the operation had been running.
+        elapsed: Duration,
+    },
+    /// The pending I/O operation was cancelled.
+    Cancelled {
+        /// ID of the context that was cancelled.
+        context_id: u64,
+    },
+    /// The pending I/O operation failed with a specific device error.
+    IoFailed {
+        /// ID of the context that failed.
+        context_id: u64,
+        /// The underlying I/O error.
+        source: std::io::Error,
+    },
 }
 
 impl std::fmt::Display for PendingIoError {
@@ -69,6 +121,15 @@ impl std::fmt::Display for PendingIoError {
             PendingIoError::IoError(e) => write!(f, "I/O error: {e}"),
             PendingIoError::DeviceError(s) => write!(f, "device error: {s:?}"),
             PendingIoError::InvalidRecord => write!(f, "invalid record data"),
+            PendingIoError::TimedOut { context_id, elapsed } => {
+                write!(f, "pending I/O {context_id} timed out after {elapsed:?}")
+            }
+            PendingIoError::Cancelled { context_id } => {
+                write!(f, "pending I/O {context_id} cancelled")
+            }
+            PendingIoError::IoFailed { context_id, source } => {
+                write!(f, "pending I/O {context_id} failed: {source}")
+            }
         }
     }
 }
@@ -77,6 +138,7 @@ impl std::error::Error for PendingIoError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             PendingIoError::IoError(e) => Some(e),
+            PendingIoError::IoFailed { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -177,6 +239,12 @@ impl<F: Functions> CompletedIo<F> {
 /// via `Arc`-wrapped atomics. The caller polls [`is_completed`](Self::is_completed)
 /// or consumes the context with [`try_complete`](Self::try_complete).
 pub struct PendingIoContext<F: Functions> {
+    /// Unique identifier for this pending I/O context.
+    id: u64,
+    /// When this context was created.
+    created_at: Instant,
+    /// Timeout duration for this I/O operation.
+    timeout: Duration,
     /// The original operation to retry after the read completes.
     operation: PendingOperation<F>,
     /// The I/O buffer (owned until completion, then moved into `CompletedIo`).
@@ -194,8 +262,10 @@ pub struct PendingIoContext<F: Functions> {
 impl<F: Functions> std::fmt::Debug for PendingIoContext<F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PendingIoContext")
+            .field("id", &self.id)
             .field("record_offset", &self.record_offset)
             .field("completed", &self.completed.load(Ordering::Relaxed))
+            .field("expired", &self.is_expired())
             .finish_non_exhaustive()
     }
 }
@@ -215,6 +285,9 @@ impl<F: Functions> PendingIoContext<F> {
         bytes_transferred: Arc<AtomicU32>,
     ) -> Self {
         Self {
+            id: next_context_id(),
+            created_at: Instant::now(),
+            timeout: DEFAULT_IO_TIMEOUT,
             operation,
             buffer: Some(buffer),
             record_offset,
@@ -224,13 +297,57 @@ impl<F: Functions> PendingIoContext<F> {
         }
     }
 
+    /// Create a `PendingIoContext` for testing with a custom timeout.
+    #[cfg(test)]
+    pub(crate) fn new_for_test_with_timeout(
+        operation: PendingOperation<F>,
+        buffer: AlignedBuffer,
+        record_offset: usize,
+        completed: Arc<AtomicBool>,
+        io_status: Arc<Mutex<Option<IoStatus>>>,
+        bytes_transferred: Arc<AtomicU32>,
+        timeout: Duration,
+        created_at: Instant,
+    ) -> Self {
+        Self {
+            id: next_context_id(),
+            created_at,
+            timeout,
+            operation,
+            buffer: Some(buffer),
+            record_offset,
+            completed,
+            io_status,
+            bytes_transferred,
+        }
+    }
+
+    /// Returns the unique ID of this context.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Returns the instant when this context was created.
+    pub fn created_at(&self) -> Instant {
+        self.created_at
+    }
+
+    /// Returns the timeout duration for this I/O operation.
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    /// Returns how long this I/O has been pending.
+    pub fn elapsed(&self) -> Duration {
+        self.created_at.elapsed()
+    }
+
+    /// Returns `true` if this I/O operation has exceeded its timeout.
+    pub fn is_expired(&self) -> bool {
+        self.created_at.elapsed() >= self.timeout
+    }
+
     /// Check whether the I/O has completed.
-    ///
-    /// # TODO (SF-14)
-    ///
-    /// Add a configurable timeout and `cancel()` method. If the underlying
-    /// device hangs, `is_completed` will return `false` forever, causing the
-    /// session's pending queue to grow without bound.
     pub fn is_completed(&self) -> bool {
         self.completed.load(Ordering::Acquire)
     }
@@ -282,6 +399,8 @@ pub struct PendingIoManager {
     page_size: u32,
     /// Sector size in bytes (used for alignment).
     sector_size: u32,
+    /// Configuration for pending I/O behavior.
+    config: PendingIoConfig,
 }
 
 impl PendingIoManager {
@@ -292,11 +411,22 @@ impl PendingIoManager {
     /// * `page_size` — the hybrid log page size in bytes (e.g. 32 MiB).
     /// * `sector_size` — the device sector size (e.g. 512 or 4096).
     pub fn new(page_size: u32, sector_size: u32) -> Self {
+        Self::with_config(page_size, sector_size, PendingIoConfig::default())
+    }
+
+    /// Create a `PendingIoManager` with custom configuration.
+    pub fn with_config(page_size: u32, sector_size: u32, config: PendingIoConfig) -> Self {
         Self {
             buffer_pool: BufferPool::new(sector_size as usize, 16),
             page_size,
             sector_size,
+            config,
         }
+    }
+
+    /// Returns the current configuration.
+    pub fn config(&self) -> &PendingIoConfig {
+        &self.config
     }
 
     /// Issue an asynchronous disk read for a pending operation.
@@ -363,6 +493,9 @@ impl PendingIoManager {
 
         match result {
             IoRequestResult::Submitted | IoRequestResult::CompletedSync => Ok(PendingIoContext {
+                id: next_context_id(),
+                created_at: Instant::now(),
+                timeout: self.config.default_timeout,
                 operation: pending_op,
                 buffer: Some(buffer),
                 record_offset,
@@ -605,6 +738,9 @@ mod tests {
         let buffer = AlignedBuffer::new(512, 512);
 
         let ctx = PendingIoContext::<TestFunctions> {
+            id: next_context_id(),
+            created_at: Instant::now(),
+            timeout: DEFAULT_IO_TIMEOUT,
             operation: pending,
             buffer: Some(buffer),
             record_offset: 0,
@@ -733,5 +869,153 @@ mod tests {
 
         let e = PendingIoError::IoError(std::io::Error::other("disk failed"));
         assert!(e.to_string().contains("disk failed"));
+
+        let e = PendingIoError::TimedOut {
+            context_id: 42,
+            elapsed: Duration::from_secs(31),
+        };
+        assert!(e.to_string().contains("42"));
+        assert!(e.to_string().contains("timed out"));
+
+        let e = PendingIoError::Cancelled { context_id: 7 };
+        assert!(e.to_string().contains("7"));
+        assert!(e.to_string().contains("cancelled"));
+
+        let e = PendingIoError::IoFailed {
+            context_id: 99,
+            source: std::io::Error::other("bad sector"),
+        };
+        assert!(e.to_string().contains("99"));
+        assert!(e.to_string().contains("bad sector"));
+    }
+
+    #[test]
+    fn context_not_expired_by_default() {
+        let ctx = PendingIoContext::<TestFunctions>::new_for_test(
+            make_pending_op(0, 0), AlignedBuffer::new(512, 512), 0,
+            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None)), Arc::new(AtomicU32::new(0)),
+        );
+        assert!(!ctx.is_expired());
+        assert!(ctx.timeout() == Duration::from_secs(30));
+        assert!(ctx.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn context_expired_with_zero_timeout() {
+        let past = Instant::now() - Duration::from_millis(1);
+        let ctx = PendingIoContext::<TestFunctions>::new_for_test_with_timeout(
+            make_pending_op(0, 0), AlignedBuffer::new(512, 512), 0,
+            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None)), Arc::new(AtomicU32::new(0)),
+            Duration::ZERO, past,
+        );
+        assert!(ctx.is_expired());
+    }
+
+    #[test]
+    fn context_expired_after_timeout_elapses() {
+        let past = Instant::now() - Duration::from_secs(2);
+        let ctx = PendingIoContext::<TestFunctions>::new_for_test_with_timeout(
+            make_pending_op(0, 0), AlignedBuffer::new(512, 512), 0,
+            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None)), Arc::new(AtomicU32::new(0)),
+            Duration::from_secs(1), past,
+        );
+        assert!(ctx.is_expired());
+        assert!(ctx.elapsed() >= Duration::from_secs(2));
+    }
+
+    #[test]
+    fn context_not_expired_within_timeout() {
+        let ctx = PendingIoContext::<TestFunctions>::new_for_test_with_timeout(
+            make_pending_op(0, 0), AlignedBuffer::new(512, 512), 0,
+            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None)), Arc::new(AtomicU32::new(0)),
+            Duration::from_secs(60), Instant::now(),
+        );
+        assert!(!ctx.is_expired());
+    }
+
+    #[test]
+    fn context_ids_are_unique() {
+        let ctx1 = PendingIoContext::<TestFunctions>::new_for_test(
+            make_pending_op(0, 0), AlignedBuffer::new(512, 512), 0,
+            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None)), Arc::new(AtomicU32::new(0)),
+        );
+        let ctx2 = PendingIoContext::<TestFunctions>::new_for_test(
+            make_pending_op(0, 0), AlignedBuffer::new(512, 512), 0,
+            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None)), Arc::new(AtomicU32::new(0)),
+        );
+        assert_ne!(ctx1.id(), ctx2.id());
+    }
+
+    #[test]
+    fn context_debug_includes_id_and_expired() {
+        let ctx = PendingIoContext::<TestFunctions>::new_for_test(
+            make_pending_op(0, 0), AlignedBuffer::new(512, 512), 0,
+            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None)), Arc::new(AtomicU32::new(0)),
+        );
+        let debug = format!("{ctx:?}");
+        assert!(debug.contains("id"));
+        assert!(debug.contains("expired"));
+    }
+
+    #[test]
+    fn pending_io_config_defaults() {
+        let config = PendingIoConfig::default();
+        assert_eq!(config.default_timeout, Duration::from_secs(30));
+        assert_eq!(config.max_retries, 3);
+        assert!(config.cancel_on_drop);
+    }
+
+    #[test]
+    fn pending_io_config_custom() {
+        let config = PendingIoConfig {
+            default_timeout: Duration::from_secs(10),
+            max_retries: 5,
+            cancel_on_drop: false,
+        };
+        assert_eq!(config.default_timeout, Duration::from_secs(10));
+        assert_eq!(config.max_retries, 5);
+        assert!(!config.cancel_on_drop);
+    }
+
+    #[test]
+    fn manager_with_config_uses_custom_timeout() {
+        let config = PendingIoConfig {
+            default_timeout: Duration::from_secs(5),
+            ..PendingIoConfig::default()
+        };
+        let manager = PendingIoManager::with_config(32 * 1024, 512, config);
+        assert_eq!(manager.config().default_timeout, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn manager_default_config() {
+        let manager = PendingIoManager::new(32 * 1024, 512);
+        assert_eq!(manager.config().default_timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn io_failed_error_has_source() {
+        use std::error::Error;
+        let e = PendingIoError::IoFailed { context_id: 1, source: std::io::Error::other("disk") };
+        assert!(e.source().is_some());
+        let e = PendingIoError::TimedOut { context_id: 1, elapsed: Duration::from_secs(1) };
+        assert!(e.source().is_none());
+        let e = PendingIoError::Cancelled { context_id: 1 };
+        assert!(e.source().is_none());
+    }
+
+    #[test]
+    fn issue_async_read_context_has_id_and_timeout() {
+        let config = PendingIoConfig {
+            default_timeout: Duration::from_secs(10),
+            ..PendingIoConfig::default()
+        };
+        let manager = PendingIoManager::with_config(32 * 1024, 512, config);
+        let device = InMemoryDevice::with_sizes(512, 1 << 30);
+        write_test_record(&device, 0, 1, 2);
+        let ctx = manager.issue_read(make_pending_op(0, 0), &device).unwrap();
+        assert!(ctx.id() > 0);
+        assert_eq!(ctx.timeout(), Duration::from_secs(10));
+        assert!(!ctx.is_expired());
     }
 }
