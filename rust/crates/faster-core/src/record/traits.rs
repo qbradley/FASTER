@@ -70,7 +70,7 @@ pub trait Key: Hashable + Eq + Clone + Send + Sync + 'static {
 /// let restored = u64::deserialize(&buf);
 /// assert_eq!(restored, 999);
 /// ```
-pub trait Value: Clone + Send + Sync + 'static {
+pub trait Value: Clone + Default + Send + Sync + 'static {
     /// Returns the exact number of bytes needed to serialize this value.
     fn serialized_size(&self) -> usize;
 

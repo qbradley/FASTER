@@ -237,12 +237,8 @@ pub(crate) fn internal_upsert<F: Functions>(
     if result.created {
         // ── New key — allocate a record at the tail ────────────────
 
-        // Let the callback initialise the value into a zeroed slot.
-        // SAFETY: For fixed-size numeric Value types (u64, i64, etc.), a
-        // zeroed representation is valid. The callback immediately overwrites
-        // the value before it is read. Variable-length values will need a
-        // different initialisation strategy (future work).
-        let mut value: F::Value = unsafe { std::mem::zeroed() };
+        // Let the callback initialise the value into a default-constructed slot.
+        let mut value: F::Value = F::Value::default();
         let mut output = F::Output::default();
         functions.upsert(key, &mut value, input, None, &mut output);
 
@@ -379,10 +375,7 @@ fn upsert_copy_to_tail<F: Functions>(
     previous_addr: LogicalAddress,
 ) -> OperationStatus {
     // Let the callback produce the final value.
-    // SAFETY: For fixed-size numeric Value types (u64, i64, etc.), a zeroed
-    // representation is valid. The callback immediately overwrites the value
-    // before it is read.
-    let mut new_val: F::Value = unsafe { std::mem::zeroed() };
+    let mut new_val: F::Value = F::Value::default();
     let mut output = F::Output::default();
     functions.upsert(key, &mut new_val, input, None, &mut output);
 
@@ -442,10 +435,8 @@ pub(crate) fn internal_rmw<F: Functions>(
             return OperationStatus::NotFound;
         }
 
-        // Create a zeroed value and let the callback initialise it.
-        // SAFETY: For fixed-size numeric Value types (u64, i64, etc.), a zeroed
-        // representation is valid. The callback immediately overwrites the value.
-        let mut value = unsafe { std::mem::zeroed::<F::Value>() };
+        // Create a default value and let the callback initialise it.
+        let mut value = F::Value::default();
         functions.rmw_initial(key, input, &mut value, output);
 
         let (new_addr, accessor) = match allocate_at_tail(ctx.allocator, key, &value) {
@@ -572,7 +563,7 @@ pub(crate) fn internal_rmw<F: Functions>(
                         .expect("readable in-memory record");
 
                     if !functions.rmw_need_copy_update(key, input, &old_value) {
-                        return OperationStatus::InPlaceUpdated;
+                        return OperationStatus::Ok;
                     }
 
                     rmw_copy_to_tail(
@@ -665,9 +656,7 @@ fn rmw_create_at_tail<F: Functions>(
         return OperationStatus::NotFound;
     }
 
-    // SAFETY: For fixed-size numeric Value types (u64, i64, etc.), a zeroed
-    // representation is valid. The callback immediately overwrites the value.
-    let mut value = unsafe { std::mem::zeroed::<F::Value>() };
+    let mut value = F::Value::default();
     functions.rmw_initial(key, input, &mut value, output);
 
     let (new_addr, accessor) = match allocate_at_tail(ctx.allocator, key, &value) {
