@@ -33,6 +33,14 @@ pub struct Metrics {
     pub allocator_allocs: AtomicU64,
     /// Number of allocator `free` calls.
     pub allocator_frees: AtomicU64,
+    /// Number of pending I/O operations currently in-flight.
+    pub pending_io_inflight: AtomicU64,
+    /// Number of checkpoints completed.
+    pub checkpoint_count: AtomicU64,
+    /// Total number of CRUD operations (reads + upserts + rmws + deletes).
+    pub total_operations: AtomicU64,
+    /// Number of page flushes issued.
+    pub flush_count: AtomicU64,
 }
 
 impl Metrics {
@@ -47,6 +55,10 @@ impl Metrics {
             epoch_drains: AtomicU64::new(0),
             allocator_allocs: AtomicU64::new(0),
             allocator_frees: AtomicU64::new(0),
+            pending_io_inflight: AtomicU64::new(0),
+            checkpoint_count: AtomicU64::new(0),
+            total_operations: AtomicU64::new(0),
+            flush_count: AtomicU64::new(0),
         }
     }
 
@@ -54,6 +66,14 @@ impl Metrics {
     ///
     /// Each load uses [`Ordering::Relaxed`] — the snapshot is advisory and
     /// individual fields may reflect slightly different moments in time.
+    ///
+    /// # ARM safety (H2 audit)
+    ///
+    /// `Relaxed` loads are safe on ARM (aarch64) because these counters are
+    /// purely advisory — they are never used for synchronization or ordering
+    /// of other memory accesses. Individual atomicity of each 64-bit load is
+    /// guaranteed by the hardware. Cross-field inconsistency is acceptable
+    /// and documented above.
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
             hash_lookups: self.hash_lookups.load(Ordering::Relaxed),
@@ -64,6 +84,10 @@ impl Metrics {
             epoch_drains: self.epoch_drains.load(Ordering::Relaxed),
             allocator_allocs: self.allocator_allocs.load(Ordering::Relaxed),
             allocator_frees: self.allocator_frees.load(Ordering::Relaxed),
+            pending_io_inflight: self.pending_io_inflight.load(Ordering::Relaxed),
+            checkpoint_count: self.checkpoint_count.load(Ordering::Relaxed),
+            total_operations: self.total_operations.load(Ordering::Relaxed),
+            flush_count: self.flush_count.load(Ordering::Relaxed),
         }
     }
 }
@@ -97,6 +121,19 @@ impl fmt::Debug for Metrics {
                 "allocator_frees",
                 &self.allocator_frees.load(Ordering::Relaxed),
             )
+            .field(
+                "pending_io_inflight",
+                &self.pending_io_inflight.load(Ordering::Relaxed),
+            )
+            .field(
+                "checkpoint_count",
+                &self.checkpoint_count.load(Ordering::Relaxed),
+            )
+            .field(
+                "total_operations",
+                &self.total_operations.load(Ordering::Relaxed),
+            )
+            .field("flush_count", &self.flush_count.load(Ordering::Relaxed))
             .finish()
     }
 }
@@ -123,6 +160,14 @@ pub struct MetricsSnapshot {
     pub allocator_allocs: u64,
     /// Number of allocator `free` calls.
     pub allocator_frees: u64,
+    /// Number of pending I/O operations currently in-flight.
+    pub pending_io_inflight: u64,
+    /// Number of checkpoints completed.
+    pub checkpoint_count: u64,
+    /// Total number of CRUD operations.
+    pub total_operations: u64,
+    /// Number of page flushes issued.
+    pub flush_count: u64,
 }
 
 impl fmt::Display for MetricsSnapshot {
@@ -130,7 +175,8 @@ impl fmt::Display for MetricsSnapshot {
         write!(
             f,
             "hash(lookups={}, inserts={}) overflow(allocs={}, frees={}) \
-             epoch(bumps={}, drains={}) allocator(allocs={}, frees={})",
+             epoch(bumps={}, drains={}) allocator(allocs={}, frees={}) \
+             io(inflight={}, flushes={}) checkpoint={} ops={}",
             self.hash_lookups,
             self.hash_inserts,
             self.overflow_allocations,
@@ -139,6 +185,10 @@ impl fmt::Display for MetricsSnapshot {
             self.epoch_drains,
             self.allocator_allocs,
             self.allocator_frees,
+            self.pending_io_inflight,
+            self.flush_count,
+            self.checkpoint_count,
+            self.total_operations,
         )
     }
 }
@@ -160,6 +210,10 @@ mod tests {
         assert_eq!(snap.epoch_drains, 0);
         assert_eq!(snap.allocator_allocs, 0);
         assert_eq!(snap.allocator_frees, 0);
+        assert_eq!(snap.pending_io_inflight, 0);
+        assert_eq!(snap.checkpoint_count, 0);
+        assert_eq!(snap.total_operations, 0);
+        assert_eq!(snap.flush_count, 0);
     }
 
     #[test]
@@ -173,6 +227,10 @@ mod tests {
         m.epoch_drains.fetch_add(4, Ordering::Relaxed);
         m.allocator_allocs.fetch_add(7, Ordering::Relaxed);
         m.allocator_frees.fetch_add(6, Ordering::Relaxed);
+        m.pending_io_inflight.fetch_add(8, Ordering::Relaxed);
+        m.checkpoint_count.fetch_add(2, Ordering::Relaxed);
+        m.total_operations.fetch_add(100, Ordering::Relaxed);
+        m.flush_count.fetch_add(9, Ordering::Relaxed);
 
         let snap = m.snapshot();
         assert_eq!(snap.hash_lookups, 10);
@@ -183,6 +241,10 @@ mod tests {
         assert_eq!(snap.epoch_drains, 4);
         assert_eq!(snap.allocator_allocs, 7);
         assert_eq!(snap.allocator_frees, 6);
+        assert_eq!(snap.pending_io_inflight, 8);
+        assert_eq!(snap.checkpoint_count, 2);
+        assert_eq!(snap.total_operations, 100);
+        assert_eq!(snap.flush_count, 9);
     }
 
     #[test]

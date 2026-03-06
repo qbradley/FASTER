@@ -408,10 +408,9 @@ impl Device for SyncFileDevice {
         self.max_outstanding
     }
 
-    // TODO (C-1): These alignment checks are `debug_assert` only — they are
-    // stripped in release builds. Consider promoting to runtime checks (return
-    // `IoRequestResult::Error`) for defense-in-depth, especially when using
-    // O_DIRECT where misalignment causes EINVAL.
+    // H1/C-1: Alignment checks promoted to release assertions — misaligned I/O
+    // causes EINVAL on O_DIRECT or silent corruption. These are safety guards
+    // that must never be stripped in release builds.
     unsafe fn read_async(
         &self,
         offset: u64,
@@ -420,17 +419,30 @@ impl Device for SyncFileDevice {
         callback: IoCompletionCallback,
         context: *mut u8,
     ) -> IoRequestResult {
-        debug_assert!(
-            offset % u64::from(self.sector_size) == 0,
-            "offset {offset} not sector-aligned (sector_size={})",
-            self.sector_size,
-        );
-        debug_assert!(
-            u64::from(len) % u64::from(self.sector_size) == 0,
-            "len {len} not sector-aligned (sector_size={})",
-            self.sector_size,
-        );
-        debug_assert!(len > 0, "len must be > 0");
+        if offset % u64::from(self.sector_size) != 0 {
+            return IoRequestResult::Error(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "offset {offset} not sector-aligned (sector_size={})",
+                    self.sector_size
+                ),
+            ));
+        }
+        if u64::from(len) % u64::from(self.sector_size) != 0 {
+            return IoRequestResult::Error(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "len {len} not sector-aligned (sector_size={})",
+                    self.sector_size
+                ),
+            ));
+        }
+        if len == 0 {
+            return IoRequestResult::Error(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "len must be > 0",
+            ));
+        }
 
         self.submit(IoRequest {
             kind: IoRequestKind::Read,
@@ -450,17 +462,30 @@ impl Device for SyncFileDevice {
         callback: IoCompletionCallback,
         context: *mut u8,
     ) -> IoRequestResult {
-        debug_assert!(
-            offset % u64::from(self.sector_size) == 0,
-            "offset {offset} not sector-aligned (sector_size={})",
-            self.sector_size,
-        );
-        debug_assert!(
-            u64::from(len) % u64::from(self.sector_size) == 0,
-            "len {len} not sector-aligned (sector_size={})",
-            self.sector_size,
-        );
-        debug_assert!(len > 0, "len must be > 0");
+        if offset % u64::from(self.sector_size) != 0 {
+            return IoRequestResult::Error(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "offset {offset} not sector-aligned (sector_size={})",
+                    self.sector_size
+                ),
+            ));
+        }
+        if u64::from(len) % u64::from(self.sector_size) != 0 {
+            return IoRequestResult::Error(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "len {len} not sector-aligned (sector_size={})",
+                    self.sector_size
+                ),
+            ));
+        }
+        if len == 0 {
+            return IoRequestResult::Error(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "len must be > 0",
+            ));
+        }
 
         // Eagerly update the high-water mark (consistent with NullDevice).
         self.high_water
@@ -478,15 +503,30 @@ impl Device for SyncFileDevice {
 
     fn read_sync(&self, offset: u64, dest: &mut [u8]) -> io::Result<u32> {
         let total = dest.len();
-        debug_assert!(
-            offset % u64::from(self.sector_size) == 0,
-            "offset {offset} not sector-aligned",
-        );
-        debug_assert!(
-            total % self.sector_size as usize == 0,
-            "len {total} not sector-aligned",
-        );
-        debug_assert!(total > 0, "len must be > 0");
+        if offset % u64::from(self.sector_size) != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "offset {offset} not sector-aligned (sector_size={})",
+                    self.sector_size
+                ),
+            ));
+        }
+        if total % self.sector_size as usize != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "len {total} not sector-aligned (sector_size={})",
+                    self.sector_size
+                ),
+            ));
+        }
+        if total == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "len must be > 0",
+            ));
+        }
 
         let mut remaining = total;
         let mut buf_pos = 0usize;
@@ -510,15 +550,30 @@ impl Device for SyncFileDevice {
 
     fn write_sync(&self, offset: u64, source: &[u8]) -> io::Result<u32> {
         let total = source.len();
-        debug_assert!(
-            offset % u64::from(self.sector_size) == 0,
-            "offset {offset} not sector-aligned",
-        );
-        debug_assert!(
-            total % self.sector_size as usize == 0,
-            "len {total} not sector-aligned",
-        );
-        debug_assert!(total > 0, "len must be > 0");
+        if offset % u64::from(self.sector_size) != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "offset {offset} not sector-aligned (sector_size={})",
+                    self.sector_size
+                ),
+            ));
+        }
+        if total % self.sector_size as usize != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "len {total} not sector-aligned (sector_size={})",
+                    self.sector_size
+                ),
+            ));
+        }
+        if total == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "len must be > 0",
+            ));
+        }
 
         let mut remaining = total;
         let mut buf_pos = 0usize;

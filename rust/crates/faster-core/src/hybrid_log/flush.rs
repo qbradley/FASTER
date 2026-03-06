@@ -146,9 +146,20 @@ unsafe fn flush_completion_callback(context: *mut u8, status: IoStatus, bytes_tr
 
     if status == IoStatus::Success {
         if let Some(frame) = page_table.get_frame(ctx.page) {
-            // TODO (C-5): Validate that `bytes_transferred >= valid_bytes`
-            // to detect short writes. A short write on real hardware should
-            // NOT transition to Flushed — leave in Flushing for retry.
+            // H1/C-5: Validate that bytes_transferred covers the expected
+            // write size. A short write should NOT transition to Flushed —
+            // the page stays in Flushing for retry.
+            if bytes_transferred < ctx.bytes_flushed {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "flush_completion_callback: short write on page {:?} \
+                     (transferred={}, expected={})",
+                    ctx.page, bytes_transferred, ctx.bytes_flushed,
+                );
+                // Leave in Flushing state — retry logic handles recovery.
+                drop(ctx);
+                return;
+            }
             frame
                 .flushed_until()
                 .fetch_max(bytes_transferred, Ordering::Release);
