@@ -17,12 +17,14 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(feature, valu
 [dependencies]
 crossbeam-utils = { workspace = true }
 cfg-if = { workspace = true }
+serde = { workspace = true }
 loom = { version = "0.7", optional = true }
 tracing = { version = "0.1", optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
 criterion = { workspace = true }
+serde_json = { workspace = true }
 tempfile = "3"
 
 [features]

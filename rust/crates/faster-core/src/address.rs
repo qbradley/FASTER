@@ -41,6 +41,7 @@
 
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
+use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // Constants — match C++ address.h exactly
@@ -88,7 +89,7 @@ pub const READ_CACHE_BIT: u64 = 1u64 << (ADDRESS_BITS - 1);
 /// assert_eq!(p.0, 100);
 /// assert_eq!(format!("{p}"), "Page(100)");
 /// ```
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
 #[repr(transparent)]
 pub struct Page(pub u32);
 
@@ -122,7 +123,7 @@ impl fmt::Display for Page {
 /// assert_eq!(o.0, 512);
 /// assert_eq!(format!("{o}"), "Offset(512)");
 /// ```
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
 #[repr(transparent)]
 pub struct Offset(pub u32);
 
@@ -178,7 +179,7 @@ impl fmt::Display for Offset {
 /// assert!(!LogicalAddress::INVALID.is_valid());
 /// assert!(!LogicalAddress::ZERO.is_valid());
 /// ```
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[repr(transparent)]
 pub struct LogicalAddress(u64);
 
