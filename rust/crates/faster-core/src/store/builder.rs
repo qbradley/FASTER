@@ -12,7 +12,7 @@
 //! use faster_core::NullDevice;
 //!
 //! let store: FasterKv<SimpleFunctions<u64, u64>> =
-//!     FasterKv::builder()
+//!     FasterKv::<TestFunctions>::builder()
 //!         .hash_index_size_log2(16)
 //!         .buffer_size_pages(8)
 //!         .mutable_fraction(0.9)
@@ -29,7 +29,7 @@ use crate::store::kv::{FasterKv, FasterKvConfig};
 
 /// A builder for constructing [`FasterKv`] instances with validation.
 ///
-/// Obtain a builder via [`FasterKv::builder()`], configure it with fluent
+/// Obtain a builder via [`FasterKv::<TestFunctions>::builder()`], configure it with fluent
 /// method chaining, then call [`build()`](Self::build) to create the store.
 ///
 /// All fields have sensible defaults matching [`FasterKvConfig::default()`].
@@ -41,7 +41,7 @@ use crate::store::kv::{FasterKv, FasterKvConfig};
 /// use faster_core::NullDevice;
 ///
 /// let store: FasterKv<SimpleFunctions<u64, u64>> =
-///     FasterKv::builder()
+///     FasterKv::<TestFunctions>::builder()
 ///         .hash_index_size_log2(16)
 ///         .mutable_fraction(0.9)
 ///         .build(SimpleFunctions::default(), NullDevice::new())
@@ -189,7 +189,7 @@ impl FasterKvBuilder {
     /// use faster_core::store::{FasterKv, SimpleFunctions};
     /// use faster_core::NullDevice;
     ///
-    /// let result = FasterKv::builder()
+    /// let result = FasterKv::<TestFunctions>::builder()
     ///     .hash_index_size_log2(2) // too small
     ///     .build::<SimpleFunctions<u64, u64>>(
     ///         SimpleFunctions::default(),
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn builder_defaults_create_valid_store() {
-        let store: FasterKv<TestFunctions> = FasterKv::builder()
+        let store: FasterKv<TestFunctions> = FasterKv::<TestFunctions>::builder()
             .build(SimpleFunctions::default(), NullDevice::new())
             .expect("default config should be valid");
         // Smoke-test: we can create a session.
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn builder_with_custom_values() {
-        let store: FasterKv<TestFunctions> = FasterKv::builder()
+        let store: FasterKv<TestFunctions> = FasterKv::<TestFunctions>::builder()
             .hash_index_size_log2(16)
             .buffer_size_pages(8)
             .mutable_fraction(0.5)
@@ -324,10 +324,10 @@ mod tests {
 
     #[test]
     fn rejects_hash_index_size_too_small() {
-        let err = FasterKv::builder()
+        let err = FasterKv::<TestFunctions>::builder()
             .hash_index_size_log2(3)
             .build::<TestFunctions>(SimpleFunctions::default(), NullDevice::new())
-            .unwrap_err();
+            .map(drop).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("hash_index_size_log2"), "got: {msg}");
         assert!(msg.contains("4..=30"), "got: {msg}");
@@ -335,91 +335,91 @@ mod tests {
 
     #[test]
     fn rejects_hash_index_size_too_large() {
-        let err = FasterKv::builder()
+        let err = FasterKv::<TestFunctions>::builder()
             .hash_index_size_log2(31)
             .build::<TestFunctions>(SimpleFunctions::default(), NullDevice::new())
-            .unwrap_err();
+            .map(drop).unwrap_err();
         assert!(err.to_string().contains("hash_index_size_log2"));
     }
 
     #[test]
     fn rejects_zero_buffer_size_pages() {
-        let err = FasterKv::builder()
+        let err = FasterKv::<TestFunctions>::builder()
             .buffer_size_pages(0)
             .build::<TestFunctions>(SimpleFunctions::default(), NullDevice::new())
-            .unwrap_err();
+            .map(drop).unwrap_err();
         assert!(err.to_string().contains("buffer_size_pages"));
     }
 
     #[test]
     fn rejects_non_power_of_two_buffer_size() {
-        let err = FasterKv::builder()
+        let err = FasterKv::<TestFunctions>::builder()
             .buffer_size_pages(3)
             .build::<TestFunctions>(SimpleFunctions::default(), NullDevice::new())
-            .unwrap_err();
+            .map(drop).unwrap_err();
         assert!(err.to_string().contains("buffer_size_pages"));
     }
 
     #[test]
     fn rejects_mutable_fraction_zero() {
-        let err = FasterKv::builder()
+        let err = FasterKv::<TestFunctions>::builder()
             .mutable_fraction(0.0)
             .build::<TestFunctions>(SimpleFunctions::default(), NullDevice::new())
-            .unwrap_err();
+            .map(drop).unwrap_err();
         assert!(err.to_string().contains("mutable_fraction"));
     }
 
     #[test]
     fn rejects_mutable_fraction_one() {
-        let err = FasterKv::builder()
+        let err = FasterKv::<TestFunctions>::builder()
             .mutable_fraction(1.0)
             .build::<TestFunctions>(SimpleFunctions::default(), NullDevice::new())
-            .unwrap_err();
+            .map(drop).unwrap_err();
         assert!(err.to_string().contains("mutable_fraction"));
     }
 
     #[test]
     fn rejects_mutable_fraction_negative() {
-        let err = FasterKv::builder()
+        let err = FasterKv::<TestFunctions>::builder()
             .mutable_fraction(-0.1)
             .build::<TestFunctions>(SimpleFunctions::default(), NullDevice::new())
-            .unwrap_err();
+            .map(drop).unwrap_err();
         assert!(err.to_string().contains("mutable_fraction"));
     }
 
     #[test]
     fn rejects_zero_sector_size() {
-        let err = FasterKv::builder()
+        let err = FasterKv::<TestFunctions>::builder()
             .sector_size(0)
             .build::<TestFunctions>(SimpleFunctions::default(), NullDevice::new())
-            .unwrap_err();
+            .map(drop).unwrap_err();
         assert!(err.to_string().contains("sector_size"));
     }
 
     #[test]
     fn rejects_non_power_of_two_sector_size() {
-        let err = FasterKv::builder()
+        let err = FasterKv::<TestFunctions>::builder()
             .sector_size(100)
             .build::<TestFunctions>(SimpleFunctions::default(), NullDevice::new())
-            .unwrap_err();
+            .map(drop).unwrap_err();
         assert!(err.to_string().contains("sector_size"));
     }
 
     #[test]
     fn rejects_grow_threshold_zero() {
-        let err = FasterKv::builder()
+        let err = FasterKv::<TestFunctions>::builder()
             .grow_threshold(0.0)
             .build::<TestFunctions>(SimpleFunctions::default(), NullDevice::new())
-            .unwrap_err();
+            .map(drop).unwrap_err();
         assert!(err.to_string().contains("grow_threshold"));
     }
 
     #[test]
     fn rejects_grow_threshold_one() {
-        let err = FasterKv::builder()
+        let err = FasterKv::<TestFunctions>::builder()
             .grow_threshold(1.0)
             .build::<TestFunctions>(SimpleFunctions::default(), NullDevice::new())
-            .unwrap_err();
+            .map(drop).unwrap_err();
         assert!(err.to_string().contains("grow_threshold"));
     }
 
