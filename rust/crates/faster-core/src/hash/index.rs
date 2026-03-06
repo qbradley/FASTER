@@ -58,7 +58,7 @@ use crate::hash::KeyHash;
 use crate::hash_bucket::{AtomicHashBucketEntry, BUCKET_NUM_ENTRIES, HashBucketEntry};
 use crate::hash_table::{FindOrCreateResult, HashTable};
 
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 // ---------------------------------------------------------------------------
 // HashIndex
@@ -107,6 +107,12 @@ pub struct HashIndex {
     /// Epoch coordination table for safe memory reclamation.
     /// Wrapped in `Arc` because [`EpochTable::register`] requires `&Arc<Self>`.
     epoch: Arc<EpochTable>,
+
+    /// Current table version (0 or 1). Toggled on each grow completion.
+    version: AtomicU32,
+
+    /// Approximate count of live (non-empty) entries. O(1) tracking.
+    live_entry_count: AtomicU64,
 }
 
 impl HashIndex {
@@ -168,6 +174,8 @@ impl HashIndex {
         Self {
             table: HashTable::new(log2_size),
             epoch,
+            version: AtomicU32::new(0),
+            live_entry_count: AtomicU64::new(0),
         }
     }
 
@@ -266,7 +274,11 @@ impl HashIndex {
         initial_address: LogicalAddress,
     ) -> FindOrCreateResult<'_> {
         trace_span!("hash_lookup");
-        self.table.find_or_create_entry(hash, initial_address)
+        let result = self.table.find_or_create_entry(hash, initial_address);
+        if result.created {
+            self.live_entry_count.fetch_add(1, Ordering::Relaxed);
+        }
+        result
     }
 
     /// Atomically updates a hash index entry via CAS.
@@ -315,7 +327,11 @@ impl HashIndex {
         new: HashBucketEntry,
     ) -> bool {
         trace_span!("hash_update");
-        self.table.update_entry(slot, old, new)
+        let success = self.table.update_entry(slot, old, new);
+        if success && !old.is_empty() && new.is_empty() {
+            self.live_entry_count.fetch_sub(1, Ordering::Relaxed);
+        }
+        success
     }
 
     // -----------------------------------------------------------------------
@@ -430,6 +446,10 @@ impl HashIndex {
             }
         }
 
+        if invalidated > 0 {
+            self.live_entry_count
+                .fetch_sub(invalidated, Ordering::Relaxed);
+        }
         invalidated
     }
 
@@ -550,6 +570,10 @@ impl HashIndex {
             }
         }
 
+        if cleaned > 0 {
+            self.live_entry_count
+                .fetch_sub(cleaned, Ordering::Relaxed);
+        }
         cleaned
     }
 
@@ -596,12 +620,49 @@ impl HashIndex {
         self.table.log2_buckets()
     }
 
-    /// Returns an approximate count of non-empty entries across all buckets.
+    /// Returns the current table version (0 or 1).
     ///
-    /// **WARNING:** O(n) scan. Use only for diagnostics/testing.
+    /// Toggled on each completed grow operation.
+    #[inline]
+    pub fn version(&self) -> u32 {
+        self.version.load(Ordering::Acquire)
+    }
+
+    /// Sets the table version. Used by the grow state machine.
+    #[inline]
+    pub fn set_version(&self, v: u32) {
+        self.version.store(v, Ordering::Release);
+    }
+
+    /// Returns the approximate live entry count (O(1)).
+    ///
+    /// Maintained incrementally via atomic counter.
+    /// For an exact count, use [`scan_entry_count`](Self::scan_entry_count).
     #[inline]
     pub fn entry_count(&self) -> u64 {
+        self.live_entry_count.load(Ordering::Relaxed)
+    }
+
+    /// Returns an exact count of non-empty entries via full-table scan.
+    ///
+    /// **WARNING:** O(n) scan. Use only for diagnostics and testing.
+    #[inline]
+    pub fn scan_entry_count(&self) -> u64 {
         self.table.entry_count()
+    }
+
+    /// Returns the approximate load factor: `entry_count / (num_buckets * 7)`.
+    ///
+    /// Each bucket holds up to 7 entries (before overflow), so the
+    /// denominator is the total slot capacity.
+    #[inline]
+    pub fn load_factor(&self) -> f64 {
+        let entries = self.entry_count() as f64;
+        let slots = (self.num_buckets() * BUCKET_NUM_ENTRIES as u64) as f64;
+        if slots == 0.0 {
+            return 0.0;
+        }
+        entries / slots
     }
 
     /// Returns the number of overflow buckets allocated.
@@ -647,7 +708,9 @@ impl core::fmt::Debug for HashIndex {
         f.debug_struct("HashIndex")
             .field("num_buckets", &self.num_buckets())
             .field("log2_buckets", &self.log2_buckets())
+            .field("version", &self.version())
             .field("entry_count", &self.entry_count())
+            .field("load_factor", &self.load_factor())
             .field("overflow_count", &self.overflow_count())
             .field("epoch_current", &self.epoch.current_epoch())
             .field("epoch_safe", &self.epoch.safe_epoch())
@@ -1259,5 +1322,135 @@ mod tests {
 
         // Page 5 entries are still intact.
         assert_eq!(index.entry_count(), 50);
+    }
+
+    // -----------------------------------------------------------------------
+    // Version tracking
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_version_default() {
+        let index = test_index();
+        assert_eq!(index.version(), 0);
+    }
+
+    #[test]
+    fn test_version_set_and_get() {
+        let index = test_index();
+        index.set_version(1);
+        assert_eq!(index.version(), 1);
+        index.set_version(0);
+        assert_eq!(index.version(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Live entry count (atomic O(1) counter)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_entry_count_increments_on_create() {
+        let index = test_index();
+        let thread = index.register_thread().unwrap();
+        let _guard = thread.protect();
+
+        assert_eq!(index.entry_count(), 0);
+        for i in 0..10u64 {
+            let hash = make_hash(10_000 + i);
+            let r = index.find_or_create(hash, LogicalAddress::INVALID);
+            assert!(r.created);
+        }
+        assert_eq!(index.entry_count(), 10);
+    }
+
+    #[test]
+    fn test_entry_count_no_double_count_on_existing() {
+        let index = test_index();
+        let thread = index.register_thread().unwrap();
+        let _guard = thread.protect();
+
+        let hash = make_hash(11_000);
+        let addr = make_addr(1, 0);
+        let r = index.find_or_create(hash, LogicalAddress::INVALID);
+        assert!(r.created);
+        let committed = HashBucketEntry::new(r.entry.tag(), addr, false);
+        index.update(r.slot, r.entry, committed);
+        assert_eq!(index.entry_count(), 1);
+
+        let r2 = index.find_or_create(hash, LogicalAddress::INVALID);
+        assert!(!r2.created);
+        assert_eq!(index.entry_count(), 1);
+    }
+
+    #[test]
+    fn test_entry_count_decrements_on_invalidate() {
+        let index = test_index();
+        let thread = index.register_thread().unwrap();
+        {
+            let _guard = thread.protect();
+            for i in 0..5u64 {
+                let hash = make_hash(12_000 + i);
+                let addr = make_addr(3, (i * 64) as u32);
+                let r = index.find_or_create(hash, LogicalAddress::INVALID);
+                let committed = HashBucketEntry::new(r.entry.tag(), addr, false);
+                index.update(r.slot, r.entry, committed);
+            }
+        }
+        assert_eq!(index.entry_count(), 5);
+        let invalidated = index.invalidate_entries_in_range(
+            make_addr(3, 0), make_addr(4, 0),
+        );
+        assert_eq!(invalidated, 5);
+        assert_eq!(index.entry_count(), 0);
+    }
+
+    #[test]
+    fn test_scan_entry_count_matches_atomic() {
+        let index = test_index();
+        let thread = index.register_thread().unwrap();
+        let _guard = thread.protect();
+
+        for i in 0..20u64 {
+            let hash = make_hash(13_000 + i);
+            let addr = make_addr(1, (i * 8) as u32);
+            let r = index.find_or_create(hash, LogicalAddress::INVALID);
+            if r.created {
+                let committed = HashBucketEntry::new(r.entry.tag(), addr, false);
+                index.update(r.slot, r.entry, committed);
+            }
+        }
+        assert_eq!(index.entry_count(), index.scan_entry_count());
+    }
+
+    // -----------------------------------------------------------------------
+    // Load factor
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_load_factor_empty() {
+        let index = test_index();
+        assert_eq!(index.load_factor(), 0.0);
+    }
+
+    #[test]
+    fn test_load_factor_with_entries() {
+        let index = HashIndex::new(4); // 16 buckets, 16 * 7 = 112 slots
+        let thread = index.register_thread().unwrap();
+        let _guard = thread.protect();
+
+        for i in 0..7u64 {
+            let hash = make_hash(14_000 + i);
+            let r = index.find_or_create(hash, LogicalAddress::INVALID);
+            if r.created {
+                let addr = make_addr(1, i as u32);
+                let committed = HashBucketEntry::new(r.entry.tag(), addr, false);
+                index.update(r.slot, r.entry, committed);
+            }
+        }
+
+        let lf = index.load_factor();
+        assert!(lf > 0.0);
+        assert!(lf < 1.0);
+        let expected = 7.0 / 112.0;
+        assert!((lf - expected).abs() < 1e-10);
     }
 }
