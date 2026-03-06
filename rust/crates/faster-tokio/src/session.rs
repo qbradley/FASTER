@@ -48,6 +48,15 @@ use faster_core::store::{CompletePendingResult, FasterKv, FasterSession, Functio
 /// `AsyncSession` is `!Send`, matching [`FasterSession`]'s thread-affine
 /// design. Use within a `tokio::task::LocalSet` or on a single-threaded
 /// runtime.
+///
+/// ```compile_fail
+/// use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
+/// use faster_core::NullDevice;
+/// use faster_tokio::AsyncSession;
+///
+/// fn require_send<T: Send>() {}
+/// require_send::<AsyncSession<'_, SimpleFunctions<u64, u64>>>();
+/// ```
 pub struct AsyncSession<'a, F: Functions> {
     store: &'a FasterKv<F>,
     session: FasterSession<F>,
@@ -190,9 +199,7 @@ impl<'a, F: Functions> AsyncSession<'a, F> {
     /// Similar to [`complete_pending`](Self::complete_pending) but returns
     /// the actual completion results (output values and user contexts) from
     /// pending read operations.
-    pub async fn complete_pending_with_results(
-        &mut self,
-    ) -> Vec<(F::Output, F::Context)> {
+    pub async fn complete_pending_with_results(&mut self) -> Vec<(F::Output, F::Context)> {
         if !self.session.has_pending() {
             return Vec::new();
         }
@@ -249,8 +256,8 @@ impl<F: Functions> Drop for AsyncSession<'_, F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use faster_core::store::{FasterKvConfig, SimpleFunctions};
     use faster_core::NullDevice;
+    use faster_core::store::{FasterKvConfig, SimpleFunctions};
 
     type TestStore = FasterKv<SimpleFunctions<u64, u64>>;
 
@@ -370,65 +377,17 @@ mod tests {
 
     /// Compile-time assertion that `AsyncSession` is `!Send`.
     ///
-    /// If this compiles, the constraint is enforced. The function is never
-    /// called — it only needs to type-check.
-    #[allow(dead_code)]
-    fn assert_not_send() {
-        fn require_not_send<T>()
-        where
-            T: ?Sized,
-        {
-            // If T: Send, this would compile. We want to ensure
-            // AsyncSession is NOT Send.
-        }
-
-        // This is the real compile-time assertion. If AsyncSession were Send,
-        // the following function would compile:
-        //   fn require_send<T: Send>() {}
-        //   require_send::<AsyncSession<'_, SimpleFunctions<u64, u64>>>();
-        //
-        // Instead, we assert it does NOT implement Send by checking the
-        // PhantomData<*const ()> marker. The test below verifies at runtime.
-    }
-
+    /// The real enforcement is the `PhantomData<*const ()>` field on the
+    /// struct, plus the `compile_fail` doctest on the struct itself. This
+    /// test is a runtime smoke-check that the marker is present.
     #[test]
     fn async_session_is_not_send() {
-        fn assert_not_send<T>(_: &T)
-        where
-            T: ?Sized,
-        {
-            // We can't directly assert !Send in a positive way.
-            // Instead, we verify the PhantomData marker is present by
-            // confirming the type is !Send through a trait bound test.
-        }
-
-        // This test exists primarily as documentation. The real enforcement
-        // is the PhantomData<*const ()> field, which makes AsyncSession !Send
-        // at the type level. If someone removes the marker, the test below
-        // (which tries to send the session across threads) would start
-        // compiling, and we'd know the invariant was broken.
-        //
-        // Negative trait bounds (T: !Send) aren't stable in Rust, so we
-        // rely on the marker field.
+        // If the !Send marker were removed, the compile_fail doctest on
+        // AsyncSession would start passing (compilation would succeed),
+        // which cargo test treats as a doctest failure.
         let store = test_store();
-        let session = AsyncSession::new(&store);
-        assert_not_send(&session);
+        let _session = AsyncSession::new(&store);
     }
-
-    /// If `AsyncSession` were `Send`, this function would compile.
-    /// It intentionally does NOT compile, which proves the `!Send` invariant.
-    /// Uncomment to verify the compile error:
-    ///
-    /// ```compile_fail
-    /// use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
-    /// use faster_core::NullDevice;
-    /// use faster_tokio::AsyncSession;
-    ///
-    /// fn require_send<T: Send>() {}
-    /// require_send::<AsyncSession<'_, SimpleFunctions<u64, u64>>>();
-    /// ```
-    #[allow(dead_code)]
-    fn _async_session_not_send_doctest() {}
 
     // ── Multiple sessions ───────────────────────────────────────────
 
@@ -439,8 +398,8 @@ mod tests {
         let mut s2 = AsyncSession::new(&store);
 
         // Each session operates independently
-        s1.upsert_simple(&1u64, &100u64);
-        s2.upsert_simple(&2u64, &200u64);
+        let _ = s1.upsert_simple(&1u64, &100u64);
+        let _ = s2.upsert_simple(&2u64, &200u64);
 
         assert_eq!(s1.read_simple(&1u64), Some(100));
         assert_eq!(s1.read_simple(&2u64), Some(200)); // visible across sessions
@@ -456,7 +415,7 @@ mod tests {
         let mut session = AsyncSession::new(&store);
 
         for i in 0u64..100 {
-            session.upsert_simple(&i, &(i * 10));
+            let _ = session.upsert_simple(&i, &(i * 10));
         }
 
         for i in 0u64..100 {

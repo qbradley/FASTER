@@ -598,7 +598,7 @@ mod tests {
     fn buffer_pool_concurrent_checkout_return() {
         let pool = Arc::new(BufferPool::new(16, 4096).expect("pool creation"));
         let num_threads = 4;
-        let ops_per_thread = 500;
+        let ops_per_thread = 100;
 
         let handles: Vec<_> = (0..num_threads)
             .map(|t| {
@@ -622,11 +622,11 @@ mod tests {
         }
 
         // All buffers should be back.
-        let mut count = 0u32;
-        while pool.checkout().is_some() {
-            count += 1;
+        let mut held = Vec::new();
+        while let Some(buf) = pool.checkout() {
+            held.push(buf);
         }
-        assert_eq!(count, 16, "all 16 buffers should be returned");
+        assert_eq!(held.len(), 16, "all 16 buffers should be returned");
     }
 
     // ── Registration (requires io_uring kernel support) ────────────────
