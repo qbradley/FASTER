@@ -55,10 +55,64 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
+use std::time::Instant;
 
 use faster_core::device::{Device, IoCompletionCallback, IoRequestResult, IoStatus};
 
 use crate::ring::{Ring, UringConfig};
+
+// ---------------------------------------------------------------------------
+// Batch policy
+// ---------------------------------------------------------------------------
+
+/// Controls submission coalescing on the I/O thread.
+///
+/// Under high load, the I/O thread accumulates up to [`max_batch`](Self::max_batch)
+/// SQEs before calling `io_uring_submit()`, reducing syscall overhead.
+/// Under low load, it submits after [`batch_window_us`](Self::batch_window_us)
+/// microseconds even with few SQEs, keeping latency low.
+///
+/// Sync operations (`read_sync`/`write_sync`) bypass the ring entirely and
+/// are unaffected by batching policy.
+///
+/// # Adaptive Tuning
+///
+/// When [`adaptive`](Self::adaptive) is enabled, the batch window is auto-tuned
+/// based on observed throughput: expanded when batches consistently fill up,
+/// and contracted when most batches submit only a few SQEs.
+#[derive(Debug, Clone)]
+pub struct BatchPolicy {
+    /// Maximum number of SQEs to accumulate before submitting.
+    /// Set to 1 for immediate mode (no coalescing). Default: 32.
+    pub max_batch: u32,
+    /// Maximum time in microseconds to wait for additional SQEs after the
+    /// first command arrives. Set to 0 to only drain immediately available
+    /// commands (no spin-wait). Default: 1.
+    pub batch_window_us: u64,
+    /// Enable adaptive tuning of the batch window. Default: true.
+    pub adaptive: bool,
+}
+
+impl Default for BatchPolicy {
+    fn default() -> Self {
+        Self {
+            max_batch: 32,
+            batch_window_us: 1,
+            adaptive: true,
+        }
+    }
+}
+
+impl BatchPolicy {
+    /// Immediate mode — every SQE is submitted individually with no batching.
+    pub fn immediate() -> Self {
+        Self {
+            max_batch: 1,
+            batch_window_us: 0,
+            adaptive: false,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Segment registry
@@ -262,19 +316,78 @@ struct GroupState {
 }
 
 // ---------------------------------------------------------------------------
+// Adaptive batch state
+// ---------------------------------------------------------------------------
+
+/// Auto-tuning state for the adaptive batch window.
+struct AdaptiveTuner {
+    /// Current effective batch window in microseconds.
+    window_us: u64,
+    /// Minimum window (floor for contraction).
+    min_window_us: u64,
+    /// Maximum window (ceiling for expansion).
+    max_window_us: u64,
+    /// Exponential moving average of batch utilisation (0.0–1.0).
+    ema_utilisation: f64,
+    /// Number of submits since last tune.
+    submits_since_tune: u32,
+}
+
+impl AdaptiveTuner {
+    fn new(initial_window_us: u64) -> Self {
+        Self {
+            window_us: initial_window_us,
+            min_window_us: 0,
+            max_window_us: initial_window_us.saturating_mul(64).max(64),
+            ema_utilisation: 0.5,
+            submits_since_tune: 0,
+        }
+    }
+
+    /// Record a batch submit and possibly adjust the window.
+    fn record_batch(&mut self, batch_size: u32, max_batch: u32) {
+        let utilisation = batch_size as f64 / max_batch as f64;
+        // EMA with α = 0.1 — reacts over ~10 samples.
+        self.ema_utilisation = 0.9 * self.ema_utilisation + 0.1 * utilisation;
+        self.submits_since_tune += 1;
+
+        // Tune every 64 submits.
+        if self.submits_since_tune >= 64 {
+            self.submits_since_tune = 0;
+            if self.ema_utilisation > 0.75 {
+                // Batches are mostly full — expand window to catch more.
+                self.window_us = (self.window_us * 2).min(self.max_window_us);
+            } else if self.ema_utilisation < 0.25 {
+                // Batches are mostly sparse — contract to reduce latency.
+                self.window_us = (self.window_us / 2).max(self.min_window_us);
+            }
+        }
+    }
+
+    fn window_us(&self) -> u64 {
+        self.window_us
+    }
+}
+
+// ---------------------------------------------------------------------------
 // I/O thread
 // ---------------------------------------------------------------------------
 
 /// Main loop for the I/O thread.
 ///
-/// Owns the [`Ring`] and alternates between receiving commands from the channel
-/// and reaping completions. Batches naturally: when multiple commands arrive
-/// between reaps, they are submitted together.
+/// Owns the [`Ring`] and processes commands from the channel with adaptive
+/// submission coalescing. Under high load, up to `max_batch` SQEs are
+/// accumulated before a single `io_uring_submit()` syscall. Under low load,
+/// the batch window expires quickly to keep latency low.
+///
+/// Sync operations (`read_sync`/`write_sync`) bypass the ring entirely —
+/// they never enter this loop.
 fn io_thread_main(
     rx: Receiver<IoCommand>,
     config: UringConfig,
     registry: Arc<SegmentRegistry>,
     segment_size: u64,
+    batch_policy: BatchPolicy,
 ) {
     let mut ring = match Ring::new(config) {
         Ok(r) => r,
@@ -297,10 +410,13 @@ fn io_thread_main(
     let mut next_group: u64 = 1;
     let mut shutdown = false;
 
+    let max_batch = batch_policy.max_batch.max(1);
+    let mut tuner = AdaptiveTuner::new(batch_policy.batch_window_us);
+
     loop {
-        // ── Phase 1: Collect commands ──────────────────────────────────
-        let first_cmd = if ring.inflight() == 0 && !shutdown {
-            // Nothing in flight — block on channel to avoid spinning.
+        // ── Phase 1: Wait for first command ───────────────────────────
+        let first_cmd = if ring.inflight() == 0 && ring.unsubmitted() == 0 && !shutdown {
+            // Completely idle — block on channel to avoid spinning.
             match rx.recv() {
                 Ok(cmd) => Some(cmd),
                 Err(_) => {
@@ -319,6 +435,7 @@ fn io_thread_main(
             }
         };
 
+        // ── Phase 2: Accumulate batch ─────────────────────────────────
         if let Some(cmd) = first_cmd {
             submit_command(
                 &mut ring,
@@ -331,8 +448,19 @@ fn io_thread_main(
                 &mut next_group,
             );
 
-            // Drain the channel to batch multiple submissions.
+            let window_us = if batch_policy.adaptive {
+                tuner.window_us()
+            } else {
+                batch_policy.batch_window_us
+            };
+            let batch_deadline = Instant::now() + std::time::Duration::from_micros(window_us);
+
+            // Drain-and-wait loop: collect commands until batch is full
+            // or the batch window expires.
             loop {
+                if ring.unsubmitted() >= max_batch {
+                    break;
+                }
                 match rx.try_recv() {
                     Ok(cmd) => {
                         submit_command(
@@ -346,7 +474,12 @@ fn io_thread_main(
                             &mut next_group,
                         );
                     }
-                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Empty) => {
+                        if window_us == 0 || Instant::now() >= batch_deadline {
+                            break;
+                        }
+                        std::hint::spin_loop();
+                    }
                     Err(TryRecvError::Disconnected) => {
                         shutdown = true;
                         break;
@@ -355,24 +488,47 @@ fn io_thread_main(
             }
         }
 
-        // ── Phase 2: Reap completions ─────────────────────────────────
-        if ring.inflight() > 0 {
-            match ring.reap_completions() {
-                Ok(completions) => {
-                    for (user_data, result) in completions {
-                        handle_completion(user_data, result, &mut pending, &mut groups);
+        // ── Phase 3: Submit batch to kernel ───────────────────────────
+        if ring.unsubmitted() > 0 {
+            let batch_size = ring.unsubmitted();
+            match ring.submit() {
+                Ok(_) => {
+                    if batch_policy.adaptive {
+                        tuner.record_batch(batch_size, max_batch);
                     }
                 }
                 Err(_) => {
-                    // Fatal ring error — fail all pending ops and exit.
                     fail_all_pending(&mut pending, &mut groups);
                     return;
                 }
             }
         }
 
-        // ── Phase 3: Exit when shutdown and nothing inflight ──────────
-        if shutdown && ring.inflight() == 0 {
+        // ── Phase 4: Reap completions ─────────────────────────────────
+        if ring.inflight() > 0 {
+            if ring.unsubmitted() > 0 {
+                // Still accumulating a batch — non-blocking reap only.
+                for (user_data, result) in ring.try_reap_completions() {
+                    handle_completion(user_data, result, &mut pending, &mut groups);
+                }
+            } else {
+                // Nothing to accumulate — wait for completions.
+                match ring.reap_completions() {
+                    Ok(completions) => {
+                        for (user_data, result) in completions {
+                            handle_completion(user_data, result, &mut pending, &mut groups);
+                        }
+                    }
+                    Err(_) => {
+                        fail_all_pending(&mut pending, &mut groups);
+                        return;
+                    }
+                }
+            }
+        }
+
+        // ── Phase 5: Exit when shutdown and nothing in pipeline ───────
+        if shutdown && ring.inflight() == 0 && ring.unsubmitted() == 0 {
             return;
         }
     }
@@ -748,6 +904,9 @@ pub struct UringDeviceConfig {
     pub segment_size: u64,
     /// io_uring ring configuration.
     pub ring_config: UringConfig,
+    /// Submission coalescing policy. Default: adaptive batching with
+    /// max 32 SQEs and 1µs window.
+    pub batch_policy: BatchPolicy,
 }
 
 /// io_uring-backed [`Device`](faster_core::device::Device) implementation.
@@ -797,6 +956,7 @@ impl UringDevice {
         let queue_depth = config.ring_config.queue_depth;
         let segment_size = config.segment_size;
         let ring_config = config.ring_config.clone();
+        let batch_policy = config.batch_policy;
         let reg_clone = Arc::clone(&registry);
 
         let (tx, rx) = mpsc::channel::<IoCommand>();
@@ -804,7 +964,7 @@ impl UringDevice {
         let io_thread = thread::Builder::new()
             .name("uring-io".to_string())
             .spawn(move || {
-                io_thread_main(rx, ring_config, reg_clone, segment_size);
+                io_thread_main(rx, ring_config, reg_clone, segment_size, batch_policy);
             })
             .map_err(io::Error::other)?;
 
@@ -1138,6 +1298,7 @@ mod tests {
                 sq_poll: false,
                 direct_io: false,
             },
+            batch_policy: BatchPolicy::default(),
         })
         .expect("create UringDevice")
     }
@@ -1399,6 +1560,7 @@ mod tests {
             sector_size: SECTOR,
             segment_size: SECTOR as u64, // 1 page per segment
             ring_config: UringConfig::default(),
+            batch_policy: BatchPolicy::default(),
         })
         .expect("create device");
 
@@ -1442,6 +1604,7 @@ mod tests {
             sector_size: SECTOR,
             segment_size: SECTOR as u64, // 1 page per segment
             ring_config: UringConfig::default(),
+            batch_policy: BatchPolicy::default(),
         })
         .expect("create device");
 
@@ -1577,6 +1740,168 @@ mod tests {
         // Verify data
         for buf in &read_bufs {
             assert_eq!(buf, &data);
+        }
+    }
+
+    // ── Adaptive batching tests ─────────────────────────────────────
+
+    #[test]
+    fn low_load_latency_single_op() {
+        // Under low load (single isolated operations), the batch window
+        // should expire quickly and not add significant latency.
+        let dir = TempDir::new().unwrap();
+        let dev = UringDevice::new(UringDeviceConfig {
+            base_path: dir.path().to_path_buf(),
+            prefix: "lat.".to_string(),
+            sector_size: SECTOR,
+            segment_size: SEGMENT,
+            ring_config: UringConfig::default(),
+            batch_policy: BatchPolicy::default(),
+        })
+        .expect("create device");
+
+        let data = vec![0xAAu8; SECTOR as usize];
+
+        // Issue a single write and measure round-trip latency.
+        let start = Instant::now();
+        let (w_state, w_ctx) = make_callback();
+        // SAFETY: data valid for SECTOR bytes.
+        unsafe {
+            dev.write_async(data.as_ptr(), 0, SECTOR, test_callback, w_ctx);
+        }
+        w_state.wait(TIMEOUT);
+        let write_latency = start.elapsed();
+        w_state.assert_success(SECTOR);
+
+        // Issue a single read after a brief pause (ensures no pipelining).
+        thread::sleep(Duration::from_millis(5));
+        let mut rbuf = vec![0u8; SECTOR as usize];
+        let start = Instant::now();
+        let (r_state, r_ctx) = make_callback();
+        // SAFETY: rbuf valid for SECTOR bytes.
+        unsafe {
+            dev.read_async(0, rbuf.as_mut_ptr(), SECTOR, test_callback, r_ctx);
+        }
+        r_state.wait(TIMEOUT);
+        let read_latency = start.elapsed();
+        r_state.assert_success(SECTOR);
+
+        assert_eq!(rbuf, data);
+
+        // With the default 1µs batch window, single-op latency should be
+        // well under 100ms (most of the time < 1ms).
+        eprintln!("low-load latency: write={write_latency:?} read={read_latency:?}");
+        assert!(
+            write_latency < Duration::from_millis(100),
+            "write latency {write_latency:?} too high for low-load batching"
+        );
+        assert!(
+            read_latency < Duration::from_millis(100),
+            "read latency {read_latency:?} too high for low-load batching"
+        );
+    }
+
+    #[test]
+    fn immediate_mode_works() {
+        // BatchPolicy::immediate() should still produce correct results.
+        let dir = TempDir::new().unwrap();
+        let dev = UringDevice::new(UringDeviceConfig {
+            base_path: dir.path().to_path_buf(),
+            prefix: "imm.".to_string(),
+            sector_size: SECTOR,
+            segment_size: SEGMENT,
+            ring_config: UringConfig::default(),
+            batch_policy: BatchPolicy::immediate(),
+        })
+        .expect("create device");
+
+        let mut data = vec![0u8; SECTOR as usize];
+        for (i, byte) in data.iter_mut().enumerate() {
+            *byte = (i % 199) as u8;
+        }
+
+        // Write + read round-trip
+        let (w_state, w_ctx) = make_callback();
+        // SAFETY: data valid for SECTOR bytes.
+        unsafe {
+            dev.write_async(data.as_ptr(), 0, SECTOR, test_callback, w_ctx);
+        }
+        w_state.wait(TIMEOUT);
+        w_state.assert_success(SECTOR);
+
+        let mut rbuf = vec![0u8; SECTOR as usize];
+        let (r_state, r_ctx) = make_callback();
+        // SAFETY: rbuf valid for SECTOR bytes.
+        unsafe {
+            dev.read_async(0, rbuf.as_mut_ptr(), SECTOR, test_callback, r_ctx);
+        }
+        r_state.wait(TIMEOUT);
+        r_state.assert_success(SECTOR);
+
+        assert_eq!(rbuf, data);
+    }
+
+    #[test]
+    fn batch_policy_default_values() {
+        let p = BatchPolicy::default();
+        assert_eq!(p.max_batch, 32);
+        assert_eq!(p.batch_window_us, 1);
+        assert!(p.adaptive);
+
+        let p = BatchPolicy::immediate();
+        assert_eq!(p.max_batch, 1);
+        assert_eq!(p.batch_window_us, 0);
+        assert!(!p.adaptive);
+    }
+
+    // ── Benchmark: batched vs immediate throughput ───────────────────
+
+    #[test]
+    fn bench_batched_vs_immediate() {
+        let num_pages = 512;
+        let page_size = SECTOR as usize;
+
+        // Prepare write data.
+        let data = vec![0xBBu8; page_size];
+
+        for (label, policy) in [
+            ("batched(32/1µs)", BatchPolicy::default()),
+            ("immediate", BatchPolicy::immediate()),
+        ] {
+            let dir = TempDir::new().unwrap();
+            let dev = UringDevice::new(UringDeviceConfig {
+                base_path: dir.path().to_path_buf(),
+                prefix: "bench.".to_string(),
+                sector_size: SECTOR,
+                segment_size: SEGMENT,
+                ring_config: UringConfig::default(),
+                batch_policy: policy,
+            })
+            .expect("create device");
+
+            let start = Instant::now();
+            let mut states: Vec<Arc<CallbackState>> = Vec::with_capacity(num_pages);
+
+            for i in 0..num_pages {
+                let (state, ctx) = make_callback();
+                states.push(state);
+                let offset = (i * page_size) as u64;
+                // SAFETY: data valid for page_size.
+                unsafe {
+                    dev.write_async(data.as_ptr(), offset, page_size as u32, test_callback, ctx);
+                }
+            }
+
+            for s in &states {
+                s.wait(Duration::from_secs(30));
+                s.assert_success(page_size as u32);
+            }
+
+            let elapsed = start.elapsed();
+            let total_bytes = num_pages * page_size;
+            let mbps = total_bytes as f64 / elapsed.as_secs_f64() / (1024.0 * 1024.0);
+
+            eprintln!("{label}: {num_pages} writes in {elapsed:?} ({mbps:.1} MiB/s)");
         }
     }
 }
