@@ -19,6 +19,7 @@
 
 pub mod index_recovery;
 pub mod log_recovery;
+pub mod session_recovery;
 
 use std::fmt;
 use std::path::PathBuf;
