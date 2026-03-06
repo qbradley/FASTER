@@ -93,7 +93,7 @@ fn to_ffi_status(status: OperationStatus) -> FasterStatus {
 /// # Thread Safety
 ///
 /// The returned handle is safe to use from any thread.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn faster_open() -> FasterHandle {
     let store = FfiStore::new(
         FasterKvConfig::default(),
@@ -112,7 +112,7 @@ pub extern "C" fn faster_open() -> FasterHandle {
 ///
 /// All sessions **must** be ended before calling this function. Using a
 /// session handle after its store has been closed is undefined behavior.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn faster_close(store: FasterHandle) -> FasterStatus {
     match global_handles().remove::<FfiStore>(store) {
         Some(_) => FasterStatus::Ok,
@@ -131,7 +131,7 @@ pub extern "C" fn faster_close(store: FasterHandle) -> FasterStatus {
 ///
 /// The returned session handle **must only be used from the calling thread**.
 /// Passing it to another thread is undefined behavior.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn faster_session_start(store: FasterHandle) -> FasterHandle {
     let result = global_handles().with::<FfiStore, _>(store, |kv| {
         let session = kv.new_session();
@@ -150,7 +150,7 @@ pub extern "C" fn faster_session_start(store: FasterHandle) -> FasterHandle {
 ///
 /// Must be called from the same thread that created the session. The session
 /// handle must not be used after this call.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn faster_session_end(
     store: FasterHandle,
     session_handle: FasterHandle,
@@ -221,7 +221,7 @@ fn with_store_session<R>(
 /// - `key_ptr` must be valid for reads of `key_len` bytes (or null if `key_len == 0`).
 /// - `val_ptr` must be valid for reads of `val_len` bytes (or null if `val_len == 0`).
 /// - Must be called from the thread that owns `session`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn faster_upsert(
     store: FasterHandle,
     session: FasterHandle,
@@ -281,7 +281,7 @@ pub unsafe extern "C" fn faster_upsert(
 /// - `val_buf` must be valid for writes of `val_buf_len` bytes (or null if `val_buf_len == 0`).
 /// - `val_out_len` must be a valid, non-null pointer to a `u32`.
 /// - Must be called from the thread that owns `session`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn faster_read(
     store: FasterHandle,
     session: FasterHandle,
@@ -381,7 +381,7 @@ pub unsafe extern "C" fn faster_read(
 ///
 /// - `key_ptr` must be valid for reads of `key_len` bytes (or null if `key_len == 0`).
 /// - Must be called from the thread that owns `session`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn faster_delete(
     store: FasterHandle,
     session: FasterHandle,
@@ -426,7 +426,7 @@ pub unsafe extern "C" fn faster_delete(
 /// - `key_ptr` must be valid for reads of `key_len` bytes (or null if `key_len == 0`).
 /// - `input_ptr` must be valid for reads of `input_len` bytes (or null if `input_len == 0`).
 /// - Must be called from the thread that owns `session`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn faster_rmw(
     store: FasterHandle,
     session: FasterHandle,
@@ -472,7 +472,7 @@ pub unsafe extern "C" fn faster_rmw(
 ///
 /// - `completed_out` must be a valid, non-null pointer to a `u32`.
 /// - Must be called from the thread that owns `session`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn faster_complete_pending(
     store: FasterHandle,
     session: FasterHandle,
