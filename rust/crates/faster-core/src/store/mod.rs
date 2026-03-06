@@ -8,7 +8,11 @@
 //!
 //! - [`functions`] — [`Functions`] trait for user-defined operation callbacks,
 //!   plus convenience implementations ([`SimpleFunctions`], [`CounterFunctions`]).
+//! - [`session`] — Thread-local session model: [`FasterSession`], [`SessionGuard`],
+//!   [`SessionPool`], and pending operation types.
 
 mod functions;
+mod session;
 
 pub use functions::{CounterFunctions, Functions, RmwInPlaceResult, SimpleFunctions};
+pub use session::{FasterSession, PendingOpType, PendingOperation, SessionGuard, SessionPool};
