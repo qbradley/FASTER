@@ -434,11 +434,7 @@ impl<'a> LogRecordReader<'a> {
     ///
     /// Returns `None` if the address is not in memory.
     pub fn read_record_info(&self, addr: LogicalAddress) -> Option<RecordInfo> {
-        let accessor = RecordAccessor::from_log(
-            self.allocator,
-            addr,
-            RECORD_HEADER_SIZE as u32,
-        )?;
+        let accessor = RecordAccessor::from_log(self.allocator, addr, RECORD_HEADER_SIZE as u32)?;
         Some(accessor.record_info())
     }
 

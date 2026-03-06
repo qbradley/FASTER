@@ -142,7 +142,10 @@ fn main() {
 
 // ─── Random-read workload ────────────────────────────────────────────────
 
-fn random_read_workload(store: &Store, session: &mut faster_core::store::FasterSession<SimpleFunctions<u64, u64>>) {
+fn random_read_workload(
+    store: &Store,
+    session: &mut faster_core::store::FasterSession<SimpleFunctions<u64, u64>>,
+) {
     println!("\n--- Random read workload ({NUM_KEYS} reads) ---");
     let mut rng = Xorshift64::new(42);
     let mut output: Option<u64>;
@@ -197,7 +200,10 @@ fn random_read_workload(store: &Store, session: &mut faster_core::store::FasterS
 
 // ─── Interactive-read workload ───────────────────────────────────────────
 
-fn interactive_read_workload(store: &Store, session: &mut faster_core::store::FasterSession<SimpleFunctions<u64, u64>>) {
+fn interactive_read_workload(
+    store: &Store,
+    session: &mut faster_core::store::FasterSession<SimpleFunctions<u64, u64>>,
+) {
     println!("\n--- Interactive read mode ---");
     println!("Enter a key ID (0–{}), or 'q' to quit:", NUM_KEYS - 1);
 

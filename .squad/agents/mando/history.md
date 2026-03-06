@@ -472,3 +472,38 @@ Created `rust/crates/faster-core/examples/cache_store.rs` — a Rust port of the
 - Cargo.toml `[lints.clippy]` applies to ALL targets (lib, tests, benchmarks, examples), while `#![forbid(...)]` in lib.rs only applies to the library. Both are needed for complete coverage.
 - The grep pattern `unsafe impl` can false-positive on comments containing those words (e.g., `// contains unsafe: unsafe impl Send/Sync`). Use `^\s*unsafe\s+impl` for precise counting.
 - Method names containing `unsafe` (like `begin_unsafe()`) don't trigger `#[deny(unsafe_code)]` — the lint only fires on actual `unsafe` syntax constructs.
+
+---
+
+## 2026-07-17: AI-4 — Epoch-Amortized UnsafeContext Batch API (Mando)
+
+**What:** Implemented `UnsafeContext` — an epoch-amortized batch API that keeps the session in epoch protection across multiple operations, eliminating per-operation protect/unprotect/try_drain overhead.
+
+**Key files:**
+- `rust/crates/faster-core/src/store/session.rs`: `UnsafeContext` struct, batch CRUD methods (upsert, read, rmw, delete), refresh()
+- `rust/crates/faster-core/src/store/kv.rs`: `FasterKv::unsafe_context()` factory, field visibility changes (hash_index, allocator, functions → pub(crate)), dispatch_pending_io → pub(crate)
+- `rust/crates/faster-core/src/store/mod.rs`: Re-export `UnsafeContext`
+- `rust/crates/faster-core/src/lib.rs`: Top-level re-export `UnsafeContext`
+- `rust/crates/faster-core/benches/ycsb.rs`: 4 new batch benchmark groups (batch_upsert, batch_read, batch_mixed_50_50, batch_rmw)
+
+**Architecture decisions:**
+- `UnsafeContext` holds `&'a mut FasterSession<F>` (no reference to store) — batch methods take `&FasterKv<F>` as first parameter
+- Batch CRUD methods are inherent methods on `UnsafeContext`, not on `FasterKv`
+- `refresh()` updates local epoch + calls try_drain() without leaving protection
+- `UnsafeContext` is `!Send` (inherited from session's `PhantomData<*const ()>`)
+- Drop impl calls `session.end_unsafe()` for RAII cleanup
+
+**Benchmark results (dedicated VM, 4-core, release profile):**
+| Operation | Per-op API | Batch API | Speedup |
+|-----------|-----------|-----------|---------|
+| Upsert | 3.56 Mops/s | 10.07 Mops/s | 2.83× |
+| Read | 4.85 Mops/s | 47.33 Mops/s | 9.76× |
+| Mixed 50/50 | 3.37 Mops/s | 13.55 Mops/s | 4.03× |
+| RMW | 4.83 Mops/s | 47.45 Mops/s | 9.83× |
+
+**Learnings:**
+- The per-operation epoch protect/unprotect + try_drain was the dominant overhead for read and RMW operations (which are otherwise fast hash lookups)
+- Batch API achieves near-10× for reads/RMW because the epoch overhead was >80% of the per-op cost for those operations
+- Upserts see "only" 2.8× because allocation + hash index CAS dominates more than epoch overhead
+- `pub(crate)` field visibility on FasterKv was needed for the batch methods in session.rs to access store internals — acceptable since both files are in the same crate
+

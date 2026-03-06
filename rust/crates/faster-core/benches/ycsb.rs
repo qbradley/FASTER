@@ -308,6 +308,141 @@ fn bench_read_latency(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// 8. Batch upsert (UnsafeContext) — epoch-amortized
+// ---------------------------------------------------------------------------
+
+fn bench_batch_upsert(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ycsb/batch_upsert");
+    group.throughput(Throughput::Elements(SMALL_N));
+    group.sample_size(10);
+
+    group.bench_function("100K_ops", |b| {
+        b.iter_with_setup(
+            || make_store(SMALL_N as usize),
+            |store| {
+                let mut session = store.new_session();
+                {
+                    let mut ctx = store.unsafe_context(&mut session);
+                    for k in 0..SMALL_N {
+                        let _ = black_box(ctx.upsert(&store, &k, &k, ()));
+                        if k % 64 == 0 {
+                            ctx.refresh();
+                        }
+                    }
+                }
+                store.dispose_session(session);
+            },
+        );
+    });
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
+// 9. Batch read (UnsafeContext) — epoch-amortized
+// ---------------------------------------------------------------------------
+
+fn bench_batch_read(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ycsb/batch_read");
+    group.throughput(Throughput::Elements(SMALL_N));
+    group.sample_size(10);
+
+    let store = make_store(SMALL_N as usize);
+    populate(&store, SMALL_N);
+
+    group.bench_function("100K_ops", |b| {
+        b.iter(|| {
+            let mut session = store.new_session();
+            {
+                let mut ctx = store.unsafe_context(&mut session);
+                let mut output: Option<u64> = None;
+                for k in 0..SMALL_N {
+                    let _ = black_box(ctx.read(&store, &k, &0u64, &mut output, ()));
+                    if k % 64 == 0 {
+                        ctx.refresh();
+                    }
+                }
+            }
+            store.dispose_session(session);
+        });
+    });
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
+// 10. Batch mixed 50/50 (UnsafeContext) — epoch-amortized Workload A
+// ---------------------------------------------------------------------------
+
+fn bench_batch_mixed_50_50(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ycsb/batch_mixed_50_50");
+    group.throughput(Throughput::Elements(LARGE_N));
+    group.sample_size(10);
+
+    let store = make_store(LARGE_N as usize);
+    populate(&store, LARGE_N);
+
+    group.bench_function("workload_a", |b| {
+        b.iter_with_setup(
+            || Rng::new(0xDEAD_BEEF),
+            |mut rng| {
+                let mut session = store.new_session();
+                {
+                    let mut ctx = store.unsafe_context(&mut session);
+                    let mut output: Option<u64> = None;
+                    for i in 0..LARGE_N {
+                        let k = rng.next_in_range(LARGE_N);
+                        if rng.next_u64() & 1 == 0 {
+                            let _ = black_box(ctx.read(&store, &k, &0u64, &mut output, ()));
+                        } else {
+                            let _ = black_box(ctx.upsert(&store, &k, &k, ()));
+                        }
+                        if i % 64 == 0 {
+                            ctx.refresh();
+                        }
+                    }
+                }
+                store.dispose_session(session);
+            },
+        );
+    });
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
+// 11. Batch RMW (UnsafeContext) — epoch-amortized
+// ---------------------------------------------------------------------------
+
+fn bench_batch_rmw(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ycsb/batch_rmw");
+    group.throughput(Throughput::Elements(SMALL_N));
+    group.sample_size(10);
+
+    let store = make_store(SMALL_N as usize);
+    populate(&store, SMALL_N);
+
+    group.bench_function("100K_ops", |b| {
+        b.iter(|| {
+            let mut session = store.new_session();
+            {
+                let mut ctx = store.unsafe_context(&mut session);
+                let mut output: Option<u64> = None;
+                for k in 0..SMALL_N {
+                    let _ = black_box(ctx.rmw(&store, &k, &1u64, &mut output, ()));
+                    if k % 64 == 0 {
+                        ctx.refresh();
+                    }
+                }
+            }
+            store.dispose_session(session);
+        });
+    });
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 // Criterion harness
 // ---------------------------------------------------------------------------
 
@@ -319,6 +454,10 @@ fn ycsb_benchmarks(c: &mut Criterion) {
     bench_rmw(c);
     bench_multithread_upsert(c);
     bench_read_latency(c);
+    bench_batch_upsert(c);
+    bench_batch_read(c);
+    bench_batch_mixed_50_50(c);
+    bench_batch_rmw(c);
 }
 
 fn custom_config() -> Criterion<WallTime> {
