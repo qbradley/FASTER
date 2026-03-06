@@ -42,6 +42,20 @@ pub enum AddressRegion {
     Invalid,
 }
 
+impl AddressRegion {
+    /// Whether this region is backed by in-memory pages.
+    ///
+    /// Returns `true` for [`Mutable`](Self::Mutable),
+    /// [`FuzzyRegion`](Self::FuzzyRegion), and [`ReadOnly`](Self::ReadOnly).
+    #[inline]
+    pub fn is_in_memory(self) -> bool {
+        matches!(
+            self,
+            AddressRegion::Mutable | AddressRegion::FuzzyRegion | AddressRegion::ReadOnly
+        )
+    }
+}
+
 impl fmt::Display for AddressRegion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
