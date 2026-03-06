@@ -1,5 +1,13 @@
 [workspace]
-members = ["crates/*"]
+members = [
+    "crates/faster-bench",
+    "crates/faster-core",
+    "crates/faster-device",
+    "crates/faster-ffi",
+    "crates/faster-tokio",
+    "crates/faster-uring",
+    "crates/samples/read-cache-sim",
+]
 resolver = "3"
 
 [workspace.package]

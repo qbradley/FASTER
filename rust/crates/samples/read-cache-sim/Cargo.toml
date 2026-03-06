@@ -1,0 +1,15 @@
+[package]
+name = "read-cache-sim"
+version = "0.1.0"
+description = "Read-cache simulation using FASTER with configurable block sizes and compaction"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+faster-core = { path = "../../faster-core" }
+clap = { version = "4", features = ["derive"] }
+rand = "0.9"
+ctrlc = "3"
