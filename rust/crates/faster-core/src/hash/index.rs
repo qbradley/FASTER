@@ -701,6 +701,20 @@ impl HashIndex {
         // The lifetime is tied to `&self` which borrows the HashTable.
         unsafe { std::slice::from_raw_parts(first, len) }
     }
+
+    /// Returns a shared slice of all primary hash buckets for checkpoint
+    /// serialization.
+    ///
+    /// The slice covers `num_buckets()` contiguous [`HashBucket`] values
+    /// starting at bucket index 0. Overflow buckets are **not** included.
+    ///
+    /// # Safety contract
+    ///
+    /// The returned slice borrows `&self`, so the index cannot be mutated
+    /// while the slice is live.
+    pub fn checkpoint_bucket_slice(&self) -> &[crate::hash_bucket::HashBucket] {
+        self.table_buckets()
+    }
 }
 
 impl core::fmt::Debug for HashIndex {
