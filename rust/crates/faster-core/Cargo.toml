@@ -39,3 +39,7 @@ tracing = ["dep:tracing"]
 [[bench]]
 name = "core_benchmarks"
 harness = false
+
+[[bench]]
+name = "ycsb"
+harness = false
