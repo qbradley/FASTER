@@ -176,6 +176,14 @@ impl PageFrame {
     /// The memory is zeroed on allocation (records check zeroed `RecordInfo`
     /// as "empty slot").
     ///
+    /// # Why `alloc_zeroed` instead of `Vec` / `Box<[u8]>`
+    ///
+    /// Page frames require sector-aligned allocations (typically 512 bytes)
+    /// for direct I/O. The standard allocator only guarantees alignment up
+    /// to `std::mem::align_of::<T>()` (typically 1 for `u8`, 8 for `u64`).
+    /// `Vec::with_capacity` and `Box<[u8]>` cannot satisfy sector alignment,
+    /// so we use `std::alloc::alloc_zeroed` with a custom `Layout`.
+    ///
     /// # Panics
     ///
     /// Panics if `page_size` is 0 or if the system allocator fails.
@@ -372,6 +380,29 @@ impl PageTable {
         page.0 as usize & self.buffer_mask
     }
 
+    // -------------------------------------------------------------------
+    // Private helper: centralized pointer-to-reference conversion
+    // -------------------------------------------------------------------
+
+    /// Convert a non-null `*mut PageFrame` to a shared reference.
+    ///
+    /// # Safety
+    ///
+    /// - `ptr` must be a valid, non-null pointer to a `PageFrame` that was
+    ///   created by `Box::into_raw` and stored in this table.
+    /// - The frame must not have been freed (via `Box::from_raw`) and must
+    ///   remain live for the lifetime of `self`.
+    #[inline]
+    unsafe fn frame_ref(&self, ptr: *mut PageFrame) -> &PageFrame {
+        debug_assert!(!ptr.is_null(), "frame_ref called with null pointer");
+        // SAFETY: Caller guarantees ptr is valid, non-null, and live.
+        unsafe { &*ptr }
+    }
+
+    // -------------------------------------------------------------------
+    // Public API
+    // -------------------------------------------------------------------
+
     /// Load the frame pointer for `page`, returning a reference if allocated.
     ///
     /// Returns `None` if the slot is null (no frame allocated for this page).
@@ -391,7 +422,7 @@ impl PageTable {
             // SAFETY: Non-null pointers in the table are always valid,
             // heap-allocated `PageFrame`s created by `get_or_allocate_frame`.
             // The frame lives until explicitly evicted or the table is dropped.
-            Some(unsafe { &*ptr })
+            Some(unsafe { self.frame_ref(ptr) })
         }
     }
 
@@ -410,8 +441,9 @@ impl PageTable {
         // Fast path: frame already exists.
         let existing = self.frames[idx].load(Ordering::Acquire);
         if !existing.is_null() {
-            // SAFETY: Non-null pointers are valid `PageFrame`s (see get_frame).
-            let frame = unsafe { &*existing };
+            // SAFETY: Non-null pointers in the table are valid, heap-allocated
+            // `PageFrame`s (invariant maintained by get_or_allocate_frame).
+            let frame = unsafe { self.frame_ref(existing) };
             let state = frame.state().load(Ordering::Acquire);
             if state == PageState::Evicted || state == PageState::Free {
                 // SF-8: Use CAS to prevent concurrent recycling races.
@@ -419,7 +451,8 @@ impl PageTable {
                 // and return the already-recycled frame.
                 if frame.state().try_transition(state, PageState::Open) {
                     // SAFETY: We won the CAS — no concurrent recycler will
-                    // also zero this frame.
+                    // also zero this frame. Exclusive write access is
+                    // established by winning the state transition.
                     unsafe { frame.zero() };
                     frame.reset_flush_progress();
                 }
@@ -441,17 +474,20 @@ impl PageTable {
         ) {
             Ok(_) => {
                 // We won the race.
-                // SAFETY: We just stored `raw` into the table. It is valid.
-                unsafe { &*raw }
+                // SAFETY: `raw` was just created via Box::into_raw and stored
+                // in the table. It is a valid, live PageFrame pointer.
+                unsafe { self.frame_ref(raw) }
             }
             Err(winner) => {
                 // Another thread won — free our allocation and use theirs.
                 // SAFETY: `raw` was created via `Box::into_raw` and no one
-                // else holds a reference to it (the CAS failed).
-                let _ = unsafe { Box::from_raw(raw) };
-                // SAFETY: `winner` is a valid pointer stored by the winning
-                // thread.
-                unsafe { &*winner }
+                // else holds a reference to it (the CAS failed). `winner`
+                // is a valid pointer stored by the winning thread via a
+                // successful CAS on the same slot.
+                unsafe {
+                    let _ = Box::from_raw(raw);
+                    self.frame_ref(winner)
+                }
             }
         }
     }
@@ -471,8 +507,9 @@ impl PageTable {
             return None;
         }
 
-        // SAFETY: Non-null pointers are valid `PageFrame`s.
-        let frame = unsafe { &*ptr };
+        // SAFETY: Non-null pointers in the table are valid `PageFrame`s
+        // (invariant maintained by get_or_allocate_frame).
+        let frame = unsafe { self.frame_ref(ptr) };
         frame.state().store(PageState::Evicted, Ordering::Release);
 
         // Null out the slot. Use CAS to avoid ABA if another thread already
@@ -517,12 +554,12 @@ impl PageTable {
 
 impl Drop for PageTable {
     fn drop(&mut self) {
-        for slot in self.frames.iter() {
-            let ptr = slot.load(Ordering::Acquire);
+        for slot in self.frames.iter_mut() {
+            let ptr = *slot.get_mut();
             if !ptr.is_null() {
                 // SAFETY: Non-null pointers in the table are valid
                 // `PageFrame`s allocated via `Box::into_raw`. We have
-                // exclusive access in `drop(&mut self)`.
+                // exclusive access via `&mut self` in `drop`.
                 let _ = unsafe { Box::from_raw(ptr) };
             }
         }

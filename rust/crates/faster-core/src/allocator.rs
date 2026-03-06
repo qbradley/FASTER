@@ -270,6 +270,14 @@ impl<T> PageDir<T> {
 pub struct MallocFixedPageSize<T> {
     /// Pointer to the current page directory. Replaced atomically on growth;
     /// old directories are pushed to `retired_dirs`.
+    ///
+    /// # Why `AtomicPtr` instead of `Box<PageDir<T>>`
+    ///
+    /// The directory must be atomically swappable during `expand_directory()`
+    /// (one thread doubles the directory while others continue reading the
+    /// old one via `Acquire` loads). `Box` cannot be atomically exchanged,
+    /// so we use `AtomicPtr` with manual `Box::into_raw` / `Box::from_raw`
+    /// for ownership management.
     dir: AtomicPtr<PageDir<T>>,
 
     /// Monotonic flat-item counter. The next `fetch_add(1)` value encodes
@@ -424,11 +432,11 @@ impl<T> MallocFixedPageSize<T> {
             std::mem::align_of::<T>(),
         );
 
-        let dir = Box::into_raw(Box::new(PageDir::<T>::new(INITIAL_DIR_CAPACITY)));
+        let dir = Box::new(PageDir::<T>::new(INITIAL_DIR_CAPACITY));
 
         // Pre-allocate page 0 (avoids a CAS on the first allocation).
-        // SAFETY: `dir` was just created and is valid.
-        unsafe { (*dir).get_or_add_page(0) };
+        dir.get_or_add_page(0);
+        let dir = Box::into_raw(dir);
 
         MallocFixedPageSize {
             dir: AtomicPtr::new(dir),
@@ -816,20 +824,24 @@ impl<T> Drop for MallocFixedPageSize<T> {
             epoch.bump_current_epoch_no_callback();
         }
 
-        // Free all pages in the current directory.
-        let dir = *self.dir.get_mut();
-        if !dir.is_null() {
-            // SAFETY: `dir` is valid (invariant maintained throughout lifetime).
-            let dir_ref = unsafe { &*dir };
-            for i in 0..dir_ref.capacity() {
-                let page = dir_ref.slots[i].load(Ordering::Relaxed);
+        // Free all pages in the current directory, then free the directory.
+        let dir_raw = *self.dir.get_mut();
+        if !dir_raw.is_null() {
+            // SAFETY: `dir_raw` was created by `Box::into_raw` in `new()` or
+            // `expand_directory()`. `&mut self` guarantees exclusive access.
+            // We reconstitute the Box to reclaim ownership, but first we must
+            // free the individual pages (which are separate allocations not
+            // owned by the PageDir).
+            let dir = unsafe { Box::from_raw(dir_raw) };
+            for i in 0..dir.capacity() {
+                let page = dir.slots[i].load(Ordering::Relaxed);
                 if !page.is_null() {
-                    // SAFETY: Each non-null page was allocated by `PageDir::alloc_page`.
+                    // SAFETY: Each non-null page was allocated by `PageDir::alloc_page`
+                    // and is not in use (we have exclusive access via `&mut self`).
                     unsafe { PageDir::<T>::dealloc_page(page) };
                 }
             }
-            // SAFETY: `dir` was created by `Box::into_raw`.
-            drop(unsafe { Box::from_raw(dir) });
+            // `dir` dropped here → PageDir memory freed
         }
 
         // Free retired directories (they don't own the pages — only the
