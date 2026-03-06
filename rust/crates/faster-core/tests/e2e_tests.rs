@@ -40,9 +40,7 @@ fn counter_store() -> FasterKv<CounterFunctions<u64>> {
 }
 
 /// Store with tiny buffer to force page sealing quickly.
-fn tiny_buffer_store(
-    device: impl faster_core::Device,
-) -> FasterKv<SimpleFunctions<u64, u64>> {
+fn tiny_buffer_store(device: impl faster_core::Device) -> FasterKv<SimpleFunctions<u64, u64>> {
     let config = FasterKvConfig {
         hash_index_size_log2: 14, // 16 K buckets
         buffer_size_pages: 4,     // very small buffer
@@ -115,10 +113,7 @@ fn large_scale_insert_and_read() {
 
     for i in 0..N {
         let status = store.upsert(&mut s, &i, &(i * 7), ());
-        assert!(
-            status.is_success(),
-            "upsert key {i} returned {status:?}",
-        );
+        assert!(status.is_success(), "upsert key {i} returned {status:?}",);
     }
 
     for i in 0..N {
@@ -244,10 +239,10 @@ fn disk_eviction_and_readback() {
 
     let device = SyncFileDevice::new(
         dir.path(),
-        "hlog.",   // segment file prefix
-        512,       // sector size
-        1 << 20,   // 1 MiB segments
-        2,         // 2 I/O threads
+        "hlog.", // segment file prefix
+        512,     // sector size
+        1 << 20, // 1 MiB segments
+        2,       // 2 I/O threads
     )
     .expect("create SyncFileDevice");
 
@@ -763,8 +758,7 @@ fn upsert_overwrite_sequence() {
 fn sync_file_device_basic_roundtrip() {
     let dir = tempfile::tempdir().expect("create tempdir");
 
-    let device = SyncFileDevice::new(dir.path(), "seg.", 512, 1 << 20, 1)
-        .expect("create device");
+    let device = SyncFileDevice::new(dir.path(), "seg.", 512, 1 << 20, 1).expect("create device");
 
     let store = FasterKv::new(
         FasterKvConfig {
