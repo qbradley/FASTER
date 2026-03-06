@@ -702,3 +702,58 @@ mod miri_hybrid_log_page {
         // Frame drops here — Miri catches any double-free or leak.
     }
 }
+
+// -----------------------------------------------------------------------
+// HybridLogAllocator tests — exercises bump allocation, physical address
+// resolution, and page advancement under Miri.
+// -----------------------------------------------------------------------
+
+#[cfg(miri)]
+mod miri_hybrid_log_allocator {
+    use faster_core::address::{LogicalAddress, Offset, Page};
+    use faster_core::hybrid_log::HybridLogAllocator;
+
+    #[test]
+    fn hybrid_log_allocator_basic_miri() {
+        let alloc = HybridLogAllocator::new(4, 0.5, 512);
+
+        // Allocate a small record.
+        let addr = alloc.try_allocate(64).expect("allocation should succeed");
+        assert_eq!(addr, LogicalAddress::new(Page(0), Offset(0)));
+
+        // Get the physical address and write/read through it.
+        let ptr = alloc
+            .get_physical_address(addr)
+            .expect("physical address should exist");
+
+        // SAFETY: We have exclusive access — single-threaded Miri test.
+        // The pointer is within a valid PageFrame allocation.
+        unsafe {
+            core::ptr::write(ptr, 0xAB);
+            assert_eq!(core::ptr::read(ptr), 0xAB);
+
+            // Write to a later offset in the same allocation.
+            let ptr_end = ptr.add(63);
+            core::ptr::write(ptr_end, 0xCD);
+            assert_eq!(core::ptr::read(ptr_end), 0xCD);
+        }
+
+        // Allocate a second record and verify it doesn't overlap.
+        let addr2 = alloc.try_allocate(64).expect("second allocation");
+        assert_eq!(addr2, LogicalAddress::new(Page(0), Offset(64)));
+
+        let ptr2 = alloc
+            .get_physical_address(addr2)
+            .expect("physical address should exist");
+
+        // SAFETY: Non-overlapping region within the same page frame.
+        unsafe {
+            core::ptr::write(ptr2, 0xEF);
+            assert_eq!(core::ptr::read(ptr2), 0xEF);
+            // First record should be untouched.
+            assert_eq!(core::ptr::read(ptr), 0xAB);
+        }
+
+        // Allocator drops here — Miri catches leaks or UB.
+    }
+}
