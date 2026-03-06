@@ -10,13 +10,17 @@
 //!   plus convenience implementations ([`SimpleFunctions`], [`CounterFunctions`]).
 //! - [`session`] — Thread-local session model: [`FasterSession`], [`SessionGuard`],
 //!   [`SessionPool`], and pending operation types.
+//! - [`kv`] — [`FasterKv`] store and [`FasterKvConfig`] configuration.
 //! - `operations` — Internal CRUD operation implementations (read, upsert,
 //!   RMW, delete) tying the hash index, hybrid log, and session together.
 
 mod functions;
-#[allow(dead_code)] // Consumed by FasterKv (item 4).
+pub mod kv;
 pub(crate) mod operations;
+pub mod pending_io;
 mod session;
 
 pub use functions::{CounterFunctions, Functions, RmwInPlaceResult, SimpleFunctions};
+pub use kv::{FasterKv, FasterKvConfig};
+pub use pending_io::{CompletedIo, PendingIoContext, PendingIoError, PendingIoManager};
 pub use session::{FasterSession, PendingOpType, PendingOperation, SessionGuard, SessionPool};
