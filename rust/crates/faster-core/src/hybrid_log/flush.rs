@@ -112,15 +112,9 @@ struct FlushCallbackContext {
     ///
     /// # Safety
     ///
-    /// The `PageTable` outlives any in-flight flush — the allocator cannot be
-    /// dropped while flushes are pending, so this pointer is always valid when
-    /// the callback fires.
-    ///
-    /// # TODO (SF-10)
-    ///
-    /// Replace with `Arc<PageTable>` for self-enforcing lifetime, or add an
-    /// explicit `FasterKv::Drop` that drains pending flushes before releasing
-    /// resources. The current approach relies on an undocumented invariant.
+    /// The `PageTable` outlives any in-flight flush — `FasterKv::Drop` drains
+    /// all pending flushes before the allocator (and its `PageTable`) is
+    /// dropped, so this pointer is always valid when the callback fires.
     page_table: *const PageTable,
     /// Number of bytes that were flushed.
     bytes_flushed: u32,
@@ -146,8 +140,8 @@ unsafe fn flush_completion_callback(context: *mut u8, status: IoStatus, bytes_tr
     // pointer created via `Box::into_raw`.
     let ctx = unsafe { Box::from_raw(context as *mut FlushCallbackContext) };
 
-    // SAFETY: The `PageTable` outlives in-flight flushes (architectural
-    // invariant — the allocator cannot be dropped while flushes are pending).
+    // SAFETY: The `PageTable` outlives in-flight flushes — `FasterKv::Drop`
+    // drains pending I/O before the allocator is dropped (SF-10).
     let page_table = unsafe { &*ctx.page_table };
 
     if status == IoStatus::Success {
