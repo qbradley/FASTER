@@ -20,6 +20,7 @@ cfg-if = { workspace = true }
 serde = { workspace = true }
 loom = { version = "0.7", optional = true }
 tracing = { version = "0.1", optional = true }
+crc32fast = "1.5.0"
 
 [dev-dependencies]
 proptest = { workspace = true }
