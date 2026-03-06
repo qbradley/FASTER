@@ -374,3 +374,31 @@ Created `rust/crates/faster-core/examples/cache_store.rs` — a Rust port of the
 - `PageFrame::zero()` — takes `&self` (not `&mut self`) because called through shared refs in PageTable; CAS guards exclusivity
 - `PageFrame::as_slice()` — internal `from_raw_parts` over owned `NonNull`
 
+
+---
+
+## Phase 2A — RecordView Safe Abstraction + MutableRecordAccessor Cleanup
+
+**Date:** 2026-03-06
+**Files changed:** `record_ops.rs`, `operations.rs`, `kv.rs`
+
+**Changes made:**
+1. **RecordAccessor::from_log() factory** — new safe `pub(crate)` method that encapsulates the allocator→ptr→RecordAccessor unsafe construction. Consolidated 3 separate unsafe blocks in `LogRecordReader` (get_record, read_record_info, read_header_and_match_key) into 1 centralized unsafe in the factory. Net: -2 unsafe blocks.
+2. **Fixed SF-2 Stacked Borrows violation** — changed `MutableRecordAccessor` write methods (`write_record_info`, `write_key`, `write_value`, `write_full_record`, `value_mut_ptr`, `as_mut_slice`) from `&self` to `&mut self`. This fixes the soundness issue where `as_mut_slice(&self)` created `&mut [u8]` from a shared reference, violating Stacked Borrows. Removed `#[allow(clippy::mut_from_ref)]` and the SF-2 TODO comment.
+3. **Added safe `MutableRecordAccessor::zero(&mut self)`** — `self.as_mut_slice().fill(0)`, completely safe thanks to the `&mut self` receiver. No unsafe needed.
+4. **Derived `atomic_record_info()` from `as_slice()` on both types** — pointer cast now derives from the validated slice rather than from the raw `self.ptr` field directly. Reduces the number of methods that touch raw pointers.
+5. **Updated all callers** in `operations.rs` (9 sites) and `kv.rs` (4 sites) to use `mut accessor` bindings.
+
+**unsafe in record_ops.rs:** 12 → 10 (2 blocks eliminated via from_log() consolidation)
+**Tests:** 1161 passed, 3 skipped. Clippy clean.
+
+**Key insight:** The biggest safety win was fixing SF-2. The `&self` → `&mut self` change on write methods doesn't reduce the unsafe _count_, but it fixes a real soundness issue (Stacked Borrows violation) and removes the need for `#[allow(clippy::mut_from_ref)]`.
+
+**What remains unsafe in record_ops.rs:**
+- `RecordAccessor::new()` / `MutableRecordAccessor::new()` — raw pointer construction (must remain unsafe fn)
+- `RecordAccessor::from_log()` — 1 centralized unsafe block calling `new()`
+- `atomic_record_info()` on both types — pointer cast to `&AtomicRecordInfo`
+- `as_slice()` on both types — foundational `from_raw_parts`
+- `as_mut_slice()` on MutableRecordAccessor — `from_raw_parts_mut`
+- `LogRecordWriter::allocate_record()` — `MutableRecordAccessor::new()` call (freshly allocated region)
+- 1 test unsafe (direct `MutableRecordAccessor::new()` for in-place update test)
