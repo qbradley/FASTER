@@ -17,15 +17,21 @@
 //! - [`status`] — Operation status codes (bitflag-based)
 //! - [`error`] — Error types for exceptional conditions
 //! - [`device`] — Storage device trait for hybrid log backends
+//! - [`store`] — Store-level traits: [`Functions`](store::Functions) callbacks
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 #![forbid(clippy::undocumented_unsafe_blocks)]
 
+#[macro_use]
+mod instrument;
+
+pub mod metrics;
 pub(crate) mod sync;
 
 pub mod address;
 pub mod allocator;
+pub mod buffer_pool;
 pub mod device;
 pub mod epoch;
 pub mod error;
@@ -36,5 +42,9 @@ pub use self::hash::overflow;
 pub use self::hash::table as hash_table;
 pub mod record;
 pub mod status;
+pub mod store;
 
-pub use device::{Device, NullDevice};
+pub use device::{
+    Device, InMemoryDevice, IoCompletionCallback, IoRequestResult, IoStatus, NullDevice,
+};
+pub use metrics::Metrics;
