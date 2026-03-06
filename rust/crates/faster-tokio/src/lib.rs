@@ -13,4 +13,8 @@
 #![forbid(clippy::undocumented_unsafe_blocks)]
 
 pub mod bridge;
-// T2-T4 will add: AsyncSession, AsyncFasterKv, TokioFileDevice
+pub mod device;
+pub mod session;
+
+pub use device::TokioFileDevice;
+pub use session::AsyncSession;

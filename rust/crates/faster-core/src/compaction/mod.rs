@@ -6,8 +6,9 @@
 //! 1. **Scan** — Walk a contiguous address range, classify each record as
 //!    live, dead, or tombstoned by consulting the hash index. Produces a
 //!    [`CompactionPlan`].
-//! 2. **Copy** (future K2–K6) — Copy live records to the log tail, update
-//!    hash index entries, and advance the begin-address.
+//! 2. **Copy** — Copy live records to the log tail, producing a
+//!    [`CopyResult`](copier::CopyResult) mapping old→new addresses. Future
+//!    phases (K3–K6) will update the hash index and advance begin-address.
 //!
 //! # Key safety invariant
 //!
@@ -17,6 +18,7 @@
 //! (e.g., concurrent modifications, out-of-memory chain), the scanner
 //! conservatively classifies records as live.
 
+pub mod copier;
 pub mod scanner;
 
 use crate::address::LogicalAddress;

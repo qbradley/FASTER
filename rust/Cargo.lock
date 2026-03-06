@@ -285,6 +285,7 @@ name = "faster-tokio"
 version = "0.1.0"
 dependencies = [
  "faster-core",
+ "tempfile",
  "tokio",
 ]
 
@@ -294,6 +295,7 @@ version = "0.1.0"
 dependencies = [
  "faster-core",
  "io-uring",
+ "libc",
  "tempfile",
 ]
 

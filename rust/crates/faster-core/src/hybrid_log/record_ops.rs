@@ -382,6 +382,25 @@ impl<'a> LogRecordWriter<'a> {
         Some((addr, accessor))
     }
 
+    /// Allocate space for a record of the given byte size.
+    ///
+    /// Unlike [`allocate_record`](Self::allocate_record), this does not
+    /// require typed key/value references — the caller provides the exact
+    /// size in bytes. This is used by the compaction copier, which copies
+    /// raw record bytes without deserializing.
+    ///
+    /// Returns `None` if the allocator is sealed or if the record would
+    /// cross a page boundary.
+    pub fn allocate_raw(&self, size: u32) -> Option<(LogicalAddress, MutableRecordAccessor)> {
+        let addr = self.allocator.try_allocate(size)?;
+        let ptr = self.allocator.get_physical_address(addr)?;
+
+        // SAFETY: Same guarantees as `allocate_record` — freshly allocated,
+        // 8-byte-aligned space within a valid page frame with exclusive access.
+        let accessor = unsafe { MutableRecordAccessor::new(ptr, size) };
+        Some((addr, accessor))
+    }
+
     /// Allocate and write a complete record in one step.
     ///
     /// Returns the [`LogicalAddress`] of the newly written record, or `None`
