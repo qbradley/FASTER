@@ -61,5 +61,5 @@ pub use pending_io::{
 };
 pub use session::{
     CompletePendingResult, FasterSession, PendingOpType, PendingOperation, SessionGuard,
-    SessionPool, SessionStats,
+    SessionPool, SessionStats, UnsafeContext,
 };

@@ -46,6 +46,10 @@ use crate::hash::KeyHash;
 use crate::record::RecordLayout;
 
 use super::Functions;
+use super::kv::FasterKv;
+use super::operations::{
+    InternalContext, internal_delete, internal_read, internal_rmw, internal_upsert,
+};
 use super::pending_io::{CompletedIo, PendingIoContext, PendingIoError};
 
 // ── SessionStats ────────────────────────────────────────────────────
@@ -528,6 +532,275 @@ impl<'a, F: Functions> SessionGuard<'a, F> {
 }
 
 impl<F: Functions> Drop for SessionGuard<'_, F> {
+    fn drop(&mut self) {
+        self.session.end_unsafe();
+    }
+}
+
+// ── UnsafeContext ───────────────────────────────────────────────────
+
+/// An epoch-amortized context for batch operations.
+///
+/// Created via [`FasterKv::unsafe_context()`](super::FasterKv::unsafe_context).
+/// While this context exists, the session remains in epoch protection —
+/// eliminating the per-operation epoch enter/exit overhead (protect +
+/// unprotect + try_drain) that normally costs ~124 ns per operation.
+///
+/// # When to Use
+///
+/// Use `UnsafeContext` when performing a batch of operations where epoch
+/// enter/exit overhead is a significant fraction of per-operation cost.
+/// In benchmarks, this can improve throughput by 30–40% for small
+/// key-value pairs.
+///
+/// # Safety Contract
+///
+/// The caller **must** periodically call [`refresh()`](Self::refresh) to
+/// allow epoch advancement and garbage collection. Holding an
+/// `UnsafeContext` for too long without refreshing blocks the safe-epoch
+/// from advancing, which prevents drain callbacks from firing.
+///
+/// A good rule of thumb: call `refresh()` every 64–256 operations.
+///
+/// # Thread Affinity
+///
+/// `UnsafeContext` is `!Send` (inherited from `FasterSession`). It must
+/// be used on the thread that created the session.
+///
+/// # Example
+///
+/// ```
+/// use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
+/// use faster_core::NullDevice;
+///
+/// let store: FasterKv<SimpleFunctions<u64, u64>> = FasterKv::new(
+///     FasterKvConfig::default(),
+///     SimpleFunctions::default(),
+///     NullDevice::new(),
+/// );
+/// let mut session = store.new_session();
+///
+/// // Batch operations with amortized epoch cost
+/// {
+///     let mut ctx = store.unsafe_context(&mut session);
+///     for i in 0u64..1000 {
+///         ctx.upsert(&store, &i, &(i * 10), ());
+///         if i % 64 == 0 {
+///             ctx.refresh();
+///         }
+///     }
+/// }
+/// // Epoch protection released when `ctx` is dropped
+///
+/// store.dispose_session(session);
+/// ```
+pub struct UnsafeContext<'a, F: Functions> {
+    session: &'a mut FasterSession<F>,
+}
+
+impl<'a, F: Functions> UnsafeContext<'a, F> {
+    /// Creates a new `UnsafeContext`, entering epoch protection.
+    ///
+    /// Called internally by [`FasterKv::unsafe_context()`](super::FasterKv::unsafe_context).
+    pub(crate) fn new(session: &'a mut FasterSession<F>) -> Self {
+        debug_assert!(
+            !session.in_epoch,
+            "unsafe_context called while already in epoch"
+        );
+        session
+            .epoch_table
+            .protect(session.epoch_thread.entry_index());
+        session.in_epoch = true;
+        Self { session }
+    }
+
+    /// Refresh the epoch without leaving the protected region.
+    ///
+    /// Updates this thread's local epoch to the current global epoch and
+    /// runs [`try_drain()`](crate::epoch::EpochTable::try_drain) to
+    /// execute any pending drain callbacks.
+    ///
+    /// Call this periodically (e.g., every 64–256 operations) to avoid
+    /// stalling epoch advancement and garbage collection.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
+    /// # use faster_core::NullDevice;
+    /// # let store: FasterKv<SimpleFunctions<u64, u64>> = FasterKv::new(
+    /// #     FasterKvConfig::default(), SimpleFunctions::default(), NullDevice::new());
+    /// # let mut session = store.new_session();
+    /// let mut ctx = store.unsafe_context(&mut session);
+    /// for i in 0u64..100 {
+    ///     ctx.upsert(&store, &i, &(i * 10), ());
+    ///     if i % 64 == 0 {
+    ///         ctx.refresh();
+    ///     }
+    /// }
+    /// drop(ctx);
+    /// # store.dispose_session(session);
+    /// ```
+    #[inline]
+    pub fn refresh(&self) {
+        let entry = &self.session.epoch_table.table[self.session.epoch_thread.entry_index()];
+        let epoch = self
+            .session
+            .epoch_table
+            .current_epoch
+            .load(std::sync::atomic::Ordering::Relaxed);
+        entry
+            .local_current_epoch
+            .store(epoch, std::sync::atomic::Ordering::Release);
+        self.session.epoch_table.try_drain();
+    }
+
+    /// Returns an immutable reference to the underlying session.
+    #[inline]
+    pub fn session(&self) -> &FasterSession<F> {
+        self.session
+    }
+
+    // ── Batch CRUD Operations ───────────────────────────────────────
+
+    /// Read a key within epoch-amortized protection.
+    ///
+    /// Equivalent to [`FasterKv::read()`](super::FasterKv::read) but skips
+    /// the per-operation epoch enter/exit since this context is already
+    /// protected.
+    ///
+    /// # Returns
+    ///
+    /// - [`OperationStatus::Ok`] — value read successfully.
+    /// - [`OperationStatus::NotFound`] — key does not exist.
+    /// - [`OperationStatus::Pending`] — record is on disk; queued for async I/O.
+    #[inline]
+    pub fn read(
+        &mut self,
+        store: &FasterKv<F>,
+        key: &F::Key,
+        input: &F::Input,
+        output: &mut F::Output,
+        context: F::Context,
+    ) -> crate::status::OperationStatus {
+        let ctx = InternalContext {
+            hash_index: &store.hash_index,
+            allocator: &store.allocator,
+        };
+        let status = internal_read(
+            &ctx,
+            self.session,
+            &store.functions,
+            key,
+            input,
+            output,
+            context,
+        );
+        if status == crate::status::OperationStatus::Pending {
+            store.dispatch_pending_io(self.session);
+        }
+        status
+    }
+
+    /// Upsert a key-value pair within epoch-amortized protection.
+    ///
+    /// Equivalent to [`FasterKv::upsert()`](super::FasterKv::upsert) but
+    /// skips the per-operation epoch enter/exit.
+    ///
+    /// # Returns
+    ///
+    /// - [`OperationStatus::Created`] — new record inserted.
+    /// - [`OperationStatus::InPlaceUpdated`] — existing mutable record updated.
+    /// - [`OperationStatus::CopyUpdated`] — read-only record copied to tail.
+    /// - [`OperationStatus::Pending`] — record is on disk; queued for async I/O.
+    #[inline]
+    pub fn upsert(
+        &mut self,
+        store: &FasterKv<F>,
+        key: &F::Key,
+        input: &F::Input,
+        context: F::Context,
+    ) -> crate::status::OperationStatus {
+        let ctx = InternalContext {
+            hash_index: &store.hash_index,
+            allocator: &store.allocator,
+        };
+        let status = internal_upsert(&ctx, self.session, &store.functions, key, input, context);
+        if status == crate::status::OperationStatus::Pending {
+            store.dispatch_pending_io(self.session);
+        }
+        status
+    }
+
+    /// Read-modify-write a key within epoch-amortized protection.
+    ///
+    /// Equivalent to [`FasterKv::rmw()`](super::FasterKv::rmw) but skips
+    /// the per-operation epoch enter/exit.
+    ///
+    /// # Returns
+    ///
+    /// - [`OperationStatus::Created`] — new record created via `rmw_initial`.
+    /// - [`OperationStatus::InPlaceUpdated`] — updated in mutable region.
+    /// - [`OperationStatus::CopyUpdated`] — read-only record copied to tail.
+    /// - [`OperationStatus::Pending`] — record is on disk; queued for async I/O.
+    #[inline]
+    pub fn rmw(
+        &mut self,
+        store: &FasterKv<F>,
+        key: &F::Key,
+        input: &F::Input,
+        output: &mut F::Output,
+        context: F::Context,
+    ) -> crate::status::OperationStatus {
+        let ctx = InternalContext {
+            hash_index: &store.hash_index,
+            allocator: &store.allocator,
+        };
+        let status = internal_rmw(
+            &ctx,
+            self.session,
+            &store.functions,
+            key,
+            input,
+            output,
+            context,
+        );
+        if status == crate::status::OperationStatus::Pending {
+            store.dispatch_pending_io(self.session);
+        }
+        status
+    }
+
+    /// Delete a key within epoch-amortized protection.
+    ///
+    /// Equivalent to [`FasterKv::delete()`](super::FasterKv::delete) but
+    /// skips the per-operation epoch enter/exit.
+    ///
+    /// # Returns
+    ///
+    /// - [`OperationStatus::Deleted`] — key deleted successfully.
+    /// - [`OperationStatus::NotFound`] — key does not exist.
+    /// - [`OperationStatus::Pending`] — record is on disk; queued for async I/O.
+    #[inline]
+    pub fn delete(
+        &mut self,
+        store: &FasterKv<F>,
+        key: &F::Key,
+        context: F::Context,
+    ) -> crate::status::OperationStatus {
+        let ctx = InternalContext {
+            hash_index: &store.hash_index,
+            allocator: &store.allocator,
+        };
+        let status = internal_delete(&ctx, self.session, &store.functions, key, context);
+        if status == crate::status::OperationStatus::Pending {
+            store.dispatch_pending_io(self.session);
+        }
+        status
+    }
+}
+
+impl<F: Functions> Drop for UnsafeContext<'_, F> {
     fn drop(&mut self) {
         self.session.end_unsafe();
     }

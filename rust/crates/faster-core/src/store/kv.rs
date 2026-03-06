@@ -59,7 +59,9 @@ use crate::store::operations::{
     internal_upsert,
 };
 use crate::store::pending_io::PendingIoManager;
-use crate::store::session::{CompletePendingResult, FasterSession, PendingOpType, SessionPool};
+use crate::store::session::{
+    CompletePendingResult, FasterSession, PendingOpType, SessionPool, UnsafeContext,
+};
 
 // ── RecoveryInfo ────────────────────────────────────────────────────
 
@@ -163,11 +165,11 @@ impl Default for FasterKvConfig {
 /// ```
 pub struct FasterKv<F: Functions> {
     /// The hash index.
-    hash_index: HashIndex,
+    pub(crate) hash_index: HashIndex,
     /// The hybrid log allocator.
-    allocator: HybridLogAllocator,
+    pub(crate) allocator: HybridLogAllocator,
     /// User-defined operation callbacks.
-    functions: F,
+    pub(crate) functions: F,
     /// The storage device.
     device: Box<dyn Device>,
     /// The shared epoch table (kept alive for sessions and hash index).
@@ -425,6 +427,57 @@ impl<F: Functions> FasterKv<F> {
             self.dispose_session(session);
         }
         result
+    }
+
+    // ── Epoch-Amortized Batch API ───────────────────────────────────
+
+    /// Create an epoch-amortized [`UnsafeContext`] for batch operations.
+    ///
+    /// While the returned context exists, the session stays in epoch
+    /// protection. Operations performed through the context skip the
+    /// per-operation epoch enter/exit overhead (protect + unprotect +
+    /// try_drain), which can reduce per-op latency by ~124 ns.
+    ///
+    /// The context is dropped when it goes out of scope, releasing epoch
+    /// protection automatically.
+    ///
+    /// # Safety Contract
+    ///
+    /// The caller must periodically call [`UnsafeContext::refresh()`] to
+    /// allow epoch advancement. A good rule of thumb: refresh every
+    /// 64–256 operations.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
+    /// use faster_core::NullDevice;
+    ///
+    /// let store: FasterKv<SimpleFunctions<u64, u64>> = FasterKv::new(
+    ///     FasterKvConfig::default(),
+    ///     SimpleFunctions::default(),
+    ///     NullDevice::new(),
+    /// );
+    /// let mut session = store.new_session();
+    ///
+    /// {
+    ///     let mut ctx = store.unsafe_context(&mut session);
+    ///     for i in 0u64..100 {
+    ///         ctx.upsert(&store, &i, &(i * 10), ());
+    ///         if i % 64 == 0 {
+    ///             ctx.refresh();
+    ///         }
+    ///     }
+    /// }
+    /// // Read back through the normal per-operation API
+    /// let mut output: Option<u64> = None;
+    /// store.read(&mut session, &50u64, &0u64, &mut output, ());
+    /// assert_eq!(output, Some(500));
+    ///
+    /// store.dispose_session(session);
+    /// ```
+    pub fn unsafe_context<'a>(&self, session: &'a mut FasterSession<F>) -> UnsafeContext<'a, F> {
+        UnsafeContext::new(session)
     }
 
     // ── Convenience Methods ─────────────────────────────────────────
@@ -827,7 +880,7 @@ impl<F: Functions> FasterKv<F> {
     ///
     /// Called automatically by the CRUD methods when an operation returns
     /// [`OperationStatus::Pending`].
-    fn dispatch_pending_io(&self, session: &mut FasterSession<F>) {
+    pub(crate) fn dispatch_pending_io(&self, session: &mut FasterSession<F>) {
         let ops = session.drain_pending_ops();
         for op in ops {
             match self.pending_io_mgr.issue_read(op, self.device.as_ref()) {
@@ -1082,10 +1135,11 @@ impl<F: Functions> FasterKv<F> {
                 self.functions
                     .upsert(key, &mut new_val, input, old_ref, &mut output);
 
-                let (new_addr, mut accessor) = match allocate_at_tail(&self.allocator, key, &new_val) {
-                    Some(pair) => pair,
-                    None => return,
-                };
+                let (new_addr, mut accessor) =
+                    match allocate_at_tail(&self.allocator, key, &new_val) {
+                        Some(pair) => pair,
+                        None => return,
+                    };
 
                 let new_ri = RecordInfo::new(old_addr, 0, false, false, false);
                 accessor.write_full_record(&new_ri, key, &new_val, layout);
@@ -2252,5 +2306,210 @@ mod tests {
             n
         });
         assert_eq!(count, 10);
+    }
+
+    // ── Epoch-Amortized Batch API (UnsafeContext) ───────────────────
+
+    #[test]
+    fn unsafe_context_batch_upsert_and_read() {
+        let store = test_store();
+        let mut session = store.new_session();
+
+        // Batch upsert via UnsafeContext
+        {
+            let mut ctx = store.unsafe_context(&mut session);
+            for i in 0u64..100 {
+                let status = ctx.upsert(&store, &i, &(i * 10), ());
+                assert!(
+                    status.is_success(),
+                    "batch upsert failed for key {i}: {status:?}"
+                );
+                if i % 32 == 0 {
+                    ctx.refresh();
+                }
+            }
+        }
+        // Epoch released — verify all reads succeed through normal API.
+        for i in 0u64..100 {
+            let mut output: Option<u64> = None;
+            let status = store.read(&mut session, &i, &0u64, &mut output, ());
+            assert_eq!(status, OperationStatus::Ok, "read failed for key {i}");
+            assert_eq!(output, Some(i * 10));
+        }
+
+        store.dispose_session(session);
+    }
+
+    #[test]
+    fn unsafe_context_batch_read() {
+        let store = test_store();
+        let mut session = store.new_session();
+
+        // Populate via normal API
+        for i in 0u64..50 {
+            let _ = store.upsert(&mut session, &i, &(i + 100), ());
+        }
+
+        // Batch read via UnsafeContext
+        {
+            let mut ctx = store.unsafe_context(&mut session);
+            for i in 0u64..50 {
+                let mut output: Option<u64> = None;
+                let status = ctx.read(&store, &i, &0u64, &mut output, ());
+                assert_eq!(status, OperationStatus::Ok, "batch read failed for key {i}");
+                assert_eq!(output, Some(i + 100));
+            }
+        }
+
+        store.dispose_session(session);
+    }
+
+    #[test]
+    fn unsafe_context_batch_delete() {
+        let store = test_store();
+        let mut session = store.new_session();
+
+        // Populate
+        {
+            let mut ctx = store.unsafe_context(&mut session);
+            for i in 0u64..20 {
+                let _ = ctx.upsert(&store, &i, &(i * 5), ());
+            }
+        }
+
+        // Delete via batch
+        {
+            let mut ctx = store.unsafe_context(&mut session);
+            for i in 0u64..10 {
+                let status = ctx.delete(&store, &i, ());
+                assert_eq!(
+                    status,
+                    OperationStatus::Deleted,
+                    "batch delete failed for key {i}"
+                );
+            }
+        }
+
+        // Verify: first 10 deleted, last 10 still present.
+        for i in 0u64..10 {
+            let mut output: Option<u64> = None;
+            let status = store.read(&mut session, &i, &0u64, &mut output, ());
+            assert_eq!(
+                status,
+                OperationStatus::NotFound,
+                "key {i} should be deleted"
+            );
+        }
+        for i in 10u64..20 {
+            let mut output: Option<u64> = None;
+            let status = store.read(&mut session, &i, &0u64, &mut output, ());
+            assert_eq!(status, OperationStatus::Ok, "key {i} should still exist");
+            assert_eq!(output, Some(i * 5));
+        }
+
+        store.dispose_session(session);
+    }
+
+    #[test]
+    fn unsafe_context_batch_rmw() {
+        let config = FasterKvConfig {
+            hash_index_size_log2: 8,
+            buffer_size_pages: 4,
+            mutable_fraction: 0.9,
+            sector_size: 512,
+            eviction_policy: EvictionPolicy::default(),
+            grow_config: GrowConfig::default(),
+        };
+        let store: FasterKv<CounterFunctions<u64>> =
+            FasterKv::new(config, CounterFunctions::new(), NullDevice::new());
+
+        let mut session = store.new_session();
+
+        // Create initial values via batch upsert
+        {
+            let mut ctx = store.unsafe_context(&mut session);
+            for i in 0u64..10 {
+                let _ = ctx.upsert(&store, &i, &0i64, ());
+            }
+        }
+
+        // Batch RMW (increment counters 5 times each)
+        {
+            let mut ctx = store.unsafe_context(&mut session);
+            for _round in 0..5 {
+                for i in 0u64..10 {
+                    let mut output: i64 = 0;
+                    let _ = ctx.rmw(&store, &i, &1i64, &mut output, ());
+                }
+                ctx.refresh();
+            }
+        }
+
+        // Verify counter values
+        for i in 0u64..10 {
+            let mut output: i64 = 0;
+            let status = store.read(&mut session, &i, &0i64, &mut output, ());
+            assert_eq!(status, OperationStatus::Ok, "read failed for key {i}");
+            assert_eq!(output, 5, "counter for key {i} should be 5");
+        }
+
+        store.dispose_session(session);
+    }
+
+    #[test]
+    fn unsafe_context_full_crud_cycle() {
+        let store = test_store();
+        let mut session = store.new_session();
+
+        // Full CRUD in a single UnsafeContext lifetime
+        {
+            let mut ctx = store.unsafe_context(&mut session);
+
+            // Create
+            let status = ctx.upsert(&store, &1u64, &100u64, ());
+            assert!(status.is_success());
+
+            // Read
+            let mut output: Option<u64> = None;
+            let status = ctx.read(&store, &1u64, &0u64, &mut output, ());
+            assert_eq!(status, OperationStatus::Ok);
+            assert_eq!(output, Some(100));
+
+            // Update
+            let status = ctx.upsert(&store, &1u64, &200u64, ());
+            assert!(status.is_success());
+
+            // Read updated
+            let mut output: Option<u64> = None;
+            let status = ctx.read(&store, &1u64, &0u64, &mut output, ());
+            assert_eq!(status, OperationStatus::Ok);
+            assert_eq!(output, Some(200));
+
+            // Delete
+            let status = ctx.delete(&store, &1u64, ());
+            assert_eq!(status, OperationStatus::Deleted);
+
+            // Read deleted
+            let mut output: Option<u64> = None;
+            let status = ctx.read(&store, &1u64, &0u64, &mut output, ());
+            assert_eq!(status, OperationStatus::NotFound);
+        }
+
+        store.dispose_session(session);
+    }
+
+    #[test]
+    fn unsafe_context_epoch_released_on_drop() {
+        let store = test_store();
+        let mut session = store.new_session();
+
+        {
+            let ctx = store.unsafe_context(&mut session);
+            assert!(ctx.session().is_in_epoch());
+        }
+        // UnsafeContext dropped — epoch released
+        assert!(!session.is_in_epoch());
+
+        store.dispose_session(session);
     }
 }
