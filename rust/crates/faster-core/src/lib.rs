@@ -17,6 +17,7 @@
 //! - [`status`] — Operation status codes (bitflag-based)
 //! - [`error`] — Error types for exceptional conditions
 //! - [`device`] — Storage device trait for hybrid log backends
+//! - [`sync_file_device`] — File-backed storage device with background I/O thread pool
 //! - [`store`] — Store-level traits: [`Functions`](store::Functions) callbacks
 
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -44,8 +45,10 @@ pub mod hybrid_log;
 pub mod record;
 pub mod status;
 pub mod store;
+pub mod sync_file_device;
 
 pub use device::{
     Device, InMemoryDevice, IoCompletionCallback, IoRequestResult, IoStatus, NullDevice,
 };
 pub use metrics::Metrics;
+pub use sync_file_device::SyncFileDevice;

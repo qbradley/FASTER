@@ -23,6 +23,7 @@ tracing = { version = "0.1", optional = true }
 [dev-dependencies]
 proptest = { workspace = true }
 criterion = { workspace = true }
+tempfile = "3"
 
 [features]
 default = []
