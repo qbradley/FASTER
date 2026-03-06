@@ -21,11 +21,11 @@ serde = { workspace = true }
 loom = { version = "0.7", optional = true }
 tracing = { version = "0.1", optional = true }
 crc32fast = "1.5.0"
+serde_json = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
 criterion = { workspace = true }
-serde_json = { workspace = true }
 tempfile = "3"
 
 [features]
