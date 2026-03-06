@@ -144,7 +144,7 @@ fn find_record_for_key<K: Key>(
 /// crossing (advance to next page + single retry).
 ///
 /// On success returns `(LogicalAddress, MutableRecordAccessor)`.
-fn allocate_at_tail<K: Key, V: Value>(
+pub(crate) fn allocate_at_tail<K: Key, V: Value>(
     allocator: &HybridLogAllocator,
     key: &K,
     value: &V,
@@ -405,7 +405,7 @@ pub(crate) fn internal_upsert<F: Functions>(
             session.enqueue_pending(PendingOperation {
                 op_type: PendingOpType::Upsert,
                 key: key.clone(),
-                input: None,
+                input: Some(input.clone()),
                 context,
                 address: addr,
                 record_layout: layout,

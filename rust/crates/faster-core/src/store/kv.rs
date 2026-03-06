@@ -38,16 +38,18 @@ use crate::address::{LogicalAddress, Page};
 use crate::device::Device;
 use crate::epoch::EpochTable;
 use crate::grow::{GrowConfig, GrowError, GrowManager};
+use crate::hash::bucket::HashBucketEntry;
 use crate::hash::index::HashIndex;
 use crate::hybrid_log::eviction::{EvictionPolicy, PageEvictor};
 use crate::hybrid_log::flush::PageFlusher;
 use crate::hybrid_log::log_allocator::HybridLogAllocator;
 use crate::hybrid_log::page::PageState;
-use crate::record::{read_record_info, read_value};
+use crate::record::{RecordInfo, read_record_info, read_value};
 use crate::status::OperationStatus;
 use crate::store::functions::Functions;
 use crate::store::operations::{
-    InternalContext, internal_delete, internal_read, internal_rmw, internal_upsert,
+    InternalContext, allocate_at_tail, internal_delete, internal_read, internal_rmw,
+    internal_upsert,
 };
 use crate::store::pending_io::PendingIoManager;
 use crate::store::session::{CompletePendingResult, FasterSession, PendingOpType, SessionPool};
@@ -853,42 +855,145 @@ impl<F: Functions> FasterKv<F> {
                 Some((output, cio.operation.context))
             }
             PendingOpType::Upsert | PendingOpType::Rmw | PendingOpType::Delete => {
-                // TODO: Write-path pending completion.
-                //
-                // When a write operation (upsert/rmw/delete) hits the on-disk
-                // region, the disk page is read back so we have the old record.
-                // To complete the write we need to:
-                //
-                //   1. **Upsert**: Read the old value from `cio.buffer`, allocate
-                //      a new record at the log tail, write the new value via
-                //      `Functions::upsert`, and CAS-update the hash index to
-                //      point to the new record (copy-to-tail / RCU).
-                //
-                //   2. **RMW**: Read the old value, call `Functions::rmw_copy_update`
-                //      to produce the merged value, allocate at the tail, and CAS
-                //      the hash entry.
-                //
-                //   3. **Delete**: Allocate a tombstone record at the tail and
-                //      CAS the hash entry.
-                //
-                // All three paths re-enter the hash index and allocator, which
-                // requires epoch protection. This is architecturally similar to
-                // the copy-to-tail path in `internal_upsert` / `internal_rmw`
-                // for the read-only region, but requires the data from the
-                // device buffer instead of the in-memory page.
-                //
-                // For now, the I/O is read-back only; the write is silently
-                // dropped. This means writes to on-disk records are lost.
-                // Callers should ensure the working set fits in-memory for
-                // write-heavy workloads until this is implemented.
-                #[cfg(debug_assertions)]
-                eprintln!(
-                    "process_completed_io: write-path completion not yet implemented \
-                     for {:?} — write to on-disk record was dropped",
-                    cio.operation.op_type
-                );
+                self.complete_write_pending(cio);
                 None
             }
+        }
+    }
+
+    /// Complete a write-path pending operation (upsert/rmw/delete).
+    ///
+    /// Reads the old value from the I/O buffer, allocates a new record at the
+    /// log tail, and CAS-updates the hash index (copy-to-tail / RCU). This is
+    /// the on-disk counterpart of the read-only copy-to-tail path in
+    /// `internal_upsert` / `internal_rmw` / `internal_delete`.
+    fn complete_write_pending(&self, cio: super::pending_io::CompletedIo<F>) {
+        let layout = &cio.operation.record_layout;
+        let key = &cio.operation.key;
+        let key_hash = cio.operation.key_hash;
+
+        // Look up the current hash entry for this key.
+        let (entry, slot) = match self.hash_index.find(key_hash) {
+            Some(pair) => pair,
+            None => return, // Key no longer in the index — nothing to update.
+        };
+
+        let old_addr = entry.address();
+        let ri = cio.record_info();
+
+        match cio.operation.op_type {
+            PendingOpType::Upsert => {
+                // Produce the new value via the upsert callback. The old
+                // value from the disk buffer is passed so merge-on-upsert
+                // semantics work correctly.
+                let old_value: F::Value = if ri.is_tombstone() || ri.is_invalid() {
+                    F::Value::default()
+                } else {
+                    cio.read_value(layout)
+                };
+
+                let mut new_val = F::Value::default();
+                let mut output = F::Output::default();
+                let old_ref = if ri.is_tombstone() || ri.is_invalid() {
+                    None
+                } else {
+                    Some(&old_value)
+                };
+
+                let input = cio
+                    .operation
+                    .input
+                    .as_ref()
+                    .expect("upsert pending must have input");
+                self.functions
+                    .upsert(key, &mut new_val, input, old_ref, &mut output);
+
+                let (new_addr, accessor) = match allocate_at_tail(&self.allocator, key, &new_val) {
+                    Some(pair) => pair,
+                    None => return,
+                };
+
+                let new_ri = RecordInfo::new(old_addr, 0, false, false, false);
+                accessor.write_full_record(&new_ri, key, &new_val, layout);
+
+                let committed = HashBucketEntry::new(entry.tag(), new_addr, false);
+                let _ = self.hash_index.update(slot, entry, committed);
+            }
+            PendingOpType::Rmw => {
+                let input = cio
+                    .operation
+                    .input
+                    .as_ref()
+                    .expect("rmw pending must have input");
+
+                if ri.is_tombstone() || ri.is_invalid() {
+                    // No existing value — create from initial.
+                    let mut new_val = F::Value::default();
+                    let mut output = F::Output::default();
+                    self.functions
+                        .rmw_initial(key, input, &mut new_val, &mut output);
+
+                    let (new_addr, accessor) =
+                        match allocate_at_tail(&self.allocator, key, &new_val) {
+                            Some(pair) => pair,
+                            None => return,
+                        };
+
+                    let new_ri = RecordInfo::new(old_addr, 0, false, false, false);
+                    accessor.write_full_record(&new_ri, key, &new_val, layout);
+
+                    let committed = HashBucketEntry::new(entry.tag(), new_addr, false);
+                    let _ = self.hash_index.update(slot, entry, committed);
+                } else {
+                    let old_value: F::Value = cio.read_value(layout);
+                    let mut new_value = old_value.clone();
+                    let mut output = F::Output::default();
+                    self.functions.rmw_copy_update(
+                        key,
+                        input,
+                        &old_value,
+                        &mut new_value,
+                        &mut output,
+                    );
+
+                    let (new_addr, accessor) =
+                        match allocate_at_tail(&self.allocator, key, &new_value) {
+                            Some(pair) => pair,
+                            None => return,
+                        };
+
+                    let new_ri = RecordInfo::new(old_addr, 0, false, false, false);
+                    accessor.write_full_record(&new_ri, key, &new_value, layout);
+
+                    let committed = HashBucketEntry::new(entry.tag(), new_addr, false);
+                    let _ = self.hash_index.update(slot, entry, committed);
+                }
+            }
+            PendingOpType::Delete => {
+                if ri.is_tombstone() {
+                    return; // Already deleted.
+                }
+
+                // Allocate a tombstone record at the tail.
+                let dummy_value: F::Value = if ri.is_invalid() {
+                    F::Value::default()
+                } else {
+                    cio.read_value(layout)
+                };
+
+                let (new_addr, accessor) =
+                    match allocate_at_tail(&self.allocator, key, &dummy_value) {
+                        Some(pair) => pair,
+                        None => return,
+                    };
+
+                let tombstone_ri = RecordInfo::new(old_addr, 0, false, true, false);
+                accessor.write_full_record(&tombstone_ri, key, &dummy_value, layout);
+
+                let committed = HashBucketEntry::new(entry.tag(), new_addr, false);
+                let _ = self.hash_index.update(slot, entry, committed);
+            }
+            PendingOpType::Read => unreachable!("read handled above"),
         }
     }
 
