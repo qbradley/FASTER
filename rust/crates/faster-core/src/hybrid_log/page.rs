@@ -237,15 +237,12 @@ impl PageFrame {
 
     /// Returns the page data as a mutable byte slice.
     ///
-    /// # Safety
-    ///
-    /// The caller must guarantee exclusive access to the page frame data.
-    /// This is typically ensured by the page being in `Open` state and the
-    /// caller holding a unique offset reservation.
+    /// Exclusive access is guaranteed by the `&mut self` borrow — the caller
+    /// must hold a unique reference to the page frame.
     #[inline]
-    pub unsafe fn as_mut_slice(&mut self) -> &mut [u8] {
-        // SAFETY: Caller guarantees exclusive access. `data` points to
-        // `size` bytes of valid, allocated memory.
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        // SAFETY: `data` points to `size` bytes of valid, allocated memory.
+        // `&mut self` guarantees no aliased references exist.
         unsafe { core::slice::from_raw_parts_mut(self.data.as_ptr(), self.size) }
     }
 
@@ -566,8 +563,7 @@ mod tests {
         assert_eq!(frame.size(), page_size);
 
         // Write a pattern.
-        // SAFETY: We have exclusive access (single-threaded, owned frame).
-        let slice = unsafe { frame.as_mut_slice() };
+        let slice = frame.as_mut_slice();
         for (i, byte) in slice.iter_mut().enumerate() {
             *byte = (i % 256) as u8;
         }
@@ -585,8 +581,7 @@ mod tests {
         let mut frame = PageFrame::new(page_size, 512);
 
         // Write non-zero data.
-        // SAFETY: Exclusive access.
-        let slice = unsafe { frame.as_mut_slice() };
+        let slice = frame.as_mut_slice();
         slice.fill(0xAB);
 
         // Zero the frame.

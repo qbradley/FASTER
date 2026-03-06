@@ -310,9 +310,7 @@ impl PageFlusher {
         let write_size = self.align_to_sector(valid_bytes);
         let offset = self.device_offset(page);
 
-        // SAFETY: `frame.as_ptr()` points to at least `write_size` bytes of
-        // valid, sector-aligned memory.
-        let source = unsafe { std::slice::from_raw_parts(frame.as_ptr(), write_size as usize) };
+        let source = &frame.as_slice()[..write_size as usize];
 
         match device.write_sync(offset, source) {
             Ok(bytes_written) => {

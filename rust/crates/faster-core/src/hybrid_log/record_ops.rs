@@ -187,10 +187,14 @@ impl MutableRecordAccessor {
 
     /// Returns a reference to the header as [`AtomicRecordInfo`] for CAS
     /// operations.
+    ///
+    /// This is safe because the record starts at an 8-byte aligned position
+    /// and `AtomicRecordInfo` is `#[repr(transparent)]` over `AtomicU64`.
     #[inline]
     pub fn atomic_record_info(&self) -> &AtomicRecordInfo {
-        // SAFETY: Same guarantees as RecordAccessor::atomic_record_info —
-        // `ptr` is 8-byte aligned and points to at least 8 valid bytes.
+        // SAFETY: `ptr` is 8-byte aligned (constructor invariant) and points to
+        // at least 8 valid bytes. `AtomicRecordInfo` is `#[repr(transparent)]`
+        // over `AtomicU64`, which has the same size and alignment as `u64`.
         unsafe { &*(self.ptr as *const AtomicRecordInfo) }
     }
 
@@ -209,35 +213,26 @@ impl MutableRecordAccessor {
     /// Returns the raw key bytes (zero-copy).
     #[inline]
     pub fn key_ref(&self, layout: &RecordLayout) -> &[u8] {
-        // SAFETY: `ptr` is valid for `record_size` bytes (constructor invariant).
-        let slice = unsafe {
-            core::slice::from_raw_parts(self.ptr as *const u8, self.record_size as usize)
-        };
-        &slice[layout.key_offset()..layout.value_offset()]
+        &self.as_slice()[layout.key_offset()..layout.value_offset()]
     }
 
     /// Returns the raw value bytes (zero-copy).
     #[inline]
     pub fn value_ref(&self, layout: &RecordLayout) -> &[u8] {
-        // SAFETY: `ptr` is valid for `record_size` bytes (constructor invariant).
-        let slice = unsafe {
-            core::slice::from_raw_parts(self.ptr as *const u8, self.record_size as usize)
-        };
-        &slice[layout.value_offset()..self.record_size as usize]
+        &self.as_slice()[layout.value_offset()..self.record_size as usize]
     }
 
     /// Returns a mutable raw pointer to the start of the value data.
     #[inline]
     pub fn value_mut_ptr(&self, layout: &RecordLayout) -> *mut u8 {
-        // SAFETY: ptr is valid for record_size writable bytes (constructor
-        // invariant), and value_offset() < total_size <= record_size.
-        unsafe { self.ptr.add(layout.value_offset()) }
+        self.as_mut_slice()[layout.value_offset()..].as_mut_ptr()
     }
 
     /// Returns the full record as a read-only byte slice.
     #[inline]
     pub fn as_slice(&self) -> &[u8] {
         // SAFETY: `ptr` is valid for `record_size` bytes (constructor invariant).
+        // The borrow lifetime is tied to `&self`.
         unsafe { core::slice::from_raw_parts(self.ptr as *const u8, self.record_size as usize) }
     }
 
@@ -430,12 +425,12 @@ impl<'a> LogRecordReader<'a> {
         let ptr = self.allocator.get_physical_address(addr)?;
 
         // SAFETY: The allocator returned a valid pointer within a page frame.
-        // RecordInfo occupies the first 8 bytes of any record, and all page frames
-        // are at least one page in size. Reading `RECORD_HEADER_SIZE` bytes at a
-        // valid record start is safe.
-        let header_slice =
-            unsafe { core::slice::from_raw_parts(ptr as *const u8, RECORD_HEADER_SIZE) };
-        Some(layout_read_record_info(header_slice))
+        // RecordInfo occupies the first 8 bytes of any record, and all page
+        // frames are at least one page in size. The pointer is 8-byte aligned
+        // because record offsets are always multiples of 8.
+        let accessor =
+            unsafe { RecordAccessor::new(ptr as *const u8, RECORD_HEADER_SIZE as u32) };
+        Some(accessor.record_info())
     }
 
     /// Read a key at the given address with the given layout.
@@ -470,20 +465,14 @@ impl<'a> LogRecordReader<'a> {
     ) -> Option<(RecordInfo, bool)> {
         let ptr = self.allocator.get_physical_address(addr)?;
 
-        // Read header (first RECORD_HEADER_SIZE bytes).
-        // SAFETY: The allocator returned a valid pointer within a page frame.
-        // RecordInfo occupies the first `RECORD_HEADER_SIZE` bytes of any
-        // record, and all page frames are at least one page in size.
-        let header_slice =
-            unsafe { core::slice::from_raw_parts(ptr as *const u8, RECORD_HEADER_SIZE) };
-        let ri = layout_read_record_info(header_slice);
-
-        // Read key from the same physical pointer via a RecordAccessor.
+        // Use a single RecordAccessor for both header and key reads,
+        // avoiding a redundant unsafe `from_raw_parts` for the header.
         let record_size = layout.total_size() as u32;
-        // SAFETY: The allocator returned a valid pointer and `record_size`
-        // matches the layout. The pointer is 8-byte aligned because record
-        // offsets are always multiples of 8.
+        // SAFETY: The allocator returned a valid pointer within a page frame
+        // and `record_size` matches the layout. The pointer is 8-byte aligned
+        // because record offsets are always multiples of 8.
         let accessor = unsafe { RecordAccessor::new(ptr as *const u8, record_size) };
+        let ri = accessor.record_info();
         let stored_key: K = accessor.key(layout);
         Some((ri, stored_key == *key))
     }
