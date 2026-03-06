@@ -33,12 +33,16 @@
 //! ```
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::address::{LogicalAddress, Page};
 use crate::checkpoint::{
     CheckpointConfig, CheckpointError, CheckpointOrchestrator, CheckpointToken, CheckpointType,
 };
+use crate::compaction::orchestrator::{
+    CompactionError, CompactionOrchestrator, CompactionResult, collect_stats,
+};
+use crate::compaction::policy::CompactionPolicy;
 use crate::device::Device;
 use crate::epoch::EpochTable;
 use crate::grow::{GrowConfig, GrowError, GrowManager};
@@ -48,7 +52,7 @@ use crate::hybrid_log::eviction::{EvictionPolicy, PageEvictor};
 use crate::hybrid_log::flush::PageFlusher;
 use crate::hybrid_log::log_allocator::HybridLogAllocator;
 use crate::hybrid_log::page::PageState;
-use crate::record::{RecordInfo, read_record_info, read_value};
+use crate::record::{FixedSizeKey, FixedSizeValue, RecordInfo, read_record_info, read_value};
 use crate::recovery::index_recovery::IndexRecoveryEngine;
 use crate::recovery::log_recovery::LogRecoveryEngine;
 use crate::recovery::{RecoveryError, RecoveryManager};
@@ -116,6 +120,14 @@ pub struct FasterKvConfig {
     pub eviction_policy: EvictionPolicy,
     /// Configuration for automatic hash index grow (online resize).
     pub grow_config: GrowConfig,
+    /// Whether automatic compaction is enabled in [`maintenance()`](FasterKv::maintenance).
+    ///
+    /// When `true` and a [`compaction_policy`](Self::compaction_policy) is
+    /// set, `maintenance()` checks the policy on each call and triggers
+    /// compaction when the policy fires.
+    ///
+    /// Default: `false` (manual compaction only via [`FasterKv::compact()`]).
+    pub auto_compact: bool,
 }
 
 impl Default for FasterKvConfig {
@@ -127,6 +139,7 @@ impl Default for FasterKvConfig {
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
+            auto_compact: false,
         }
     }
 }
@@ -173,8 +186,7 @@ pub struct FasterKv<F: Functions> {
     /// The storage device.
     device: Box<dyn Device>,
     /// The shared epoch table (kept alive for sessions and hash index).
-    #[allow(dead_code)]
-    epoch_table: Arc<EpochTable>,
+    pub(crate) epoch_table: Arc<EpochTable>,
     /// Session pool for creating/disposing sessions.
     session_pool: SessionPool<F>,
     /// Page flusher for writing sealed pages to the device.
@@ -187,6 +199,11 @@ pub struct FasterKv<F: Functions> {
     grow_manager: GrowManager,
     /// Configuration snapshot.
     config: FasterKvConfig,
+    /// Serializes concurrent compaction attempts.
+    compaction_lock: Mutex<()>,
+    /// Policy that decides when automatic compaction should trigger.
+    /// `None` means manual-only (no auto-compact in `maintenance()`).
+    compaction_policy: Option<Box<dyn CompactionPolicy>>,
     /// Observable operation counters (gated by `metrics` feature).
     #[cfg(feature = "metrics")]
     metrics: crate::metrics::Metrics,
@@ -199,6 +216,8 @@ pub struct FasterKv<F: Functions> {
 // - Arc<EpochTable> is Send+Sync.
 // - F: Functions requires Send + Sync.
 // - SessionPool<F> contains Arc<EpochTable> + PhantomData<F>, both Send+Sync.
+// - Mutex<()> is Send+Sync.
+// - Option<Box<dyn CompactionPolicy>> is Send+Sync because CompactionPolicy: Send+Sync.
 unsafe impl<F: Functions> Send for FasterKv<F> {}
 // SAFETY: All methods take &self and internal mutation is through atomics.
 unsafe impl<F: Functions> Sync for FasterKv<F> {}
@@ -354,6 +373,8 @@ impl<F: Functions> FasterKv<F> {
             evictor,
             pending_io_mgr,
             grow_manager,
+            compaction_lock: Mutex::new(()),
+            compaction_policy: None,
             config,
             #[cfg(feature = "metrics")]
             metrics: crate::metrics::Metrics::new(),
@@ -1340,12 +1361,95 @@ impl<F: Functions> FasterKv<F> {
         (flushed, evicted)
     }
 
+    // ── Compaction ──────────────────────────────────────────────────
+
+    /// Run online log compaction: scan, copy live records, swing
+    /// pointers, and advance begin-address.
+    ///
+    /// Compacts the region from `begin_address` up to the current
+    /// safe-read-only address. Dead and tombstoned records are discarded;
+    /// live records are copied to the log tail.
+    ///
+    /// Concurrent `compact()` calls are serialized via an internal mutex.
+    /// Normal read/write operations continue concurrently.
+    ///
+    /// # Type parameters
+    ///
+    /// `K` and `V` must match the key/value types stored in the log.
+    /// For [`SimpleFunctions<K, V>`](crate::store::SimpleFunctions), use
+    /// the same `K` and `V`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CompactionError`] if the compaction region is empty,
+    /// record copying fails, or epoch drain times out.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
+    /// use faster_core::NullDevice;
+    ///
+    /// let store: FasterKv<SimpleFunctions<u64, u64>> = FasterKv::new(
+    ///     FasterKvConfig::default(),
+    ///     SimpleFunctions::default(),
+    ///     NullDevice::new(),
+    /// );
+    ///
+    /// let mut session = store.new_session();
+    /// for i in 0u64..100 {
+    ///     store.upsert(&mut session, &i, &i, ());
+    /// }
+    /// // Compact (may be a no-op if everything is still in-memory/mutable).
+    /// let _ = store.compact::<u64, u64>();
+    /// store.dispose_session(session);
+    /// ```
+    pub fn compact<K: FixedSizeKey, V: FixedSizeValue>(
+        &self,
+    ) -> Result<CompactionResult, CompactionError> {
+        // Serialize concurrent compaction attempts.
+        let _lock = self
+            .compaction_lock
+            .lock()
+            .expect("compaction lock poisoned");
+
+        let begin = self.first_data_address();
+        let until = self.allocator.safe_read_only_address();
+
+        if begin >= until {
+            return Err(CompactionError::EmptyRegion { begin, until });
+        }
+
+        // The orchestrator manages its own epoch thread internally:
+        // it enters epoch for K1–K3 (scan, copy, swing), exits, drains,
+        // then runs K4 (begin-address advance).
+        let orch = CompactionOrchestrator::new(
+            &self.allocator,
+            &self.hash_index,
+            self.device.as_ref(),
+            &self.epoch_table,
+        );
+        orch.run::<K, V>(begin, until)
+    }
+
+    /// Set the compaction policy used by [`maintenance()`](Self::maintenance)
+    /// for automatic compaction.
+    ///
+    /// Pass `None` to disable automatic compaction (manual only).
+    /// Also set [`FasterKvConfig::auto_compact`] to `true` to enable
+    /// the policy check in `maintenance()`.
+    pub fn set_compaction_policy(&mut self, policy: Option<Box<dyn CompactionPolicy>>) {
+        self.compaction_policy = policy;
+    }
+
     /// Run a full maintenance cycle: shift read-only boundary, flush, evict.
     ///
     /// Call this periodically to keep the hybrid log healthy. It:
     /// 1. Shifts the read-only boundary if the mutable region is too large.
     /// 2. Flushes sealed pages to the device.
     /// 3. Evicts flushed pages if the in-memory footprint exceeds the policy.
+    /// 4. (Optional) Checks the compaction policy and triggers compaction
+    ///    if [`auto_compact`](FasterKvConfig::auto_compact) is enabled.
     pub fn maintenance(&self) {
         // 1. Shift read-only boundary if mutable region is too large.
         let info = self.allocator.snapshot();
@@ -1362,6 +1466,31 @@ impl<F: Functions> FasterKv<F> {
         if self.evictor.needs_eviction(&self.allocator.snapshot()) {
             self.evictor.evict_pages(&self.allocator);
         }
+    }
+
+    /// Check whether the configured compaction policy recommends
+    /// compaction and run it if so.
+    ///
+    /// This is intended to be called from a background maintenance loop.
+    /// It is a no-op if no policy is set, `auto_compact` is `false`, or
+    /// the policy does not recommend compaction.
+    ///
+    /// Returns `Some(result)` if compaction ran, `None` otherwise.
+    pub fn maybe_compact<K: FixedSizeKey, V: FixedSizeValue>(
+        &self,
+    ) -> Option<Result<CompactionResult, CompactionError>> {
+        if !self.config.auto_compact {
+            return None;
+        }
+
+        let policy = self.compaction_policy.as_ref()?;
+        let stats = collect_stats(&self.allocator);
+
+        if !policy.should_compact(&stats) {
+            return None;
+        }
+
+        Some(self.compact::<K, V>())
     }
 
     // ── Hash Index Grow ─────────────────────────────────────────────
@@ -1417,6 +1546,16 @@ impl<F: Functions> FasterKv<F> {
     #[inline]
     pub fn head_address(&self) -> LogicalAddress {
         self.allocator.head_address()
+    }
+
+    /// Get the current begin address (start of valid log data).
+    ///
+    /// Records below this address have been truncated by compaction.
+    /// After a successful compaction, this advances past the compacted
+    /// region.
+    #[inline]
+    pub fn begin_address(&self) -> LogicalAddress {
+        self.allocator.begin_address()
     }
 
     /// Get the address of the first data record in the log.
@@ -1489,6 +1628,7 @@ mod tests {
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
+            auto_compact: false,
         };
         FasterKv::new(config, SimpleFunctions::default(), NullDevice::new())
     }
@@ -1614,6 +1754,7 @@ mod tests {
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
+            auto_compact: false,
         };
         let store: FasterKv<CounterFunctions<u64>> =
             FasterKv::new(config, CounterFunctions::new(), NullDevice::new());
@@ -1646,6 +1787,7 @@ mod tests {
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
+            auto_compact: false,
         };
         let store: SimpleStore =
             FasterKv::new(config, SimpleFunctions::default(), NullDevice::new());
@@ -1686,6 +1828,7 @@ mod tests {
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
+            auto_compact: false,
         };
         let store = Arc::new(FasterKv::<SimpleFunctions<u64, u64>>::new(
             config,
@@ -1739,6 +1882,7 @@ mod tests {
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
+            auto_compact: false,
         };
         let store: SimpleStore =
             FasterKv::new(config, SimpleFunctions::default(), NullDevice::new());
@@ -1832,6 +1976,7 @@ mod tests {
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
+            auto_compact: false,
         };
         let store: SimpleStore =
             FasterKv::new(config, SimpleFunctions::default(), NullDevice::new());
@@ -1859,6 +2004,7 @@ mod tests {
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
+            auto_compact: false,
         };
         let store: SimpleStore =
             FasterKv::new(config, SimpleFunctions::default(), NullDevice::new());
@@ -1919,6 +2065,7 @@ mod tests {
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
+            auto_compact: false,
         };
         let device = InMemoryDevice::with_sizes(512, 1 << 24); // 16 MiB
         let store: FasterKv<SimpleFunctions<u64, u64>> =
@@ -1982,6 +2129,7 @@ mod tests {
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
+            auto_compact: false,
         };
         let device = InMemoryDevice::with_sizes(512, 1 << 24);
         let store: FasterKv<SimpleFunctions<u64, u64>> =
@@ -2082,6 +2230,7 @@ mod tests {
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
+            auto_compact: false,
         };
         let device = InMemoryDevice::with_sizes(512, 1 << 24);
         let store: FasterKv<SimpleFunctions<u64, u64>> =
@@ -2200,6 +2349,7 @@ mod tests {
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
+            auto_compact: false,
         };
         let device = InMemoryDevice::with_sizes(512, 1 << 24);
         let store = Arc::new(FasterKv::<SimpleFunctions<u64, u64>>::new(
@@ -2486,6 +2636,7 @@ mod tests {
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
+            auto_compact: false,
         };
         let store: FasterKv<CounterFunctions<u64>> =
             FasterKv::new(config, CounterFunctions::new(), NullDevice::new());

@@ -215,6 +215,7 @@ impl FasterKvBuilder {
                 chunks_per_operation: self.grow_chunks_per_operation,
                 enabled: self.grow_enabled,
             },
+            auto_compact: false,
         };
 
         Ok(FasterKv::new(config, functions, device))

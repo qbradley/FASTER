@@ -146,6 +146,7 @@ mod tests {
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
+            auto_compact: false,
         };
         FasterKv::new(config, SimpleFunctions::default(), NullDevice::new())
     }
@@ -280,6 +281,7 @@ mod tests {
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
+            auto_compact: false,
         };
         let store: SimpleStore =
             FasterKv::new(config, SimpleFunctions::default(), NullDevice::new());
