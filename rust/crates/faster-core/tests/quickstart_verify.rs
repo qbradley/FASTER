@@ -5,35 +5,30 @@
 //! `/tmp`). If the QUICKSTART changes, these tests must be updated to
 //! match — and vice versa.
 
-// The QUICKSTART examples intentionally ignore OperationStatus returns
-// for readability. Suppress warnings here since these are verbatim copies.
-#![allow(unused_must_use)]
-
 // ═══════════════════════════════════════════════════════════════════
 // Example 1: Hello, FASTER
 // ═══════════════════════════════════════════════════════════════════
 
 #[test]
+#[allow(unused_must_use)]
 fn quickstart_example_1_hello_faster() {
     use faster_core::NullDevice;
     use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
 
-    // Create a store with default config and a null device (in-memory only).
     let store: FasterKv<SimpleFunctions<u64, u64>> = FasterKv::new(
         FasterKvConfig::default(),
         SimpleFunctions::default(),
         NullDevice::new(),
     );
 
-    // All operations go through a session — a lightweight, thread-local handle.
     let mut session = store.new_session();
 
-    // Upsert a few keys.
+    // Upsert a few keys. Fresh inserts always succeed in-memory.
     store.upsert_simple(&mut session, &1, &100);
     store.upsert_simple(&mut session, &2, &200);
     store.upsert_simple(&mut session, &3, &300);
 
-    // Read them back.
+    // Read them back. In-memory reads return Ok immediately.
     assert_eq!(store.read_simple(&mut session, &1), Some(100));
     assert_eq!(store.read_simple(&mut session, &2), Some(200));
     assert_eq!(store.read_simple(&mut session, &3), Some(300));
@@ -42,7 +37,6 @@ fn quickstart_example_1_hello_faster() {
     store.delete_simple(&mut session, &2);
     assert_eq!(store.read_simple(&mut session, &2), None);
 
-    // Always dispose the session when you're done.
     store.dispose_session(session);
 }
 
@@ -54,12 +48,12 @@ fn quickstart_example_1_hello_faster() {
 fn quickstart_example_2_persistent_storage() {
     use faster_core::SyncFileDevice;
     use faster_core::checkpoint::CheckpointType;
+    use faster_core::status::OperationStatus;
     use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
     use std::path::Path;
 
     type Store = FasterKv<SimpleFunctions<u64, u64>>;
 
-    /// Open (or create) a FASTER store backed by disk files in `dir`.
     fn open_store(dir: &Path) -> Store {
         let device = SyncFileDevice::new(
             dir,
@@ -80,23 +74,27 @@ fn quickstart_example_2_persistent_storage() {
     let dir = tempfile::tempdir().unwrap();
     let dir = dir.path();
 
-    // ── Phase 1: Write some data and take a checkpoint ──────────────
+    // ── Phase 1: Write data and take a checkpoint ───────────────
     {
         let store = open_store(dir);
         let mut session = store.new_session();
 
         for i in 0..1000u64 {
-            store.upsert_simple(&mut session, &i, &(i * i));
+            let status = store.upsert(&mut session, &i, &(i * i), ());
+            // Fresh inserts into a new store are always in-memory.
+            assert_ne!(status, OperationStatus::Pending);
         }
 
+        // Drain any pending ops before disposing. In this case there are
+        // none, but this is the correct pattern.
+        store.complete_pending(&mut session);
         store.dispose_session(session);
 
         // Checkpoint persists the hash index + log metadata to disk.
+        // Without this, reopening the store gives an empty hash index.
         store
             .checkpoint(dir, CheckpointType::FoldOver)
             .expect("checkpoint failed");
-
-        // `store` is dropped here — the device is closed cleanly.
     }
 
     // ── Phase 2: Reopen and recover ─────────────────────────────────
@@ -109,14 +107,35 @@ fn quickstart_example_2_persistent_storage() {
 
         let mut session = store.new_session();
 
-        // Data written in Phase 1 is still here.
-        assert_eq!(store.read_simple(&mut session, &42), Some(42 * 42));
-        assert_eq!(store.read_simple(&mut session, &999), Some(999 * 999));
+        // After recovery with all pages loaded, reads are in-memory.
+        let mut out: Option<u64> = None;
+        let status = store.read(&mut session, &42, &0u64, &mut out, ());
+        assert_eq!(status, OperationStatus::Ok);
+        assert_eq!(out, Some(42 * 42));
+
+        // Reads for on-disk records would return Pending — handle both:
+        let mut out2: Option<u64> = None;
+        let status = store.read(&mut session, &999, &0u64, &mut out2, ());
+        match status {
+            OperationStatus::Ok => {
+                assert_eq!(out2, Some(999 * 999));
+            }
+            OperationStatus::Pending => {
+                // I/O dispatched — wait for it, then retry.
+                store.complete_pending_sync(&mut session);
+                let mut retry: Option<u64> = None;
+                let s = store.read(&mut session, &999, &0u64, &mut retry, ());
+                assert_eq!(s, OperationStatus::Ok);
+                assert_eq!(retry, Some(999 * 999));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
 
         // Can continue writing after recovery.
-        store.upsert_simple(&mut session, &2000, &7);
-        assert_eq!(store.read_simple(&mut session, &2000), Some(7));
+        let _ = store.upsert(&mut session, &2000, &7, ());
 
+        // Always drain pending ops before disposing the session.
+        store.complete_pending(&mut session);
         store.dispose_session(session);
     }
 }
@@ -126,6 +145,7 @@ fn quickstart_example_2_persistent_storage() {
 // ═══════════════════════════════════════════════════════════════════
 
 #[test]
+#[allow(unused_must_use)]
 fn quickstart_example_3_concurrent_upserts() {
     use faster_core::NullDevice;
     use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
@@ -152,6 +172,9 @@ fn quickstart_example_3_concurrent_upserts() {
                 for i in 0..ops_per_thread as u64 {
                     store.upsert_simple(&mut session, &(base as u64 + i), &i);
                 }
+                // Drain pending before dispose — correct even when there
+                // are none (NullDevice never evicts, so no Pending here).
+                store.complete_pending(&mut session);
                 store.dispose_session(session);
             })
         })
