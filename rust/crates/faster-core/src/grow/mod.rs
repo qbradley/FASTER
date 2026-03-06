@@ -31,8 +31,10 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
+pub mod manager;
 pub mod splitter;
 pub mod state_machine;
+pub use manager::{GrowConfig, GrowManager, GrowProgress};
 pub use splitter::{BucketSplitter, HashResolver, SplitResult};
 pub use state_machine::{GrowError, GrowPhase, GrowStateMachine};
 
