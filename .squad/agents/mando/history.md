@@ -508,3 +508,35 @@ Created `rust/crates/faster-core/examples/cache_store.rs` — a Rust port of the
 - Upserts see "only" 2.8× because allocation + hash index CAS dominates more than epoch overhead
 - `pub(crate)` field visibility on FasterKv was needed for the batch methods in session.rs to access store internals — acceptable since both files are in the same crate
 
+
+---
+
+### Wave 1 K1 — Compaction Scanner (2026-03-06)
+
+**What:** Implemented `CompactionScanner` — walks a hybrid log region and classifies each record as live, dead, or tombstoned by consulting the hash index. Produces a `CompactionPlan` with per-record liveness info.
+
+**Key files:**
+- `rust/crates/faster-core/src/compaction/mod.rs`: `CompactionPlan` and `LiveRecord` types, computed fields (`total_records()`, `live_fraction()`)
+- `rust/crates/faster-core/src/compaction/scanner.rs`: `CompactionScanner::scan()`, `is_current_version()`, page-boundary-aware advance. 10 unit tests + 1 proptest.
+- `rust/crates/faster-core/src/store/kv.rs`: `first_data_address()` accessor (skips 8-byte sentinel)
+- `rust/crates/faster-core/src/lib.rs`: `#[deny(unsafe_code)] pub mod compaction;`
+
+**Architecture decisions:**
+- Scanner is a stateless function: `scan(&FasterKv, &FasterSession, begin, until) -> CompactionPlan`
+- Classification priority: tombstone flag → invalid flag → hash-index chain walk → conservative LIVE
+- Key invariant: never classify a live record as dead (false positives OK, false negatives never)
+- No hash index entry found → assume LIVE (conservative; handles concurrent inserts)
+- Chain walk stops at first non-invalid, key-matching record — matches store's `find_record_for_key()` pattern
+- Requires epoch protection (caller holds `begin_unsafe()` guard)
+- `#[deny(unsafe_code)]` on entire compaction module — pure safe Rust
+
+**Bugs found and fixed:**
+1. **Sentinel alignment bug:** FasterKv allocates 8-byte sentinel at offset 0. Scanner must start at `first_data_address()` (begin + 8) to align with the 24-byte record grid (offsets 8, 32, 56...).
+2. **Null RecordInfo bug:** Records created with `previous_address=ZERO, version=0, no flags` produce `RecordInfo(0)` which `is_null()` returns true. Scanner must NOT skip these — they are valid first-version records. Removed null-record skip entirely since `first_data_address()` already avoids the sentinel.
+
+**Learnings:**
+- `RecordInfo::is_null()` is unreliable for distinguishing unwritten memory from valid records — version 0 records with no previous address are indistinguishable from zeroed memory
+- The existing `LogScanIterator` tests work around this by using version ≥ 1 for all test records
+- `store::functions` module is private; use re-exports from `store` module (`SimpleFunctions`, `FasterKv`, etc.)
+- Hash tag computation for u64 keys: no collisions for keys 0..50 with 1024 buckets (verified)
+- `FasterKv` upsert in read-only region creates copy-to-tail but does NOT mark old record invalid — scanner must check hash index to detect dead records
