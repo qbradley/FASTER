@@ -1189,6 +1189,69 @@ impl<F: Functions> FasterKv<F> {
         self.evictor.evict_pages(&self.allocator)
     }
 
+    /// Flush all log data to device and evict from memory.
+    ///
+    /// This is the Rust equivalent of C# FASTER's `store.Log.FlushAndEvict(true)`.
+    /// It moves all in-memory pages to the storage device:
+    ///
+    /// 1. Shifts the read-only boundary to the current tail (seals mutable region).
+    /// 2. Seals any remaining `Open` pages.
+    /// 3. Synchronously flushes all sealed pages to the device.
+    /// 4. Evicts all flushed pages from memory.
+    ///
+    /// After this call, subsequent reads will return [`OperationStatus::Pending`]
+    /// and require [`complete_pending`](Self::complete_pending) to retrieve results
+    /// from disk. New writes still work — they allocate fresh pages in memory.
+    ///
+    /// Returns `(flushed, evicted)` — the number of pages flushed and evicted.
+    pub fn flush_and_evict(&self) -> (u32, u32) {
+        // 1. Shift read-only boundary to the tail.
+        self.allocator.shift_read_only_to_tail();
+
+        // 2. Seal all Open pages and flush Sealed pages synchronously.
+        let page_table = self.allocator.page_table();
+        let head_page = self.allocator.head_address().page().0;
+        let tail = self.allocator.tail_address();
+        let tail_page = tail.page().0;
+        let page_size = self.allocator.page_size();
+        let mut flushed = 0u32;
+
+        for p in head_page..=tail_page {
+            let page = Page(p);
+            if let Some(frame) = page_table.get_frame(page) {
+                let state = frame.state().load(std::sync::atomic::Ordering::Acquire);
+                if state == PageState::Open {
+                    let _ = frame
+                        .state()
+                        .try_transition(PageState::Open, PageState::Sealed);
+                }
+                if frame.state().load(std::sync::atomic::Ordering::Acquire) == PageState::Sealed
+                    && self
+                        .flusher
+                        .flush_page_sync(page, page_table, self.device.as_ref(), page_size)
+                        .is_ok()
+                {
+                    flushed += 1;
+                }
+            }
+        }
+
+        // Advance flushed_until so the evictor sees all pages as flushed.
+        self.allocator.try_advance_flushed_until(tail);
+
+        // 3. Evict all flushed pages.
+        let mut evicted = 0u32;
+        loop {
+            let n = self.evictor.evict_pages(&self.allocator);
+            if n == 0 {
+                break;
+            }
+            evicted += n;
+        }
+
+        (flushed, evicted)
+    }
+
     /// Run a full maintenance cycle: shift read-only boundary, flush, evict.
     ///
     /// Call this periodically to keep the hybrid log healthy. It:
