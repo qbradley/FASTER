@@ -40,6 +40,7 @@ pub use self::hash::bucket as hash_bucket;
 pub use self::hash::index as hash_index;
 pub use self::hash::overflow;
 pub use self::hash::table as hash_table;
+pub mod hybrid_log;
 pub mod record;
 pub mod status;
 pub mod store;

@@ -635,3 +635,70 @@ mod miri_device {
         assert_eq!(read_buf, write_data);
     }
 }
+
+// -----------------------------------------------------------------------
+// Hybrid log page frame tests — exercises PageFrame allocation, write,
+// read, zero, and drop under Miri.
+// -----------------------------------------------------------------------
+
+#[cfg(miri)]
+mod miri_hybrid_log_page {
+    use core::sync::atomic::Ordering;
+    use faster_core::hybrid_log::{PageFrame, PageState};
+
+    #[test]
+    fn page_frame_lifecycle_miri() {
+        // Use a small page size so Miri doesn't take forever.
+        let page_size = 4096;
+        let sector_size = 512;
+
+        let mut frame = PageFrame::new(page_size, sector_size);
+        assert_eq!(frame.size(), page_size);
+        assert_eq!(frame.state().load(Ordering::Relaxed), PageState::Free);
+
+        // Verify alignment.
+        assert_eq!(frame.as_ptr() as usize % sector_size, 0);
+
+        // Data should be zeroed on allocation.
+        assert!(
+            frame.as_slice().iter().all(|&b| b == 0),
+            "new frame should be zeroed"
+        );
+
+        // Write a pattern.
+        // SAFETY: Single-threaded, exclusive access via &mut.
+        let slice = unsafe { frame.as_mut_slice() };
+        for (i, byte) in slice.iter_mut().enumerate() {
+            *byte = (i & 0xFF) as u8;
+        }
+
+        // Read back.
+        let slice = frame.as_slice();
+        for (i, &byte) in slice.iter().enumerate() {
+            assert_eq!(byte, (i & 0xFF) as u8, "mismatch at offset {i}");
+        }
+
+        // Zero the frame.
+        // SAFETY: Single-threaded, exclusive access.
+        unsafe { frame.zero() };
+        assert!(
+            frame.as_slice().iter().all(|&b| b == 0),
+            "frame should be zeroed"
+        );
+
+        // Test state transitions.
+        assert!(
+            frame
+                .state()
+                .try_transition(PageState::Free, PageState::Open)
+        );
+        assert!(
+            frame
+                .state()
+                .try_transition(PageState::Open, PageState::Sealed)
+        );
+        assert_eq!(frame.state().load(Ordering::Relaxed), PageState::Sealed);
+
+        // Frame drops here — Miri catches any double-free or leak.
+    }
+}
