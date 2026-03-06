@@ -403,3 +403,120 @@ mod miri_hash_bucket {
         assert!(result2.is_err());
     }
 }
+
+// -----------------------------------------------------------------------
+// Epoch-gated allocator tests — exercises the deferred free path through
+// the epoch drain callback and the push_free_list_raw unsafe function.
+// -----------------------------------------------------------------------
+
+#[cfg(miri)]
+mod miri_epoch_gated_allocator {
+    use faster_core::allocator::MallocFixedPageSize;
+    use faster_core::epoch::EpochTable;
+    use std::sync::Arc;
+
+    /// A type large enough for the free-list linkage (>= 8 bytes).
+    #[repr(C, align(8))]
+    struct Item64([u64; 8]);
+
+    #[test]
+    fn epoch_gated_free_defers_push() {
+        let epoch = Arc::new(EpochTable::new());
+        let mut alloc = MallocFixedPageSize::<Item64>::new();
+        alloc.set_epoch(Arc::clone(&epoch));
+
+        let addr1 = alloc.allocate();
+        // SAFETY: Single-threaded, exclusive access.
+        unsafe { alloc.get_mut(addr1) }.0[0] = 42;
+
+        // Free with epoch gating — item goes to deferred queue.
+        alloc.free(addr1);
+
+        // Next allocate should NOT reuse addr1 (it's deferred).
+        let addr2 = alloc.allocate();
+        assert_ne!(addr1, addr2, "epoch-gated free should not be immediate");
+
+        // Bump epoch to drain deferred frees.
+        epoch.bump_current_epoch_no_callback();
+
+        // Now the freed item should be on the free list.
+        let addr3 = alloc.allocate();
+        assert_eq!(
+            addr3, addr1,
+            "after epoch drain, freed item should be reusable"
+        );
+    }
+
+    #[test]
+    fn epoch_gated_free_multiple_then_drain() {
+        let epoch = Arc::new(EpochTable::new());
+        let mut alloc = MallocFixedPageSize::<Item64>::new();
+        alloc.set_epoch(Arc::clone(&epoch));
+
+        let a = alloc.allocate();
+        let b = alloc.allocate();
+        let c = alloc.allocate();
+
+        // Write distinct values.
+        // SAFETY: Single-threaded, exclusive access.
+        unsafe { alloc.get_mut(a) }.0[0] = 1;
+        unsafe { alloc.get_mut(b) }.0[0] = 2;
+        unsafe { alloc.get_mut(c) }.0[0] = 3;
+
+        // Free all three (deferred).
+        alloc.free(a);
+        alloc.free(b);
+        alloc.free(c);
+
+        // Drain.
+        epoch.bump_current_epoch_no_callback();
+
+        // All three should be reusable.
+        let mut reused = vec![alloc.allocate(), alloc.allocate(), alloc.allocate()];
+        reused.sort_by_key(|addr| addr.raw());
+        let mut expected = vec![a, b, c];
+        expected.sort_by_key(|addr| addr.raw());
+        assert_eq!(reused, expected, "all deferred frees should be reusable");
+    }
+
+    #[test]
+    fn free_immediate_bypasses_epoch() {
+        let epoch = Arc::new(EpochTable::new());
+        let mut alloc = MallocFixedPageSize::<Item64>::new();
+        alloc.set_epoch(Arc::clone(&epoch));
+
+        let addr = alloc.allocate();
+        alloc.free_immediate(addr);
+
+        // Should be immediately reusable.
+        let reused = alloc.allocate();
+        assert_eq!(reused, addr, "free_immediate should bypass epoch gating");
+    }
+
+    #[test]
+    fn free_without_epoch_is_immediate() {
+        let alloc = MallocFixedPageSize::<Item64>::new();
+        let addr = alloc.allocate();
+        alloc.free(addr);
+
+        let reused = alloc.allocate();
+        assert_eq!(reused, addr, "without epoch, free should be immediate");
+    }
+
+    #[test]
+    fn epoch_gated_drop_flushes_deferred() {
+        let epoch = Arc::new(EpochTable::new());
+        {
+            let mut alloc = MallocFixedPageSize::<Item64>::new();
+            alloc.set_epoch(Arc::clone(&epoch));
+
+            let addr = alloc.allocate();
+            // SAFETY: Single-threaded.
+            unsafe { alloc.get_mut(addr) }.0[0] = 0xDEAD;
+            alloc.free(addr);
+            // Drop should flush deferred frees via epoch bump.
+        }
+        // If Drop didn't flush, deferred callbacks would hold dangling pointers.
+        // Miri would catch any use-after-free.
+    }
+}

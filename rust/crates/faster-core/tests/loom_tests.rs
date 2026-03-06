@@ -398,6 +398,76 @@ fn b5_bump_pool_distinct_addresses() {
 }
 
 // ============================================================================
+// Test B6: Epoch-gated Treiber stack free (deferred push)
+// ============================================================================
+
+/// Tests that deferring free-list pushes (epoch-gated frees) preserves
+/// stack integrity under all interleavings.
+///
+/// Two threads pop from a pre-filled Treiber stack, then defer the push-back
+/// (simulating epoch-gated free). After both threads complete, the deferred
+/// pushes execute (simulating epoch drain). Invariant: no item is lost or
+/// duplicated.
+///
+/// Without deferral, an ABA race could cause a popping thread to succeed a
+/// CAS against a recycled head. Deferral ensures nodes cannot re-enter the
+/// stack while any thread is mid-pop.
+#[test]
+fn b6_epoch_gated_free_list() {
+    loom::model(|| {
+        let stack = Arc::new(treiber::Stack::new());
+        // Pre-fill: items 1 and 2 are "on the free list".
+        stack.push(1);
+        stack.push(2);
+
+        // Deferred-push queue (models epoch drain list).
+        let deferred = Arc::new(loom::sync::Mutex::new(Vec::<u64>::new()));
+
+        // Thread 1: pop (allocate) then defer push (epoch-gated free).
+        let s1 = Arc::clone(&stack);
+        let d1 = Arc::clone(&deferred);
+        let t1 = thread::spawn(move || {
+            let v = s1.pop().expect("thread 1 must pop");
+            d1.lock().unwrap().push(v);
+            v
+        });
+
+        // Thread 2: pop (allocate) then defer push (epoch-gated free).
+        let s2 = Arc::clone(&stack);
+        let d2 = Arc::clone(&deferred);
+        let t2 = thread::spawn(move || {
+            let v = s2.pop().expect("thread 2 must pop");
+            d2.lock().unwrap().push(v);
+            v
+        });
+
+        let v1 = t1.join().unwrap();
+        let v2 = t2.join().unwrap();
+
+        // Each thread must get a different item.
+        assert_ne!(v1, v2, "each thread must get a distinct item");
+
+        // --- Epoch advance: drain deferred pushes ---
+        let to_push: Vec<u64> = deferred.lock().unwrap().drain(..).collect();
+        for v in to_push {
+            stack.push(v);
+        }
+
+        // --- Verify: all items accounted for ---
+        let mut final_items = Vec::new();
+        while let Some(v) = stack.pop() {
+            final_items.push(v);
+        }
+        final_items.sort();
+        assert_eq!(
+            final_items,
+            vec![1, 2],
+            "all items must be preserved after epoch drain"
+        );
+    });
+}
+
+// ============================================================================
 // Test 0C: Lock-free drain list (Treiber stack push + atomic-swap drain)
 // ============================================================================
 

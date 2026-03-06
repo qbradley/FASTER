@@ -22,6 +22,8 @@
 //!
 //! 1. **Free list (reuse path):** A lock-free Treiber stack with 16-bit ABA
 //!    tags. Freed items store the next-pointer in their first 8 bytes.
+//!    When an epoch table is attached, frees are deferred until all threads
+//!    advance past the current epoch, making the 16-bit tag sufficient.
 //! 2. **Bump pointer (fresh path):** An atomic `fetch_add` on a monotonic
 //!    counter. Page boundaries trigger on-demand page allocation.
 //!
@@ -61,10 +63,11 @@
 use std::alloc::{self, Layout};
 use std::marker::PhantomData;
 use std::ptr::{self, NonNull};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::address::{LogicalAddress, MAX_OFFSET, MAX_PAGE, Offset, Page};
+use crate::epoch::EpochTable;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -292,19 +295,96 @@ pub struct MallocFixedPageSize<T> {
     /// Separate from the grow_lock to avoid holding two locks.
     retired_dirs: Mutex<Vec<NonNull<PageDir<T>>>>,
 
+    /// Optional epoch table for deferred (epoch-gated) frees.
+    ///
+    /// When set, [`free()`](Self::free) defers the free-list push until
+    /// all threads have advanced past the current epoch, preventing ABA
+    /// bugs in the Treiber stack at high churn rates.
+    epoch: Option<Arc<EpochTable>>,
+
     _phantom: PhantomData<T>,
 }
 
 // SAFETY: All shared state is accessed through atomics or Mutex. Pages are
 // heap-allocated and never moved. The raw pointers in `dir` and `retired_dirs`
 // point to owned allocations that are only freed when the allocator is dropped
-// (which requires `&mut self`, guaranteeing exclusive access).
+// (which requires `&mut self`, guaranteeing exclusive access). The `epoch`
+// field holds an `Arc<EpochTable>` which is inherently Send + Sync.
 unsafe impl<T: Send> Send for MallocFixedPageSize<T> {}
 // SAFETY: Same rationale as Send. Concurrent access to the allocator is safe
 // because: (1) the bump counter uses atomic fetch_add, (2) the free list uses
-// lock-free CAS, (3) page installation uses atomic CAS, and (4) directory
-// growth is mutex-protected. No data races are possible.
+// lock-free CAS, (3) page installation uses atomic CAS, (4) directory growth
+// is mutex-protected, and (5) the epoch field is only mutated during
+// single-threaded initialization via `set_epoch`. No data races are possible.
 unsafe impl<T: Send> Sync for MallocFixedPageSize<T> {}
+
+// ---------------------------------------------------------------------------
+// FreeListPush — deferred free-list push for epoch drain callbacks
+// ---------------------------------------------------------------------------
+
+/// Captures the raw pointers needed for a deferred free-list push.
+///
+/// Created at [`MallocFixedPageSize::free()`] time (while the allocator is
+/// borrowed), consumed by an epoch drain callback that fires after all
+/// threads have advanced past the current epoch.
+struct FreeListPush {
+    /// Pointer to the allocator's free list head (`AtomicU64`).
+    free_list: *const AtomicU64,
+    /// Pointer to the freed item (will write next-pointer into first 8 bytes).
+    item_ptr: *mut u8,
+    /// Raw [`LogicalAddress`] value of the freed item.
+    addr_raw: u64,
+}
+
+// SAFETY: The raw pointers target allocator-owned memory that is guaranteed
+// to outlive the drain callback. The allocator's `Drop` implementation
+// flushes all pending epoch drain callbacks (via `bump_current_epoch_no_callback`)
+// before releasing any memory, so the pointers are valid when the callback
+// executes.
+unsafe impl Send for FreeListPush {}
+
+impl FreeListPush {
+    /// Execute the deferred free-list push.
+    fn execute(self) {
+        // SAFETY: The `FreeListPush` was created while the allocator was alive,
+        // and the `Drop` impl ensures all pending callbacks execute before
+        // memory is freed. Thus both pointers are valid.
+        unsafe { push_free_list_raw(self.free_list, self.item_ptr, self.addr_raw) }
+    }
+}
+
+/// Performs the Treiber stack push using raw pointers.
+///
+/// This is the low-level implementation used by epoch drain callbacks,
+/// where the allocator's `&self` is not available. The CAS loop is
+/// identical to [`MallocFixedPageSize::push_free_list`].
+///
+/// # Safety
+///
+/// - `free_list` must point to a valid, live `AtomicU64` (the free list head).
+/// - `item_ptr` must point to a valid, writable allocation of at least 8 bytes
+///   with at least 8-byte alignment.
+/// - No other thread may be writing to `item_ptr` concurrently.
+unsafe fn push_free_list_raw(free_list: *const AtomicU64, item_ptr: *mut u8, addr_raw: u64) {
+    // SAFETY: caller guarantees `free_list` points to a valid AtomicU64.
+    let fl = unsafe { &*free_list };
+    loop {
+        let old_head = fl.load(Ordering::Acquire);
+        let old_addr_raw = old_head & ADDR_MASK;
+        let old_tag = old_head & !ADDR_MASK;
+
+        // SAFETY: caller guarantees `item_ptr` is valid, writable, and aligned.
+        unsafe {
+            ptr::write(item_ptr as *mut u64, old_addr_raw);
+        }
+
+        let new_head = addr_raw | old_tag.wrapping_add(TAG_INCREMENT);
+        match fl.compare_exchange_weak(old_head, new_head, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return,
+            Err(_) => continue,
+        }
+    }
+}
 
 impl<T> MallocFixedPageSize<T> {
     /// Creates a new allocator.
@@ -354,8 +434,32 @@ impl<T> MallocFixedPageSize<T> {
             free_list: AtomicU64::new(FREE_LIST_EMPTY),
             grow_lock: Mutex::new(()),
             retired_dirs: Mutex::new(Vec::new()),
+            epoch: None,
             _phantom: PhantomData,
         }
+    }
+
+    /// Attaches an epoch table for deferred (epoch-gated) frees.
+    ///
+    /// When set, [`free()`](Self::free) defers the free-list push until all
+    /// threads have advanced past the current epoch, preventing ABA bugs in
+    /// the Treiber stack under high churn.
+    ///
+    /// Must be called before the allocator is shared across threads.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use faster_core::allocator::MallocFixedPageSize;
+    /// use faster_core::epoch::EpochTable;
+    ///
+    /// let epoch = Arc::new(EpochTable::new());
+    /// let mut alloc: MallocFixedPageSize<[u64; 2]> = MallocFixedPageSize::new();
+    /// alloc.set_epoch(Arc::clone(&epoch));
+    /// ```
+    pub fn set_epoch(&mut self, epoch: Arc<EpochTable>) {
+        self.epoch = Some(epoch);
     }
 
     /// Allocates one item, returning its [`LogicalAddress`].
@@ -443,9 +547,15 @@ impl<T> MallocFixedPageSize<T> {
         unsafe { page_ptr.add(item_idx) }
     }
 
-    /// Frees an item, returning it to the lock-free free list for reuse.
+    /// Frees an item, returning it to the free list for reuse.
     ///
-    /// The item's first 8 bytes will be overwritten with the free-list linkage.
+    /// If an epoch table is attached (via [`set_epoch`](Self::set_epoch)),
+    /// the free-list push is deferred until all threads have advanced past
+    /// the current epoch, preventing ABA bugs in the Treiber stack.
+    /// Without an epoch table, the push is immediate (original behavior).
+    ///
+    /// The item's first 8 bytes will be overwritten with the free-list
+    /// linkage (immediately or when the deferred push executes).
     ///
     /// # Safety contract (caller must uphold)
     ///
@@ -453,10 +563,31 @@ impl<T> MallocFixedPageSize<T> {
     ///   already been freed.
     /// - No thread will access the item after this call (enforced by epoch
     ///   protection at a higher level).
-    ///
-    /// In the future, epoch-gated deallocation (`free_at_epoch`) will defer
-    /// the actual free-list push until all threads have passed a safe epoch.
     pub fn free(&self, addr: LogicalAddress) {
+        if let Some(ref epoch) = self.epoch {
+            // Epoch-gated: defer the free-list push until all threads have
+            // advanced past the current epoch, preventing ABA.
+            let push = FreeListPush {
+                free_list: &self.free_list as *const AtomicU64,
+                item_ptr: self.get_ptr(addr) as *mut u8,
+                addr_raw: addr.raw(),
+            };
+            epoch.defer(move || push.execute());
+        } else {
+            self.push_free_list(addr);
+        }
+    }
+
+    /// Frees an item immediately, bypassing epoch gating.
+    ///
+    /// Always pushes directly to the free list, regardless of whether an
+    /// epoch table is attached. Use this during cleanup or drop when epoch
+    /// deferral is unnecessary or impossible.
+    ///
+    /// # Safety contract (caller must uphold)
+    ///
+    /// Same as [`free()`](Self::free).
+    pub fn free_immediate(&self, addr: LogicalAddress) {
         self.push_free_list(addr);
     }
 
@@ -658,6 +789,14 @@ impl<T> Drop for MallocFixedPageSize<T> {
         // SAFETY: We have `&mut self`, so no concurrent access. All outstanding
         // references to items must have been dropped by the caller.
 
+        // Flush any pending epoch-deferred frees before releasing memory.
+        // Bumping the epoch advances safe_epoch (since no threads are active),
+        // causing all deferred free-list pushes to execute while our pages
+        // are still valid.
+        if let Some(ref epoch) = self.epoch {
+            epoch.bump_current_epoch_no_callback();
+        }
+
         // Free all pages in the current directory.
         let dir = *self.dir.get_mut();
         if !dir.is_null() {
@@ -697,6 +836,7 @@ impl<T> std::fmt::Debug for MallocFixedPageSize<T> {
             .field("item_size", &std::mem::size_of::<T>())
             .field("items_allocated", &self.count())
             .field("pages_touched", &(page_idx + 1))
+            .field("epoch_gated", &self.epoch.is_some())
             .finish()
     }
 }
@@ -1119,6 +1259,109 @@ mod tests {
             (num_threads * increments) as u64,
             "all atomic increments must be visible"
         );
+    }
+
+    // -- Epoch-gated frees --
+
+    #[test]
+    fn epoch_gated_free_defers_push() {
+        let epoch = Arc::new(crate::epoch::EpochTable::new());
+        let mut alloc = MallocFixedPageSize::<SmallItem>::new();
+        alloc.set_epoch(Arc::clone(&epoch));
+
+        let addr1 = alloc.allocate();
+        alloc.free(addr1);
+
+        // Item should NOT be on the free list yet (deferred by epoch).
+        let addr2 = alloc.allocate();
+        assert_ne!(
+            addr1, addr2,
+            "epoch-gated free should defer, not reuse immediately"
+        );
+
+        // Bump epoch to drain the deferred push.
+        epoch.bump_current_epoch_no_callback();
+
+        // Now the freed item should be available.
+        let addr3 = alloc.allocate();
+        assert_eq!(
+            addr3, addr1,
+            "after epoch drain, freed item should be reusable"
+        );
+    }
+
+    #[test]
+    fn free_immediate_bypasses_epoch() {
+        let epoch = Arc::new(crate::epoch::EpochTable::new());
+        let mut alloc = MallocFixedPageSize::<SmallItem>::new();
+        alloc.set_epoch(Arc::clone(&epoch));
+
+        let addr = alloc.allocate();
+        alloc.free_immediate(addr);
+
+        // Should be immediately reusable.
+        let reused = alloc.allocate();
+        assert_eq!(reused, addr, "free_immediate should bypass epoch gating");
+    }
+
+    #[test]
+    fn free_without_epoch_is_immediate() {
+        let alloc = MallocFixedPageSize::<SmallItem>::new();
+        let addr = alloc.allocate();
+        alloc.free(addr);
+
+        let reused = alloc.allocate();
+        assert_eq!(reused, addr, "without epoch, free should be immediate");
+    }
+
+    #[test]
+    fn epoch_gated_drop_flushes_deferred() {
+        let epoch = Arc::new(crate::epoch::EpochTable::new());
+        {
+            let mut alloc = MallocFixedPageSize::<SmallItem>::new();
+            alloc.set_epoch(Arc::clone(&epoch));
+
+            let addr = alloc.allocate();
+            alloc.free(addr);
+            // Drop should flush deferred frees without panic.
+        }
+        // If Drop didn't flush, the drain callback would hold dangling
+        // pointers. This test verifies Drop completes successfully.
+    }
+
+    #[test]
+    fn epoch_gated_multiple_frees_drain_in_order() {
+        let epoch = Arc::new(crate::epoch::EpochTable::new());
+        let mut alloc = MallocFixedPageSize::<SmallItem>::new();
+        alloc.set_epoch(Arc::clone(&epoch));
+
+        let a = alloc.allocate();
+        let b = alloc.allocate();
+        let c = alloc.allocate();
+
+        // Free all three (deferred).
+        alloc.free(a);
+        alloc.free(b);
+        alloc.free(c);
+
+        // None should be reusable yet.
+        let d = alloc.allocate();
+        assert_ne!(d, a);
+        assert_ne!(d, b);
+        assert_ne!(d, c);
+
+        // Drain deferred frees.
+        epoch.bump_current_epoch_no_callback();
+
+        // All three should now be reusable (LIFO order from drain list).
+        let r1 = alloc.allocate();
+        let r2 = alloc.allocate();
+        let r3 = alloc.allocate();
+        let mut got = [r1, r2, r3];
+        got.sort_by_key(|a| a.raw());
+        let mut expected = [a, b, c];
+        expected.sort_by_key(|a| a.raw());
+        assert_eq!(got, expected, "all deferred frees should be drained");
     }
 }
 
