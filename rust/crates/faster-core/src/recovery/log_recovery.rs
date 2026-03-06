@@ -1,10 +1,8 @@
-//! Log recovery engine for the FASTER hybrid log (fold-over mode).
+//! Log recovery engine for the FASTER hybrid log.
 //!
-//! Restores the hybrid log's address boundaries from a fold-over checkpoint.
-//! In fold-over mode, all data up to the checkpoint tail has been flushed to
-//! the main log file on disk. Recovery reads the persisted
-//! [`LogRecoveryInfo`] metadata, validates the on-disk log file, and produces
-//! a [`LogRecoveryResult`] describing the restored state.
+//! Restores the hybrid log's address boundaries from either a **fold-over** or
+//! a **snapshot** checkpoint. The engine is stateless — all per-recovery state
+//! lives in the [`RecoveryPlan`] and the returned [`LogRecoveryResult`].
 //!
 //! # Fold-over recovery protocol
 //!
@@ -19,13 +17,31 @@
 //!    - `flushed_until` = tail (everything up to tail is on disk)
 //! 4. Optionally scan records to verify chain integrity.
 //!
+//! # Snapshot recovery protocol
+//!
+//! In snapshot mode the in-memory pages were written to a separate snapshot
+//! file instead of being flushed to the main log. Recovery must merge:
+//!
+//! 1. **Main log file** — pages from `begin_address` to `head_address`
+//!    (already on disk from before the checkpoint).
+//! 2. **Snapshot file** — pages from `snapshot_start_address` to
+//!    `snapshot_final_address` (written by [`SnapshotFileWriter`]).
+//!
+//! After loading, the allocator addresses are restored so that:
+//! - `tail_address` = `snapshot_final_address`
+//! - `head_address` = `begin_address` (all recovered data is in-memory or
+//!   on-disk)
+//! - `flushed_until` = `snapshot_final_address`
+//!
 //! [`LogRecoveryInfo`]: crate::checkpoint::LogRecoveryInfo
+//! [`SnapshotFileWriter`]: crate::checkpoint::snapshot_writer::SnapshotFileWriter
 
 use std::fmt;
 use std::fs;
 use std::path::Path;
 
 use crate::address::{LogicalAddress, OFFSET_BITS};
+use crate::checkpoint::snapshot_writer::SnapshotFileReader;
 use crate::checkpoint::{CheckpointType, LogRecoveryInfo};
 
 use super::{RecoveryError, RecoveryPlan};
@@ -90,7 +106,7 @@ impl fmt::Display for LogRecoveryResult {
 // LogRecoveryEngine
 // ---------------------------------------------------------------------------
 
-/// Recovers the hybrid log state from a fold-over checkpoint.
+/// Recovers the hybrid log state from a fold-over or snapshot checkpoint.
 ///
 /// The engine is stateless — all per-recovery state lives in the
 /// [`RecoveryPlan`] and the returned [`LogRecoveryResult`].
@@ -170,6 +186,74 @@ impl LogRecoveryEngine {
             read_only_address,
             flushed_until,
             records_scanned,
+            pages_loaded,
+        })
+    }
+
+    /// Recover the hybrid log from a snapshot checkpoint.
+    ///
+    /// Unlike fold-over, snapshot recovery merges data from two sources:
+    ///
+    /// - **Main log file** — pages from `begin_address` to `head_address`
+    ///   that were already on disk before the checkpoint.
+    /// - **Snapshot file** — pages from `snapshot_start_address` to
+    ///   `snapshot_final_address` that were in memory at checkpoint time
+    ///   and persisted to a separate file by [`SnapshotFileWriter`].
+    ///
+    /// The snapshot file is located at `{base_dir}/{token}.snapshot.log`.
+    ///
+    /// # Errors
+    ///
+    /// - [`RecoveryError::CorruptMetadata`] if the plan's log info is not a
+    ///   snapshot checkpoint or `use_snapshot_file` is `false`.
+    /// - [`RecoveryError::ValidationFailed`] if the snapshot file is missing,
+    ///   truncated, has an inconsistent page count, or page indices are
+    ///   outside the expected range.
+    /// - [`RecoveryError::IoError`] on underlying I/O failures.
+    ///
+    /// [`SnapshotFileWriter`]: crate::checkpoint::snapshot_writer::SnapshotFileWriter
+    pub fn recover_snapshot(
+        &self,
+        plan: &RecoveryPlan,
+        base_dir: &Path,
+    ) -> Result<LogRecoveryResult, RecoveryError> {
+        let log_info = &plan.log_info;
+
+        // Step 1: Validate this is a snapshot checkpoint.
+        validate_snapshot_type(log_info)?;
+
+        // Step 2: Validate address consistency in the metadata.
+        validate_snapshot_address_consistency(log_info)?;
+
+        // Step 3: Validate the main log file covers pages below head.
+        if log_info.head_address > LogicalAddress::ZERO {
+            validate_log_file_for_head(base_dir, log_info)?;
+        }
+
+        // Step 4: Validate and load the snapshot file.
+        let snapshot_pages = validate_snapshot_file(base_dir, plan, log_info)?;
+
+        // Step 5: Compute restored address boundaries.
+        let begin_address = log_info.begin_address;
+        let tail_address = log_info.snapshot_final_address;
+        // After snapshot recovery, head is set to begin — all data from
+        // begin to tail is considered loaded (main log + snapshot).
+        let head_address = begin_address;
+        let read_only_address = tail_address;
+        let flushed_until = tail_address;
+
+        // Pages loaded = main-log pages (begin..snapshot_head) + snapshot pages.
+        let main_log_pages =
+            pages_between_addresses(begin_address, log_info.snapshot_start_address);
+        let pages_loaded = main_log_pages + snapshot_pages;
+
+        Ok(LogRecoveryResult {
+            begin_address,
+            head_address,
+            tail_address,
+            read_only_address,
+            flushed_until,
+            records_scanned: 0,
             pages_loaded,
         })
     }
@@ -322,6 +406,182 @@ fn pages_between_addresses(from: LogicalAddress, to: LogicalAddress) -> u32 {
         let base = to_page - from_page;
         if to.offset().0 > 0 { base + 1 } else { base }
     }
+}
+
+/// Verify the recovery info describes a snapshot checkpoint.
+fn validate_snapshot_type(log_info: &LogRecoveryInfo) -> Result<(), RecoveryError> {
+    if log_info.checkpoint_type != CheckpointType::Snapshot {
+        return Err(RecoveryError::CorruptMetadata(format!(
+            "expected Snapshot checkpoint, got {:?}",
+            log_info.checkpoint_type
+        )));
+    }
+    if !log_info.use_snapshot_file {
+        return Err(RecoveryError::CorruptMetadata(
+            "snapshot checkpoint has use_snapshot_file=false".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Validate address consistency for a snapshot checkpoint.
+///
+/// The invariant is:
+/// - `begin <= head`
+/// - `snapshot_start == head` (snapshot covers from head to tail)
+/// - `snapshot_start <= snapshot_final`
+/// - `final_address == snapshot_final_address`
+fn validate_snapshot_address_consistency(
+    log_info: &LogRecoveryInfo,
+) -> Result<(), RecoveryError> {
+    let mut issues = Vec::new();
+
+    if log_info.begin_address > log_info.head_address {
+        issues.push(format!(
+            "begin_address ({:?}) > head_address ({:?})",
+            log_info.begin_address, log_info.head_address
+        ));
+    }
+
+    if log_info.snapshot_start_address > log_info.snapshot_final_address {
+        issues.push(format!(
+            "snapshot_start_address ({:?}) > snapshot_final_address ({:?})",
+            log_info.snapshot_start_address, log_info.snapshot_final_address
+        ));
+    }
+
+    if log_info.head_address > log_info.snapshot_final_address {
+        issues.push(format!(
+            "head_address ({:?}) > snapshot_final_address ({:?})",
+            log_info.head_address, log_info.snapshot_final_address
+        ));
+    }
+
+    if !issues.is_empty() {
+        return Err(RecoveryError::ValidationFailed(issues));
+    }
+    Ok(())
+}
+
+/// Validate the main log file covers pages from 0 to `head_address`.
+///
+/// For snapshot recovery, the main log file only needs to contain pages
+/// up to the head address (not the full tail as in fold-over).
+fn validate_log_file_for_head(
+    base_dir: &Path,
+    log_info: &LogRecoveryInfo,
+) -> Result<(), RecoveryError> {
+    let head = log_info.head_address;
+    if head == LogicalAddress::ZERO {
+        return Ok(());
+    }
+
+    let expected_min_size = logical_address_to_byte_offset(head);
+    if expected_min_size == 0 {
+        return Ok(());
+    }
+
+    let segment_size = default_segment_size();
+    let num_segments = expected_min_size.div_ceil(segment_size);
+
+    let mut total_size: u64 = 0;
+    for seg_idx in 0..num_segments {
+        let seg_path = base_dir.join(format!("log.{seg_idx}"));
+        if !seg_path.exists() {
+            return Err(RecoveryError::ValidationFailed(vec![format!(
+                "log segment file missing: {}",
+                seg_path.display()
+            )]));
+        }
+        let meta = fs::metadata(&seg_path)?;
+        total_size += meta.len();
+    }
+
+    if total_size < expected_min_size {
+        return Err(RecoveryError::ValidationFailed(vec![format!(
+            "log file too small: expected at least {expected_min_size} bytes \
+             for head address {:?}, but total segment size is {total_size} bytes",
+            head
+        )]));
+    }
+
+    Ok(())
+}
+
+/// Validate the snapshot file exists and contains the expected pages.
+///
+/// Opens the snapshot file using [`SnapshotFileReader`], iterates all pages,
+/// and verifies each page index falls within the expected range
+/// [`snapshot_start_address`..`snapshot_final_address`].
+///
+/// Returns the number of pages found in the snapshot file.
+fn validate_snapshot_file(
+    base_dir: &Path,
+    plan: &RecoveryPlan,
+    log_info: &LogRecoveryInfo,
+) -> Result<u32, RecoveryError> {
+    let snapshot_path = base_dir.join(format!("{}.snapshot.log", plan.token));
+
+    if !snapshot_path.exists() {
+        return Err(RecoveryError::ValidationFailed(vec![format!(
+            "snapshot file missing: {}",
+            snapshot_path.display()
+        )]));
+    }
+
+    let snap_start = log_info.snapshot_start_address;
+    let snap_final = log_info.snapshot_final_address;
+
+    // Empty snapshot region is valid if the file is also empty.
+    if snap_start == snap_final {
+        let file_meta = fs::metadata(&snapshot_path)?;
+        if file_meta.len() != 0 {
+            return Err(RecoveryError::ValidationFailed(vec![format!(
+                "snapshot file is {} bytes but snapshot region is empty \
+                 (start == final == {:?})",
+                file_meta.len(),
+                snap_start
+            )]));
+        }
+        return Ok(0);
+    }
+
+    let reader = SnapshotFileReader::open(&snapshot_path)
+        .map_err(|e| RecoveryError::IoError(std::io::Error::other(
+            format!("failed to open snapshot file: {e}"),
+        )))?
+        .with_page_size(PAGE_SIZE as usize);
+
+    let start_page = snap_start.page().0 as u64;
+    let final_page = snap_final.page().0 as u64;
+
+    let mut page_count: u32 = 0;
+    let mut issues = Vec::new();
+
+    for (page_index, _page_data) in reader.pages() {
+        if page_index < start_page || page_index > final_page {
+            issues.push(format!(
+                "snapshot page index {page_index} outside expected range \
+                 [{start_page}..{final_page}]"
+            ));
+        }
+        page_count += 1;
+    }
+
+    if !issues.is_empty() {
+        return Err(RecoveryError::ValidationFailed(issues));
+    }
+
+    let expected_pages = pages_between_addresses(snap_start, snap_final);
+    if page_count != expected_pages {
+        return Err(RecoveryError::ValidationFailed(vec![format!(
+            "snapshot file contains {page_count} pages but expected \
+             {expected_pages} pages for range {:?}..{:?}",
+            snap_start, snap_final
+        )]));
+    }
+
+    Ok(page_count)
 }
 
 // ===========================================================================
@@ -805,5 +1065,593 @@ mod tests {
         let a = LogicalAddress::new(Page(7), Offset(0));
         let b = LogicalAddress::new(Page(3), Offset(0));
         assert_eq!(pages_between_addresses(a, b), 0);
+    }
+
+    // -- Snapshot test helpers -----------------------------------------------
+
+    use crate::checkpoint::snapshot_writer::SnapshotFileWriter;
+
+    /// Construct a [`LogRecoveryInfo`] for a snapshot checkpoint.
+    fn snapshot_log_info(
+        begin: LogicalAddress,
+        head: LogicalAddress,
+        snap_start: LogicalAddress,
+        snap_final: LogicalAddress,
+    ) -> LogRecoveryInfo {
+        LogRecoveryInfo {
+            version: 1,
+            checkpoint_type: CheckpointType::Snapshot,
+            begin_address: begin,
+            flushed_until_address: snap_final,
+            final_address: snap_final,
+            head_address: head,
+            snapshot_start_address: snap_start,
+            snapshot_final_address: snap_final,
+            use_snapshot_file: true,
+            object_log_segment_count: 0,
+        }
+    }
+
+    /// Write a snapshot file with pages covering `start_page..end_page`.
+    ///
+    /// Each page is filled with `(page_num & 0xFF) as u8` so content can be
+    /// verified after recovery.
+    fn create_snapshot_file(
+        base_dir: &Path,
+        token: &CheckpointToken,
+        start_page: u32,
+        end_page: u32,
+    ) {
+        let path = base_dir.join(format!("{token}.snapshot.log"));
+        let mut writer = SnapshotFileWriter::new(&path).expect("create snapshot file");
+        for page_num in start_page..end_page {
+            let data = vec![(page_num & 0xFF) as u8; PAGE_SIZE as usize];
+            writer
+                .write_page(page_num as u64, &data)
+                .expect("write snapshot page");
+        }
+        writer.finalize().expect("finalize snapshot file");
+    }
+
+    /// Create an empty snapshot file (0 bytes).
+    fn create_empty_snapshot_file(base_dir: &Path, token: &CheckpointToken) {
+        let path = base_dir.join(format!("{token}.snapshot.log"));
+        let writer = SnapshotFileWriter::new(&path).expect("create empty snapshot file");
+        writer.finalize().expect("finalize empty snapshot file");
+    }
+
+    // -- Tests: basic snapshot recovery -------------------------------------
+
+    #[test]
+    fn recover_snapshot_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = sample_token();
+
+        // All data in snapshot (begin == head == 0), snapshot pages 0..3.
+        let begin = LogicalAddress::new(Page(0), Offset(0));
+        let head = LogicalAddress::new(Page(0), Offset(0));
+        let snap_start = LogicalAddress::new(Page(0), Offset(0));
+        let snap_final = LogicalAddress::new(Page(3), Offset(0));
+
+        let log_info = snapshot_log_info(begin, head, snap_start, snap_final);
+        let plan = build_plan(dir.path(), &token, &log_info);
+
+        // Write snapshot file with 3 pages: 0, 1, 2.
+        create_snapshot_file(dir.path(), &token, 0, 3);
+
+        let engine = LogRecoveryEngine::new();
+        let result = engine.recover_snapshot(&plan, dir.path()).unwrap();
+
+        assert_eq!(result.begin_address, begin);
+        assert_eq!(result.head_address, begin);
+        assert_eq!(result.tail_address, snap_final);
+        assert_eq!(result.read_only_address, snap_final);
+        assert_eq!(result.flushed_until, snap_final);
+        assert_eq!(result.pages_loaded, 3);
+    }
+
+    #[test]
+    fn recover_snapshot_with_main_log_and_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = sample_token();
+
+        // Pages 0..3 on main log, pages 3..6 in snapshot.
+        let begin = LogicalAddress::new(Page(0), Offset(0));
+        let head = LogicalAddress::new(Page(3), Offset(0));
+        let snap_start = LogicalAddress::new(Page(3), Offset(0));
+        let snap_final = LogicalAddress::new(Page(6), Offset(0));
+
+        let log_info = snapshot_log_info(begin, head, snap_start, snap_final);
+        let plan = build_plan(dir.path(), &token, &log_info);
+
+        // Create main log covering up to head.
+        let log_size = logical_address_to_byte_offset(head);
+        create_log_file(dir.path(), 0, log_size);
+
+        // Create snapshot with 3 pages: 3, 4, 5.
+        create_snapshot_file(dir.path(), &token, 3, 6);
+
+        let engine = LogRecoveryEngine::new();
+        let result = engine.recover_snapshot(&plan, dir.path()).unwrap();
+
+        assert_eq!(result.begin_address, begin);
+        assert_eq!(result.head_address, begin);
+        assert_eq!(result.tail_address, snap_final);
+        assert_eq!(result.read_only_address, snap_final);
+        assert_eq!(result.flushed_until, snap_final);
+        // 3 main log pages + 3 snapshot pages = 6
+        assert_eq!(result.pages_loaded, 6);
+    }
+
+    #[test]
+    fn recover_snapshot_only_snapshot_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = sample_token();
+
+        // begin == head — everything is in the snapshot, no main log pages.
+        let begin = LogicalAddress::new(Page(0), Offset(0));
+        let head = LogicalAddress::new(Page(0), Offset(0));
+        let snap_start = LogicalAddress::new(Page(0), Offset(0));
+        let snap_final = LogicalAddress::new(Page(5), Offset(256));
+
+        let log_info = snapshot_log_info(begin, head, snap_start, snap_final);
+        let plan = build_plan(dir.path(), &token, &log_info);
+
+        // 6 pages: 0, 1, 2, 3, 4, 5 (tail has offset so page 5 is partial).
+        create_snapshot_file(dir.path(), &token, 0, 6);
+
+        let engine = LogRecoveryEngine::new();
+        let result = engine.recover_snapshot(&plan, dir.path()).unwrap();
+
+        assert_eq!(result.begin_address, begin);
+        assert_eq!(result.head_address, begin);
+        assert_eq!(result.tail_address, snap_final);
+        // pages_between(0:0, 5:256) = 6
+        assert_eq!(result.pages_loaded, 6);
+        assert_eq!(result.records_scanned, 0);
+    }
+
+    // -- Tests: empty snapshot recovery -------------------------------------
+
+    #[test]
+    fn recover_snapshot_empty_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = sample_token();
+
+        let zero = LogicalAddress::ZERO;
+        let log_info = snapshot_log_info(zero, zero, zero, zero);
+        let plan = build_plan(dir.path(), &token, &log_info);
+
+        // Empty snapshot file.
+        create_empty_snapshot_file(dir.path(), &token);
+
+        let engine = LogRecoveryEngine::new();
+        let result = engine.recover_snapshot(&plan, dir.path()).unwrap();
+
+        assert_eq!(result.begin_address, zero);
+        assert_eq!(result.head_address, zero);
+        assert_eq!(result.tail_address, zero);
+        assert_eq!(result.read_only_address, zero);
+        assert_eq!(result.flushed_until, zero);
+        assert_eq!(result.records_scanned, 0);
+        assert_eq!(result.pages_loaded, 0);
+    }
+
+    // -- Tests: snapshot type validation ------------------------------------
+
+    #[test]
+    fn recover_snapshot_rejects_fold_over_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = sample_token();
+
+        let mut log_info = snapshot_log_info(
+            LogicalAddress::ZERO,
+            LogicalAddress::ZERO,
+            LogicalAddress::ZERO,
+            LogicalAddress::ZERO,
+        );
+        log_info.checkpoint_type = CheckpointType::FoldOver;
+
+        let store = CheckpointMetadataStore::new(dir.path().to_path_buf());
+        store
+            .write_checkpoint_metadata(&token, &sample_index_info(), &log_info, &[])
+            .expect("write");
+
+        let mgr = crate::recovery::RecoveryManager::new(dir.path().to_path_buf());
+        let plan = mgr.select_checkpoint(Some(token)).expect("plan");
+
+        let engine = LogRecoveryEngine::new();
+        let err = engine.recover_snapshot(&plan, dir.path()).unwrap_err();
+
+        match err {
+            RecoveryError::CorruptMetadata(msg) => {
+                assert!(
+                    msg.contains("Snapshot"),
+                    "expected 'Snapshot' in error: {msg}"
+                );
+            }
+            other => panic!("expected CorruptMetadata, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn recover_snapshot_rejects_use_snapshot_file_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = sample_token();
+
+        let mut log_info = snapshot_log_info(
+            LogicalAddress::ZERO,
+            LogicalAddress::ZERO,
+            LogicalAddress::ZERO,
+            LogicalAddress::ZERO,
+        );
+        log_info.use_snapshot_file = false;
+
+        let store = CheckpointMetadataStore::new(dir.path().to_path_buf());
+        store
+            .write_checkpoint_metadata(&token, &sample_index_info(), &log_info, &[])
+            .expect("write");
+
+        let mgr = crate::recovery::RecoveryManager::new(dir.path().to_path_buf());
+        let plan = mgr.select_checkpoint(Some(token)).expect("plan");
+
+        let engine = LogRecoveryEngine::new();
+        let err = engine.recover_snapshot(&plan, dir.path()).unwrap_err();
+
+        match err {
+            RecoveryError::CorruptMetadata(msg) => {
+                assert!(
+                    msg.contains("use_snapshot_file"),
+                    "expected 'use_snapshot_file' in error: {msg}"
+                );
+            }
+            other => panic!("expected CorruptMetadata, got: {other}"),
+        }
+    }
+
+    // -- Tests: snapshot address consistency --------------------------------
+
+    #[test]
+    fn recover_snapshot_inconsistent_begin_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = sample_token();
+
+        // begin > head — invalid
+        let begin = LogicalAddress::new(Page(5), Offset(0));
+        let head = LogicalAddress::new(Page(2), Offset(0));
+        let snap_start = LogicalAddress::new(Page(2), Offset(0));
+        let snap_final = LogicalAddress::new(Page(10), Offset(0));
+
+        let log_info = snapshot_log_info(begin, head, snap_start, snap_final);
+        let plan = build_plan(dir.path(), &token, &log_info);
+
+        let engine = LogRecoveryEngine::new();
+        let err = engine.recover_snapshot(&plan, dir.path()).unwrap_err();
+
+        match err {
+            RecoveryError::ValidationFailed(issues) => {
+                assert!(!issues.is_empty());
+                assert!(issues[0].contains("begin_address"));
+            }
+            other => panic!("expected ValidationFailed, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn recover_snapshot_inconsistent_snap_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = sample_token();
+
+        // snapshot_start > snapshot_final — invalid
+        let begin = LogicalAddress::new(Page(0), Offset(0));
+        let head = LogicalAddress::new(Page(0), Offset(0));
+        let snap_start = LogicalAddress::new(Page(10), Offset(0));
+        let snap_final = LogicalAddress::new(Page(5), Offset(0));
+
+        let log_info = snapshot_log_info(begin, head, snap_start, snap_final);
+        let plan = build_plan(dir.path(), &token, &log_info);
+
+        let engine = LogRecoveryEngine::new();
+        let err = engine.recover_snapshot(&plan, dir.path()).unwrap_err();
+
+        match err {
+            RecoveryError::ValidationFailed(issues) => {
+                assert!(!issues.is_empty());
+                assert!(issues[0].contains("snapshot_start_address"));
+            }
+            other => panic!("expected ValidationFailed, got: {other}"),
+        }
+    }
+
+    // -- Tests: snapshot file validation ------------------------------------
+
+    #[test]
+    fn recover_snapshot_missing_snapshot_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = sample_token();
+
+        let begin = LogicalAddress::new(Page(0), Offset(0));
+        let snap_final = LogicalAddress::new(Page(3), Offset(0));
+        let log_info = snapshot_log_info(begin, begin, begin, snap_final);
+        let plan = build_plan(dir.path(), &token, &log_info);
+
+        // Don't create the snapshot file.
+        let engine = LogRecoveryEngine::new();
+        let err = engine.recover_snapshot(&plan, dir.path()).unwrap_err();
+
+        match err {
+            RecoveryError::ValidationFailed(issues) => {
+                assert_eq!(issues.len(), 1);
+                assert!(
+                    issues[0].contains("missing"),
+                    "expected 'missing' in error: {}",
+                    issues[0]
+                );
+            }
+            other => panic!("expected ValidationFailed, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn recover_snapshot_wrong_page_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = sample_token();
+
+        // Expect 3 pages but write only 2.
+        let begin = LogicalAddress::new(Page(0), Offset(0));
+        let snap_final = LogicalAddress::new(Page(3), Offset(0));
+        let log_info = snapshot_log_info(begin, begin, begin, snap_final);
+        let plan = build_plan(dir.path(), &token, &log_info);
+
+        // Write only 2 pages (0, 1) instead of expected 3.
+        create_snapshot_file(dir.path(), &token, 0, 2);
+
+        let engine = LogRecoveryEngine::new();
+        let err = engine.recover_snapshot(&plan, dir.path()).unwrap_err();
+
+        match err {
+            RecoveryError::ValidationFailed(issues) => {
+                assert!(!issues.is_empty());
+                assert!(
+                    issues[0].contains("pages"),
+                    "expected 'pages' in error: {}",
+                    issues[0]
+                );
+            }
+            other => panic!("expected ValidationFailed, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn recover_snapshot_page_index_out_of_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = sample_token();
+
+        // Snapshot range is pages 2..5, but we write pages 10..13.
+        let begin = LogicalAddress::new(Page(0), Offset(0));
+        let head = LogicalAddress::new(Page(2), Offset(0));
+        let snap_start = LogicalAddress::new(Page(2), Offset(0));
+        let snap_final = LogicalAddress::new(Page(5), Offset(0));
+        let log_info = snapshot_log_info(begin, head, snap_start, snap_final);
+        let plan = build_plan(dir.path(), &token, &log_info);
+
+        // Create main log file.
+        let log_size = logical_address_to_byte_offset(head);
+        create_log_file(dir.path(), 0, log_size);
+
+        // Write pages at wrong indices.
+        let path = dir.path().join(format!("{token}.snapshot.log"));
+        let mut writer = SnapshotFileWriter::new(&path).expect("create snapshot file");
+        for page_num in 10..13u64 {
+            let data = vec![0xFFu8; PAGE_SIZE as usize];
+            writer.write_page(page_num, &data).expect("write page");
+        }
+        writer.finalize().expect("finalize");
+
+        let engine = LogRecoveryEngine::new();
+        let err = engine.recover_snapshot(&plan, dir.path()).unwrap_err();
+
+        match err {
+            RecoveryError::ValidationFailed(issues) => {
+                assert!(!issues.is_empty());
+                assert!(
+                    issues[0].contains("outside expected range"),
+                    "expected 'outside expected range' in error: {}",
+                    issues[0]
+                );
+            }
+            other => panic!("expected ValidationFailed, got: {other}"),
+        }
+    }
+
+    // -- Tests: address restoration correctness -----------------------------
+
+    #[test]
+    fn recover_snapshot_restores_correct_addresses() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = sample_token();
+
+        let begin = LogicalAddress::new(Page(1), Offset(64));
+        let head = LogicalAddress::new(Page(3), Offset(0));
+        let snap_start = LogicalAddress::new(Page(3), Offset(0));
+        let snap_final = LogicalAddress::new(Page(7), Offset(512));
+
+        let log_info = snapshot_log_info(begin, head, snap_start, snap_final);
+        let plan = build_plan(dir.path(), &token, &log_info);
+
+        // Main log covering up to head.
+        let log_size = logical_address_to_byte_offset(head);
+        create_log_file(dir.path(), 0, log_size);
+
+        // Snapshot pages: 3, 4, 5, 6, 7 = 5 pages.
+        create_snapshot_file(dir.path(), &token, 3, 8);
+
+        let engine = LogRecoveryEngine::new();
+        let result = engine.recover_snapshot(&plan, dir.path()).unwrap();
+
+        assert_eq!(result.begin_address, begin);
+        // After snapshot recovery head is set to begin.
+        assert_eq!(result.head_address, begin);
+        assert_eq!(result.tail_address, snap_final);
+        assert_eq!(result.read_only_address, snap_final);
+        assert_eq!(result.flushed_until, snap_final);
+        // Main log pages: pages_between(1:64, 3:0) = 2
+        // Snapshot pages: pages_between(3:0, 7:512) = 5
+        assert_eq!(result.pages_loaded, 7);
+    }
+
+    // -- Tests: page content verification after snapshot recovery -----------
+
+    #[test]
+    fn recover_snapshot_page_content_verification() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = sample_token();
+
+        let begin = LogicalAddress::new(Page(0), Offset(0));
+        let snap_final = LogicalAddress::new(Page(3), Offset(0));
+        let log_info = snapshot_log_info(begin, begin, begin, snap_final);
+        let plan = build_plan(dir.path(), &token, &log_info);
+
+        // Write snapshot pages with identifiable content.
+        create_snapshot_file(dir.path(), &token, 0, 3);
+
+        let engine = LogRecoveryEngine::new();
+        let result = engine.recover_snapshot(&plan, dir.path()).unwrap();
+        assert_eq!(result.pages_loaded, 3);
+
+        // Verify the snapshot file can be re-read and pages have correct content.
+        let path = dir.path().join(format!("{token}.snapshot.log"));
+        let reader = SnapshotFileReader::open(&path)
+            .unwrap()
+            .with_page_size(PAGE_SIZE as usize);
+
+        let pages: Vec<(u64, &[u8])> = reader.pages().collect();
+        assert_eq!(pages.len(), 3);
+        for (page_index, page_data) in &pages {
+            let expected_fill = (*page_index & 0xFF) as u8;
+            assert!(
+                page_data.iter().all(|&b| b == expected_fill),
+                "page {page_index} content mismatch"
+            );
+        }
+    }
+
+    // -- Tests: snapshot with non-zero begin --------------------------------
+
+    #[test]
+    fn recover_snapshot_evicted_pages_before_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = sample_token();
+
+        // Some pages were evicted: begin at page 2, head at page 5.
+        // Snapshot covers pages 5..8.
+        let begin = LogicalAddress::new(Page(2), Offset(0));
+        let head = LogicalAddress::new(Page(5), Offset(0));
+        let snap_start = LogicalAddress::new(Page(5), Offset(0));
+        let snap_final = LogicalAddress::new(Page(8), Offset(0));
+
+        let log_info = snapshot_log_info(begin, head, snap_start, snap_final);
+        let plan = build_plan(dir.path(), &token, &log_info);
+
+        // Main log file must cover up to head.
+        let log_size = logical_address_to_byte_offset(head);
+        create_log_file(dir.path(), 0, log_size);
+
+        // Snapshot pages: 5, 6, 7.
+        create_snapshot_file(dir.path(), &token, 5, 8);
+
+        let engine = LogRecoveryEngine::new();
+        let result = engine.recover_snapshot(&plan, dir.path()).unwrap();
+
+        assert_eq!(result.begin_address, begin);
+        assert_eq!(result.head_address, begin);
+        assert_eq!(result.tail_address, snap_final);
+        // Main log pages: pages_between(2:0, 5:0) = 3
+        // Snapshot pages: pages_between(5:0, 8:0) = 3
+        assert_eq!(result.pages_loaded, 6);
+    }
+
+    // -- Tests: missing main log for snapshot with head > 0 -----------------
+
+    #[test]
+    fn recover_snapshot_missing_main_log_when_head_nonzero() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = sample_token();
+
+        let begin = LogicalAddress::new(Page(0), Offset(0));
+        let head = LogicalAddress::new(Page(3), Offset(0));
+        let snap_start = LogicalAddress::new(Page(3), Offset(0));
+        let snap_final = LogicalAddress::new(Page(6), Offset(0));
+
+        let log_info = snapshot_log_info(begin, head, snap_start, snap_final);
+        let plan = build_plan(dir.path(), &token, &log_info);
+
+        // Create snapshot but no main log.
+        create_snapshot_file(dir.path(), &token, 3, 6);
+
+        let engine = LogRecoveryEngine::new();
+        let err = engine.recover_snapshot(&plan, dir.path()).unwrap_err();
+
+        match err {
+            RecoveryError::ValidationFailed(issues) => {
+                assert!(!issues.is_empty());
+                assert!(
+                    issues[0].contains("missing"),
+                    "expected 'missing' in error: {}",
+                    issues[0]
+                );
+            }
+            other => panic!("expected ValidationFailed, got: {other}"),
+        }
+    }
+
+    // -- Tests: snapshot records scanned ------------------------------------
+
+    #[test]
+    fn recover_snapshot_records_scanned_is_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = sample_token();
+
+        let begin = LogicalAddress::new(Page(0), Offset(0));
+        let snap_final = LogicalAddress::new(Page(2), Offset(0));
+        let log_info = snapshot_log_info(begin, begin, begin, snap_final);
+        let plan = build_plan(dir.path(), &token, &log_info);
+
+        create_snapshot_file(dir.path(), &token, 0, 2);
+
+        let engine = LogRecoveryEngine::new();
+        let result = engine.recover_snapshot(&plan, dir.path()).unwrap();
+
+        assert_eq!(result.records_scanned, 0);
+    }
+
+    // -- Tests: non-empty snapshot file for empty region --------------------
+
+    #[test]
+    fn recover_snapshot_non_empty_file_for_empty_region() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = sample_token();
+
+        // Snapshot region is empty (start == final) but file has data.
+        let zero = LogicalAddress::ZERO;
+        let log_info = snapshot_log_info(zero, zero, zero, zero);
+        let plan = build_plan(dir.path(), &token, &log_info);
+
+        // Write a page to the snapshot file even though region is empty.
+        let path = dir.path().join(format!("{token}.snapshot.log"));
+        let mut writer = SnapshotFileWriter::new(&path).expect("create snapshot file");
+        let data = vec![0xABu8; PAGE_SIZE as usize];
+        writer.write_page(0, &data).expect("write page");
+        writer.finalize().expect("finalize");
+
+        let engine = LogRecoveryEngine::new();
+        let err = engine.recover_snapshot(&plan, dir.path()).unwrap_err();
+
+        match err {
+            RecoveryError::ValidationFailed(issues) => {
+                assert!(!issues.is_empty());
+            }
+            other => panic!("expected ValidationFailed, got: {other}"),
+        }
     }
 }
