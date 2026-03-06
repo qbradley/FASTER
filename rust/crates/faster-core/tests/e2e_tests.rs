@@ -6,6 +6,7 @@
 use std::sync::Arc;
 use std::thread;
 
+use faster_core::grow::GrowConfig;
 use faster_core::hybrid_log::EvictionPolicy;
 use faster_core::status::OperationStatus;
 use faster_core::store::{CounterFunctions, FasterKv, FasterKvConfig, SimpleFunctions};
@@ -18,6 +19,7 @@ use faster_core::{InMemoryDevice, NullDevice, SyncFileDevice};
 /// Small in-memory store suitable for most tests.
 fn small_store() -> FasterKv<SimpleFunctions<u64, u64>> {
     let config = FasterKvConfig {
+        grow_config: GrowConfig::default(),
         hash_index_size_log2: 10, // 1 024 buckets
         buffer_size_pages: 8,
         mutable_fraction: 0.9,
@@ -30,6 +32,7 @@ fn small_store() -> FasterKv<SimpleFunctions<u64, u64>> {
 /// Counter store for RMW tests.
 fn counter_store() -> FasterKv<CounterFunctions<u64>> {
     let config = FasterKvConfig {
+        grow_config: GrowConfig::default(),
         hash_index_size_log2: 10,
         buffer_size_pages: 8,
         mutable_fraction: 0.9,
@@ -42,6 +45,7 @@ fn counter_store() -> FasterKv<CounterFunctions<u64>> {
 /// Store with tiny buffer to force page sealing quickly.
 fn tiny_buffer_store(device: impl faster_core::Device) -> FasterKv<SimpleFunctions<u64, u64>> {
     let config = FasterKvConfig {
+            grow_config: GrowConfig::default(),
         hash_index_size_log2: 14, // 16 K buckets
         buffer_size_pages: 4,     // very small buffer
         mutable_fraction: 0.5,    // half mutable → pages seal quickly
@@ -100,6 +104,7 @@ fn crud_lifecycle() {
 #[test]
 fn large_scale_insert_and_read() {
     let config = FasterKvConfig {
+        grow_config: GrowConfig::default(),
         hash_index_size_log2: 16, // 64 K buckets
         buffer_size_pages: 32,
         mutable_fraction: 0.9,
@@ -133,6 +138,7 @@ fn large_scale_insert_and_read() {
 #[test]
 fn concurrent_upsert_and_read() {
     let config = FasterKvConfig {
+        grow_config: GrowConfig::default(),
         hash_index_size_log2: 16,
         buffer_size_pages: 32,
         mutable_fraction: 0.9,
@@ -247,6 +253,7 @@ fn disk_eviction_and_readback() {
     .expect("create SyncFileDevice");
 
     let config = FasterKvConfig {
+            grow_config: GrowConfig::default(),
         hash_index_size_log2: 14,
         buffer_size_pages: 4,
         mutable_fraction: 0.5,
@@ -369,6 +376,7 @@ fn rmw_multiple_counters() {
 #[test]
 fn mixed_workload_multithreaded() {
     let config = FasterKvConfig {
+        grow_config: GrowConfig::default(),
         hash_index_size_log2: 14,
         buffer_size_pages: 16,
         mutable_fraction: 0.9,
@@ -454,6 +462,7 @@ fn mixed_workload_multithreaded() {
 #[test]
 fn config_small_hash_table() {
     let config = FasterKvConfig {
+        grow_config: GrowConfig::default(),
         hash_index_size_log2: 4, // 16 buckets — lots of collisions
         buffer_size_pages: 4,
         mutable_fraction: 0.9,
@@ -480,6 +489,7 @@ fn config_small_hash_table() {
 #[test]
 fn config_large_buffer() {
     let config = FasterKvConfig {
+            grow_config: GrowConfig::default(),
         hash_index_size_log2: 12,
         buffer_size_pages: 64, // large in-memory buffer
         mutable_fraction: 0.95,
@@ -508,6 +518,7 @@ fn config_large_buffer() {
 #[test]
 fn config_low_mutable_fraction() {
     let config = FasterKvConfig {
+        grow_config: GrowConfig::default(),
         hash_index_size_log2: 10,
         buffer_size_pages: 8,
         mutable_fraction: 0.1, // 10% mutable — aggressive read-only boundary
@@ -625,6 +636,7 @@ fn many_sessions_concurrent() {
 #[test]
 fn maintenance_under_concurrent_load() {
     let config = FasterKvConfig {
+            grow_config: GrowConfig::default(),
         hash_index_size_log2: 14,
         buffer_size_pages: 8,
         mutable_fraction: 0.5,
@@ -762,6 +774,7 @@ fn sync_file_device_basic_roundtrip() {
 
     let store = FasterKv::new(
         FasterKvConfig {
+            grow_config: GrowConfig::default(),
             hash_index_size_log2: 10,
             buffer_size_pages: 8,
             mutable_fraction: 0.9,

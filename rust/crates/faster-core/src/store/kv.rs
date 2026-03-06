@@ -37,6 +37,7 @@ use std::sync::Arc;
 use crate::address::{LogicalAddress, Page};
 use crate::device::Device;
 use crate::epoch::EpochTable;
+use crate::grow::{GrowConfig, GrowError, GrowManager};
 use crate::hash::index::HashIndex;
 use crate::hybrid_log::eviction::{EvictionPolicy, PageEvictor};
 use crate::hybrid_log::flush::PageFlusher;
@@ -80,6 +81,8 @@ pub struct FasterKvConfig {
     pub sector_size: usize,
     /// Eviction policy for managing in-memory pages.
     pub eviction_policy: EvictionPolicy,
+    /// Configuration for automatic hash index grow (online resize).
+    pub grow_config: GrowConfig,
 }
 
 impl Default for FasterKvConfig {
@@ -90,6 +93,7 @@ impl Default for FasterKvConfig {
             mutable_fraction: 0.9,
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
+            grow_config: GrowConfig::default(),
         }
     }
 }
@@ -146,6 +150,8 @@ pub struct FasterKv<F: Functions> {
     evictor: PageEvictor,
     /// Manages pending disk read operations for session I/O completion.
     pending_io_mgr: PendingIoManager,
+    /// Coordinates hash table online resize (grow) operations.
+    grow_manager: GrowManager,
     /// Configuration snapshot.
     config: FasterKvConfig,
 }
@@ -280,6 +286,7 @@ impl<F: Functions> FasterKv<F> {
         let pending_io_mgr = PendingIoManager::new(page_size, config.sector_size as u32);
 
         let session_pool = SessionPool::new(Arc::clone(&epoch_table));
+        let grow_manager = GrowManager::new(config.grow_config.clone());
 
         Self {
             hash_index,
@@ -291,6 +298,7 @@ impl<F: Functions> FasterKv<F> {
             flusher,
             evictor,
             pending_io_mgr,
+            grow_manager,
             config,
         }
     }
@@ -770,6 +778,48 @@ impl<F: Functions> FasterKv<F> {
         }
     }
 
+
+    // ── Hash Index Grow ─────────────────────────────────────────────
+
+    /// Checks whether the hash index should grow and initiates a grow
+    /// if the load factor exceeds the configured threshold.
+    ///
+    /// This is a lightweight check intended to be called periodically
+    /// (e.g., after each batch of operations). If a grow is already in
+    /// progress or automatic grow is disabled, this is a no-op.
+    pub fn check_grow(&self) {
+        if self.grow_manager.should_grow(&self.hash_index) {
+            let _ = self.grow_manager.begin_grow(&self.hash_index);
+        }
+    }
+
+    /// Manually triggers a hash index grow (double the bucket count).
+    ///
+    /// Unlike [`check_grow`](Self::check_grow) this ignores the load
+    /// factor threshold and immediately begins a grow. The grow runs
+    /// cooperatively: subsequent session operations will contribute
+    /// chunks of splitting work.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GrowError`] if a grow is already in progress or the
+    /// resulting table size is invalid.
+    pub fn grow_index(&self) -> Result<(), GrowError> {
+        self.grow_manager.begin_grow(&self.hash_index)
+    }
+
+    /// Returns `true` if a hash index grow is currently in progress.
+    #[inline]
+    pub fn is_growing(&self) -> bool {
+        self.grow_manager.is_growing()
+    }
+
+    /// Returns a reference to the [`GrowManager`] for advanced grow control.
+    #[inline]
+    pub fn get_grow_manager(&self) -> &GrowManager {
+        &self.grow_manager
+    }
+
     // ── Accessors ───────────────────────────────────────────────────
 
     /// Get the current log tail address (next allocation point).
@@ -820,6 +870,7 @@ mod tests {
             mutable_fraction: 0.9,
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
+            grow_config: GrowConfig::default(),
         };
         FasterKv::new(config, SimpleFunctions::default(), NullDevice::new())
     }
@@ -944,6 +995,7 @@ mod tests {
             mutable_fraction: 0.9,
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
+            grow_config: GrowConfig::default(),
         };
         let store: FasterKv<CounterFunctions<u64>> =
             FasterKv::new(config, CounterFunctions::new(), NullDevice::new());
@@ -975,6 +1027,7 @@ mod tests {
             mutable_fraction: 0.9,
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
+            grow_config: GrowConfig::default(),
         };
         let store: SimpleStore =
             FasterKv::new(config, SimpleFunctions::default(), NullDevice::new());
@@ -1014,6 +1067,7 @@ mod tests {
             mutable_fraction: 0.9,
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
+            grow_config: GrowConfig::default(),
         };
         let store = Arc::new(FasterKv::<SimpleFunctions<u64, u64>>::new(
             config,
@@ -1066,6 +1120,7 @@ mod tests {
             mutable_fraction: 0.5,
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
+            grow_config: GrowConfig::default(),
         };
         let store: SimpleStore =
             FasterKv::new(config, SimpleFunctions::default(), NullDevice::new());
@@ -1158,6 +1213,7 @@ mod tests {
             mutable_fraction: 0.5,
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
+            grow_config: GrowConfig::default(),
         };
         let store: SimpleStore =
             FasterKv::new(config, SimpleFunctions::default(), NullDevice::new());
@@ -1184,6 +1240,7 @@ mod tests {
             mutable_fraction: 0.5,
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
+            grow_config: GrowConfig::default(),
         };
         let store: SimpleStore =
             FasterKv::new(config, SimpleFunctions::default(), NullDevice::new());
@@ -1243,6 +1300,7 @@ mod tests {
             mutable_fraction: 0.5,
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
+            grow_config: GrowConfig::default(),
         };
         let device = InMemoryDevice::with_sizes(512, 1 << 24); // 16 MiB
         let store: FasterKv<SimpleFunctions<u64, u64>> =
@@ -1305,6 +1363,7 @@ mod tests {
             mutable_fraction: 0.5,
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
+            grow_config: GrowConfig::default(),
         };
         let device = InMemoryDevice::with_sizes(512, 1 << 24);
         let store: FasterKv<SimpleFunctions<u64, u64>> =
@@ -1404,6 +1463,7 @@ mod tests {
             mutable_fraction: 0.5,
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
+            grow_config: GrowConfig::default(),
         };
         let device = InMemoryDevice::with_sizes(512, 1 << 24);
         let store: FasterKv<SimpleFunctions<u64, u64>> =
@@ -1521,6 +1581,7 @@ mod tests {
             mutable_fraction: 0.5,
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
+            grow_config: GrowConfig::default(),
         };
         let device = InMemoryDevice::with_sizes(512, 1 << 24);
         let store = Arc::new(FasterKv::<SimpleFunctions<u64, u64>>::new(

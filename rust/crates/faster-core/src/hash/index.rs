@@ -608,6 +608,20 @@ impl HashIndex {
         Arc::clone(&self.epoch)
     }
 
+    /// Replaces the underlying hash table with `new_table`.
+    ///
+    /// Used by the grow manager after all buckets have been split into
+    /// the new (doubled) table. The old table is dropped.
+    ///
+    /// # Concurrency
+    ///
+    /// This must only be called when no concurrent operations are accessing
+    /// the old table (i.e., after all sessions have acknowledged the grow
+    /// completion).
+    pub fn swap_table(&mut self, new_table: HashTable) {
+        self.table = new_table;
+    }
+
     /// Returns the number of primary buckets (2^log2_size).
     #[inline]
     pub fn num_buckets(&self) -> u64 {
