@@ -39,7 +39,7 @@ use crate::hash::bucket::HashBucketEntry;
 use crate::hash::index::HashIndex;
 use crate::hybrid_log::log_allocator::HybridLogAllocator;
 use crate::hybrid_log::record_ops::{LogRecordReader, LogRecordWriter, MutableRecordAccessor};
-use crate::hybrid_log::regions::AddressRegion;
+use crate::hybrid_log::regions::{AddressInfo, AddressRegion};
 use crate::record::{Key, RecordInfo, RecordLayout, Value};
 use crate::status::OperationStatus;
 use crate::store::functions::{Functions, RmwInPlaceResult};
@@ -80,17 +80,19 @@ fn layout_for_fixed<K: Key, V: Value>(key: &K) -> RecordLayout {
 /// Returns `(address, RecordInfo)` of the first matching record, or
 /// `None` if no match is found in the in-memory portion of the chain.
 ///
-/// # TODO (SF-5)
+/// Uses the caller's [`AddressInfo`] snapshot to classify addresses,
+/// avoiding redundant atomic loads on the hot path. The snapshot is
+/// safe because epoch protection guarantees pages won't be evicted
+/// during an operation.
 ///
-/// Each chain hop issues 4-6 redundant atomic loads via `is_in_memory()`.
-/// Pass the `AddressInfo` snapshot into this function and use
-/// `info.classify(addr)` instead for a significant hot-path speedup.
+/// `read_header_and_match_key` is used to merge the `RecordInfo` read
+/// and key comparison into a single physical-address lookup per hop.
 fn find_record_for_key<K: Key>(
     reader: &LogRecordReader<'_>,
     start_addr: LogicalAddress,
     key: &K,
     layout: &RecordLayout,
-    allocator: &HybridLogAllocator,
+    info: &AddressInfo,
 ) -> Option<(LogicalAddress, RecordInfo)> {
     let mut addr = start_addr;
     let mut depth = 0usize;
@@ -107,14 +109,15 @@ fn find_record_for_key<K: Key>(
         depth += 1;
 
         // If the record is not in memory we cannot check the key.
-        if !allocator.is_in_memory(addr) {
+        if !info.classify(addr).is_in_memory() {
             return None;
         }
 
-        let ri = reader.read_record_info(addr)?;
+        // Read header + check key in a single physical-address lookup.
+        let (ri, matched) = reader.read_header_and_match_key(addr, key, layout)?;
 
         // Skip invalidated records — they have been superseded.
-        if !ri.is_invalid() && reader.key_matches(addr, key, layout) {
+        if !ri.is_invalid() && matched {
             return Some((addr, ri));
         }
 
@@ -127,7 +130,7 @@ fn find_record_for_key<K: Key>(
 
         // Only follow chain links whose record fits the same layout.
         // For the on-disk portion we stop — the caller must issue I/O.
-        if !allocator.is_in_memory(prev) {
+        if !info.classify(prev).is_in_memory() {
             break;
         }
 
@@ -197,7 +200,7 @@ pub(crate) fn internal_read<F: Functions>(
             // Record is in memory — walk the chain for a key match.
             let reader = LogRecordReader::new(ctx.allocator);
 
-            match find_record_for_key(&reader, addr, key, &layout, ctx.allocator) {
+            match find_record_for_key(&reader, addr, key, &layout, &info) {
                 Some((_found_addr, ri)) => {
                     if ri.is_tombstone() {
                         return OperationStatus::NotFound;
@@ -304,7 +307,7 @@ pub(crate) fn internal_upsert<F: Functions>(
         AddressRegion::Mutable => {
             // In-place update: verify key matches, then overwrite value.
             let reader = LogRecordReader::new(ctx.allocator);
-            match find_record_for_key(&reader, addr, key, &layout, ctx.allocator) {
+            match find_record_for_key(&reader, addr, key, &layout, &snap) {
                 Some((found_addr, ri)) => {
                     if ri.is_tombstone() {
                         // Key was deleted — treat as new insert via RCU path.
@@ -514,7 +517,7 @@ pub(crate) fn internal_rmw<F: Functions>(
     match region {
         AddressRegion::Mutable => {
             let reader = LogRecordReader::new(ctx.allocator);
-            match find_record_for_key(&reader, addr, key, &layout, ctx.allocator) {
+            match find_record_for_key(&reader, addr, key, &layout, &snap) {
                 Some((found_addr, ri)) => {
                     if ri.is_tombstone() {
                         // Deleted key — treat as initial.
@@ -589,7 +592,7 @@ pub(crate) fn internal_rmw<F: Functions>(
         }
         AddressRegion::FuzzyRegion | AddressRegion::ReadOnly => {
             let reader = LogRecordReader::new(ctx.allocator);
-            match find_record_for_key(&reader, addr, key, &layout, ctx.allocator) {
+            match find_record_for_key(&reader, addr, key, &layout, &snap) {
                 Some((found_addr, ri)) => {
                     if ri.is_tombstone() {
                         return rmw_create_at_tail(
@@ -757,7 +760,7 @@ pub(crate) fn internal_delete<F: Functions>(
     match region {
         AddressRegion::Mutable => {
             let reader = LogRecordReader::new(ctx.allocator);
-            match find_record_for_key(&reader, addr, key, &layout, ctx.allocator) {
+            match find_record_for_key(&reader, addr, key, &layout, &snap) {
                 Some((found_addr, ri)) => {
                     if ri.is_tombstone() {
                         return OperationStatus::NotFound;
@@ -789,7 +792,7 @@ pub(crate) fn internal_delete<F: Functions>(
         AddressRegion::FuzzyRegion | AddressRegion::ReadOnly => {
             // Write a tombstone record at the tail.
             let reader = LogRecordReader::new(ctx.allocator);
-            match find_record_for_key(&reader, addr, key, &layout, ctx.allocator) {
+            match find_record_for_key(&reader, addr, key, &layout, &snap) {
                 Some((_found_addr, ri)) => {
                     if ri.is_tombstone() {
                         return OperationStatus::NotFound;

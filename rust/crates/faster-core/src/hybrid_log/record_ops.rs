@@ -446,6 +446,40 @@ impl<'a> LogRecordReader<'a> {
         Some(accessor.value(layout))
     }
 
+    /// Read the [`RecordInfo`] header and check key equality in a single
+    /// physical-address lookup.
+    ///
+    /// Returns `None` if the address is not in memory. Otherwise returns
+    /// `(record_info, key_matches)`. This is more efficient than calling
+    /// [`read_record_info`](Self::read_record_info) followed by
+    /// [`key_matches`](Self::key_matches) because the logical→physical
+    /// translation is performed only once.
+    pub fn read_header_and_match_key<K: Key>(
+        &self,
+        addr: LogicalAddress,
+        key: &K,
+        layout: &RecordLayout,
+    ) -> Option<(RecordInfo, bool)> {
+        let ptr = self.allocator.get_physical_address(addr)?;
+
+        // Read header (first RECORD_HEADER_SIZE bytes).
+        // SAFETY: The allocator returned a valid pointer within a page frame.
+        // RecordInfo occupies the first `RECORD_HEADER_SIZE` bytes of any
+        // record, and all page frames are at least one page in size.
+        let header_slice =
+            unsafe { core::slice::from_raw_parts(ptr as *const u8, RECORD_HEADER_SIZE) };
+        let ri = layout_read_record_info(header_slice);
+
+        // Read key from the same physical pointer via a RecordAccessor.
+        let record_size = layout.total_size() as u32;
+        // SAFETY: The allocator returned a valid pointer and `record_size`
+        // matches the layout. The pointer is 8-byte aligned because record
+        // offsets are always multiples of 8.
+        let accessor = unsafe { RecordAccessor::new(ptr as *const u8, record_size) };
+        let stored_key: K = accessor.key(layout);
+        Some((ri, stored_key == *key))
+    }
+
     /// Check if the record at `addr` matches the given key.
     ///
     /// Returns `false` if the address is not in memory or the stored key
