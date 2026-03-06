@@ -1,14 +1,20 @@
 //! Online log compaction (garbage collection) for the FASTER hybrid log.
 //!
 //! Compaction identifies dead (superseded) and tombstoned records in the
-//! hybrid log so their space can be reclaimed. The process has two phases:
+//! hybrid log so their space can be reclaimed. The full compaction pipeline:
 //!
-//! 1. **Scan** — Walk a contiguous address range, classify each record as
-//!    live, dead, or tombstoned by consulting the hash index. Produces a
-//!    [`CompactionPlan`].
-//! 2. **Copy** — Copy live records to the log tail, producing a
-//!    [`CopyResult`](copier::CopyResult) mapping old→new addresses. Future
-//!    phases (K3–K6) will update the hash index and advance begin-address.
+//! 1. **Scan** ([`scanner`]) — Walk a contiguous address range, classify
+//!    each record as live, dead, or tombstoned by consulting the hash
+//!    index. Produces a [`CompactionPlan`].
+//! 2. **Copy** ([`copier`]) — Copy live records to the log tail, producing
+//!    a [`CopyResult`](copier::CopyResult) mapping old→new addresses.
+//! 3. **Pointer swing** ([`address_update`]) — CAS hash index entries
+//!    from old addresses to new addresses.
+//! 4. **Begin-address advance** ([`begin_address`]) — Advance the log's
+//!    begin-address and truncate reclaimed device segments.
+//! 5. **Policy** ([`policy`]) — Decides when compaction should trigger.
+//! 6. **Orchestrator** ([`orchestrator`]) — Wires phases 1–4 into a
+//!    single compaction cycle, coordinating with the epoch system.
 //!
 //! # Key safety invariant
 //!
@@ -21,6 +27,7 @@
 pub mod address_update;
 pub mod begin_address;
 pub mod copier;
+pub mod orchestrator;
 pub mod policy;
 pub mod scanner;
 

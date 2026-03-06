@@ -33,6 +33,7 @@ fn make_store(n: usize) -> Store {
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         grow_config: faster_core::grow::GrowConfig::default(),
+        auto_compact: false,
     };
     FasterKv::new(config, SimpleFunctions::default(), NullDevice::new())
 }
