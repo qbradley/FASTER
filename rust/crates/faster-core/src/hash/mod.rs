@@ -1,12 +1,25 @@
 //! Hash index subsystem for FASTER.
 //!
-//! This module groups the hash-related components:
+//! The hash index is a latch-free concurrent hash table that maps keys to
+//! record addresses in the hybrid log. It is the primary lookup structure
+//! and supports millions of concurrent point-lookups per second.
 //!
-//! - [`hash`] — `FasterHash` helpers, [`KeyHash`], [`Hashable`] trait
-//! - [`bucket`] — [`HashBucket`] and [`HashBucketEntry`] layout
-//! - [`table`] — Latch-free concurrent [`HashTable`]
-//! - [`index`] — High-level [`HashIndex`] (table + epoch integration)
-//! - [`overflow`] — [`OverflowBucketPool`] for overflow bucket chains
+//! Each hash bucket contains a fixed number of inline entries plus an
+//! overflow chain for handling collisions. The index supports online resize
+//! (grow) — see the [`grow`](crate::grow) module.
+//!
+//! # Submodules
+//!
+//! - [`hash`] — `FasterHash` helpers, [`KeyHash`], [`Hashable`] trait. All
+//!   keys must implement `Hashable` to be usable with the store.
+//! - [`bucket`] — `HashBucket` and `HashBucketEntry` — the physical layout
+//!   of a single hash bucket (7 entries + 1 overflow pointer per 64-byte line).
+//! - [`table`] — Latch-free concurrent `HashTable` with find/insert/update
+//!   operations using atomic CAS.
+//! - [`index`] — High-level `HashIndex` combining the table with epoch
+//!   integration and overflow bucket management.
+//! - [`overflow`] — `OverflowBucketPool` — pre-allocated pool for overflow
+//!   bucket chains, avoiding allocation on the hot path.
 
 pub mod bucket;
 #[allow(clippy::module_inception)]

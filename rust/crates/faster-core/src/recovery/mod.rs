@@ -1,17 +1,24 @@
-//! Recovery metadata loading for the FASTER hybrid log.
+//! Recovery process for restoring a FASTER store from a checkpoint.
 //!
-//! This module provides the entry point for discovering, validating, and
-//! planning recovery from persisted checkpoints. The [`RecoveryManager`]
-//! coordinates with the [`CheckpointMetadataStore`] to enumerate available
-//! checkpoints, select one (either explicitly by token or the most recent),
-//! validate that the required on-disk artefacts are present, and produce a
-//! [`RecoveryPlan`] describing the ordered steps needed to restore state.
+//! After a crash (or intentional restart), the recovery module restores the
+//! store to the most recent consistent checkpoint. The process has three
+//! stages, each handled by a dedicated submodule:
 //!
-//! The [`index_recovery`] submodule provides [`IndexRecoveryEngine`] for
-//! restoring the hash index from a binary checkpoint file.
+//! 1. **Discovery & planning** — [`RecoveryManager`] enumerates available
+//!    checkpoints on disk (via [`CheckpointMetadataStore`]), selects one
+//!    (explicitly by token or most-recent), validates on-disk artefacts, and
+//!    produces a [`RecoveryPlan`] describing the ordered restoration steps.
 //!
-//! The [`log_recovery`] submodule provides [`LogRecoveryEngine`] for
-//! restoring the hybrid log from a fold-over checkpoint.
+//! 2. **Index recovery** — [`IndexRecoveryEngine`] restores the hash index
+//!    from the binary index checkpoint file, reconstructing bucket arrays and
+//!    overflow chains.
+//!
+//! 3. **Log recovery** — [`LogRecoveryEngine`] replays the hybrid log from
+//!    the checkpoint's persisted pages (fold-over or snapshot) back into the
+//!    in-memory page table, and restores the head/tail/read-only addresses.
+//!
+//! Session state is also recovered (serial numbers, pending operations) so
+//! that clients can resume exactly where they left off.
 //!
 //! [`CheckpointMetadataStore`]: crate::checkpoint::CheckpointMetadataStore
 //! [`IndexRecoveryEngine`]: index_recovery::IndexRecoveryEngine
