@@ -31,7 +31,9 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
+pub mod splitter;
 pub mod state_machine;
+pub use splitter::{BucketSplitter, HashResolver, SplitResult};
 pub use state_machine::{GrowError, GrowPhase, GrowStateMachine};
 
 /// Number of buckets processed per split work-unit during grow.

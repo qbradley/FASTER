@@ -185,6 +185,36 @@ impl HashTable {
         &self.overflow_pool
     }
 
+    /// Returns a reference to the primary bucket at the given raw index.
+    ///
+    /// Used by the grow subsystem to iterate buckets by index during
+    /// chunk-based splitting, where there is no [`KeyHash`] available.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index >= num_buckets()`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use faster_core::hash_table::HashTable;
+    ///
+    /// let table = HashTable::new(10); // 1024 buckets
+    /// let bucket = table.bucket_by_index(0);
+    /// // First bucket in the table.
+    /// ```
+    #[inline]
+    pub fn bucket_by_index(&self, index: u64) -> &HashBucket {
+        assert!(
+            index < self.num_buckets,
+            "bucket index {index} out of range for table with {} buckets",
+            self.num_buckets,
+        );
+        // SAFETY: index is bounds-checked by the assert above.
+        // self.buckets.len() == self.num_buckets (invariant from constructor).
+        unsafe { self.buckets.get_unchecked(index as usize) }
+    }
+
     // -----------------------------------------------------------------------
     // Bucket lookup — the fast path
     // -----------------------------------------------------------------------
