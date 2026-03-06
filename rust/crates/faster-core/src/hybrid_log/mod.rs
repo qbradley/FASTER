@@ -33,13 +33,15 @@
 //!   page frames.
 //! - [`LogScanIterator`] — sequential scan over a range of log addresses.
 
+#[deny(unsafe_code)]
 pub mod eviction;
-pub mod flush;
-pub mod log_allocator;
-pub mod page;
-pub mod record_ops;
+pub mod flush; // contains unsafe: I/O completion callbacks
+pub mod log_allocator; // contains unsafe: raw pointer arithmetic
+pub mod page; // contains unsafe: PageFrame raw memory management
+pub mod record_ops; // contains unsafe: record accessor raw pointers
+#[deny(unsafe_code)]
 pub mod regions;
-pub mod scan;
+pub mod scan; // contains unsafe: raw pointer slice in scan iterator
 
 pub use eviction::{EvictionPolicy, PageEvictor};
 pub use flush::{FlushError, FlushRequest, PageFlusher};

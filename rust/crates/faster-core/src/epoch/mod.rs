@@ -55,9 +55,12 @@
 //! // Guard dropped → epoch protection released
 //! ```
 
-mod drain;
+mod drain; // contains unsafe: raw pointer manipulation in drain callbacks
+#[deny(unsafe_code)]
 mod entry;
+#[deny(unsafe_code)]
 mod guard;
+#[deny(unsafe_code)]
 mod table;
 
 pub use self::entry::EpochEntry;

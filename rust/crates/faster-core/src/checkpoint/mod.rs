@@ -30,16 +30,25 @@
 //! checkpoint files. The design mirrors the C++ `IndexMetadata` /
 //! `LogMetadata` and C# `IndexRecoveryInfo` / `HybridLogRecoveryInfo` types.
 
+#[deny(unsafe_code)]
 mod manager;
+#[deny(unsafe_code)]
 mod metadata;
+#[deny(unsafe_code)]
 pub mod metadata_store;
+#[deny(unsafe_code)]
 pub mod orchestrator;
+#[deny(unsafe_code)]
 mod participant;
+#[deny(unsafe_code)]
 mod session_state;
+#[deny(unsafe_code)]
 mod state_machine;
 
-pub mod index_writer;
+pub mod index_writer; // contains unsafe: raw pointer slice for index serialization
+#[deny(unsafe_code)]
 pub mod log_writer;
+#[deny(unsafe_code)]
 pub mod snapshot_writer;
 
 pub use manager::{CheckpointError, CheckpointManager, CheckpointManagerImpl, CheckpointStatus};

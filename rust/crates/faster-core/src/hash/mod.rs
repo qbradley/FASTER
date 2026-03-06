@@ -21,12 +21,15 @@
 //! - [`overflow`] — `OverflowBucketPool` — pre-allocated pool for overflow
 //!   bucket chains, avoiding allocation on the hot path.
 
+#[deny(unsafe_code)]
 pub mod bucket;
 #[allow(clippy::module_inception)]
+#[deny(unsafe_code)]
 pub mod hash;
-pub mod index;
+pub mod index; // contains unsafe: raw pointer slice for bucket serialization
+#[deny(unsafe_code)]
 pub mod overflow;
-pub mod table;
+pub mod table; // contains unsafe: unchecked indexing for hot-path performance
 
 // Re-export items from `hash/hash.rs` at this level so that
 // `crate::hash::Hashable`, `crate::hash::KeyHash`, etc. keep working.

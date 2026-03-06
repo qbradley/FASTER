@@ -44,11 +44,13 @@
 //! - `operations` — Internal CRUD operation implementations (read, upsert,
 //!   RMW, delete) tying the hash index, hybrid log, and session together.
 
+#[deny(unsafe_code)]
 pub mod builder;
-mod functions;
-pub mod kv;
-pub(crate) mod operations;
-pub mod pending_io;
+mod functions; // contains unsafe: Functions trait callback dispatching
+pub mod kv; // contains unsafe: unsafe impl Send/Sync for FasterKv
+pub(crate) mod operations; // contains unsafe: MutableRecordAccessor construction
+pub mod pending_io; // contains unsafe: I/O completion callback reconstruction
+#[deny(unsafe_code)]
 mod session;
 
 pub use builder::FasterKvBuilder;

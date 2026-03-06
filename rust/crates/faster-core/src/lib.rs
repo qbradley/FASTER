@@ -115,19 +115,29 @@
 #![warn(missing_docs)]
 #![forbid(clippy::undocumented_unsafe_blocks)]
 
+// ── Safety-gated modules (zero unsafe code) ─────────────────────────────
+// `#[deny(unsafe_code)]` makes the compiler reject any `unsafe` added to
+// these modules, preventing accidental unsafe regression.
+
+#[deny(unsafe_code)]
 #[macro_use]
 mod instrument;
 
+#[deny(unsafe_code)]
 pub mod metrics;
+#[deny(unsafe_code)]
 pub(crate) mod sync;
 
+#[deny(unsafe_code)]
 pub mod address;
 pub mod allocator;
 pub mod buffer_pool;
 pub mod checkpoint;
 pub mod device;
 pub mod epoch;
+#[deny(unsafe_code)]
 pub mod error;
+#[deny(unsafe_code)]
 pub mod grow;
 pub mod hash;
 pub use self::hash::bucket as hash_bucket;
@@ -135,8 +145,10 @@ pub use self::hash::index as hash_index;
 pub use self::hash::overflow;
 pub use self::hash::table as hash_table;
 pub mod hybrid_log;
+#[deny(unsafe_code)]
 pub mod record;
 pub mod recovery;
+#[deny(unsafe_code)]
 pub mod status;
 pub mod store;
 pub mod sync_file_device;

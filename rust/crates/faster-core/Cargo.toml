@@ -14,6 +14,9 @@ publish = false
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(feature, values("tracing"))'] }
 
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
 [dependencies]
 crossbeam-utils = { workspace = true }
 cfg-if = { workspace = true }
