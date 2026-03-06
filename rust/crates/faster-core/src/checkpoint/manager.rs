@@ -413,9 +413,7 @@ mod tests {
         let mgr = new_manager();
 
         let _token = mgr.begin_checkpoint(CheckpointType::Snapshot).unwrap();
-        let err = mgr
-            .begin_checkpoint(CheckpointType::FoldOver)
-            .unwrap_err();
+        let err = mgr.begin_checkpoint(CheckpointType::FoldOver).unwrap_err();
         assert!(matches!(err, CheckpointError::AlreadyInProgress));
     }
 
@@ -500,31 +498,35 @@ mod tests {
 
     #[test]
     fn checkpoint_error_display() {
-        assert!(CheckpointError::AlreadyInProgress
-            .to_string()
-            .contains("already in progress"));
+        assert!(
+            CheckpointError::AlreadyInProgress
+                .to_string()
+                .contains("already in progress")
+        );
         assert!(CheckpointError::NotFound.to_string().contains("not found"));
-        assert!(CheckpointError::InvalidState("bad".into())
-            .to_string()
-            .contains("bad"));
+        assert!(
+            CheckpointError::InvalidState("bad".into())
+                .to_string()
+                .contains("bad")
+        );
 
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "disk");
-        assert!(CheckpointError::IoError(io_err)
-            .to_string()
-            .contains("disk"));
+        let io_err = std::io::Error::other("disk");
+        assert!(
+            CheckpointError::IoError(io_err)
+                .to_string()
+                .contains("disk")
+        );
     }
 
     #[test]
     fn checkpoint_error_source() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "oops");
+        let io_err = std::io::Error::other("oops");
         let err = CheckpointError::IoError(io_err);
         assert!(std::error::Error::source(&err).is_some());
 
         assert!(std::error::Error::source(&CheckpointError::AlreadyInProgress).is_none());
         assert!(std::error::Error::source(&CheckpointError::NotFound).is_none());
-        assert!(
-            std::error::Error::source(&CheckpointError::InvalidState("x".into())).is_none()
-        );
+        assert!(std::error::Error::source(&CheckpointError::InvalidState("x".into())).is_none());
     }
 
     #[test]

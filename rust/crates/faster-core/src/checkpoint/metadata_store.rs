@@ -342,8 +342,9 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Checkpoin
             CheckpointError::IoError(e)
         }
     })?;
-    serde_json::from_str(&data)
-        .map_err(|e| CheckpointError::InvalidState(format!("invalid JSON in {}: {e}", path.display())))
+    serde_json::from_str(&data).map_err(|e| {
+        CheckpointError::InvalidState(format!("invalid JSON in {}: {e}", path.display()))
+    })
 }
 
 /// Returns the current time as an ISO 8601 string (UTC-ish, no TZ offset).
@@ -376,8 +377,7 @@ fn civil_from_days(mut z: i64) -> (i32, u32, u32) {
     z += 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let doe = (z - era * 146_097) as u32; // day of era [0, 146096]
-    let yoe =
-        (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // year of era [0, 399]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // year of era [0, 399]
     let y = (yoe as i64 + era * 400) as i32;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // day of year [0, 365]
     let mp = (5 * doy + 2) / 153; // [0, 11]
@@ -510,7 +510,7 @@ mod tests {
     fn list_checkpoints_multiple() {
         let dir = tempfile::tempdir().unwrap();
         let store = CheckpointMetadataStore::new(dir.path().to_path_buf());
-        let tokens: Vec<_> = (1..=3).map(|i| sample_token(i)).collect();
+        let tokens: Vec<_> = (1..=3).map(sample_token).collect();
         for t in &tokens {
             store
                 .write_checkpoint_metadata(
@@ -683,18 +683,12 @@ mod tests {
             .unwrap();
 
         // Walk the entire checkpoint dir — no .tmp files should remain.
-        let ckpt_dir = dir
-            .path()
-            .join("checkpoints")
-            .join(token.to_string());
+        let ckpt_dir = dir.path().join("checkpoints").join(token.to_string());
         let tmp_files: Vec<_> = walkdir(&ckpt_dir)
             .into_iter()
             .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("tmp"))
             .collect();
-        assert!(
-            tmp_files.is_empty(),
-            "unexpected temp files: {tmp_files:?}"
-        );
+        assert!(tmp_files.is_empty(), "unexpected temp files: {tmp_files:?}");
     }
 
     // -- concurrent writes to different checkpoints -------------------------
@@ -742,12 +736,7 @@ mod tests {
         let store = CheckpointMetadataStore::new(dir.path().to_path_buf());
         let token = sample_token(30);
         store
-            .write_checkpoint_metadata(
-                &token,
-                &sample_index_info(),
-                &sample_log_info(),
-                &[],
-            )
+            .write_checkpoint_metadata(&token, &sample_index_info(), &sample_log_info(), &[])
             .unwrap();
         let meta = store.read_checkpoint_metadata(&token).unwrap();
         assert!(meta.session_infos.is_empty());
@@ -766,12 +755,7 @@ mod tests {
             })
             .collect();
         store
-            .write_checkpoint_metadata(
-                &token,
-                &sample_index_info(),
-                &sample_log_info(),
-                &sessions,
-            )
+            .write_checkpoint_metadata(&token, &sample_index_info(), &sample_log_info(), &sessions)
             .unwrap();
         let meta = store.read_checkpoint_metadata(&token).unwrap();
         assert_eq!(meta.session_infos, sessions);
@@ -789,12 +773,7 @@ mod tests {
             ..sample_log_info()
         };
         store
-            .write_checkpoint_metadata(
-                &token,
-                &sample_index_info(),
-                &log,
-                &sample_sessions(),
-            )
+            .write_checkpoint_metadata(&token, &sample_index_info(), &log, &sample_sessions())
             .unwrap();
         let meta = store.read_checkpoint_metadata(&token).unwrap();
         assert_eq!(meta.checkpoint_type, CheckpointType::FoldOver);
@@ -825,12 +804,7 @@ mod tests {
             ..sample_index_info()
         };
         store
-            .write_checkpoint_metadata(
-                &token,
-                &new_idx,
-                &sample_log_info(),
-                &[],
-            )
+            .write_checkpoint_metadata(&token, &new_idx, &sample_log_info(), &[])
             .unwrap();
 
         let meta = store.read_checkpoint_metadata(&token).unwrap();
@@ -865,21 +839,11 @@ mod tests {
         // Write a real checkpoint.
         let token = sample_token(70);
         store
-            .write_checkpoint_metadata(
-                &token,
-                &sample_index_info(),
-                &sample_log_info(),
-                &[],
-            )
+            .write_checkpoint_metadata(&token, &sample_index_info(), &sample_log_info(), &[])
             .unwrap();
 
         // Create a directory without a descriptor (simulates incomplete write).
-        fs::create_dir_all(
-            dir.path()
-                .join("checkpoints")
-                .join("fake-checkpoint-dir"),
-        )
-        .unwrap();
+        fs::create_dir_all(dir.path().join("checkpoints").join("fake-checkpoint-dir")).unwrap();
 
         let list = store.list_checkpoints().unwrap();
         assert_eq!(list, vec![token]);

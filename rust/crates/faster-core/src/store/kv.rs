@@ -214,9 +214,7 @@ impl<F: Functions> Drop for FasterKv<F> {
             let has_flushing = (head_page..=tail_page).any(|p| {
                 page_table
                     .get_frame(Page(p))
-                    .is_some_and(|f| {
-                        f.state().load(Ordering::Acquire) == PageState::Flushing
-                    })
+                    .is_some_and(|f| f.state().load(Ordering::Acquire) == PageState::Flushing)
             });
 
             if !has_flushing {
@@ -371,10 +369,7 @@ impl<F: Functions> FasterKv<F> {
     /// });
     /// assert_eq!(value, Some(42));
     /// ```
-    pub fn session_scope<R>(
-        &self,
-        f: impl FnOnce(&mut FasterSession<F>, &Self) -> R,
-    ) -> R {
+    pub fn session_scope<R>(&self, f: impl FnOnce(&mut FasterSession<F>, &Self) -> R) -> R {
         let session = self.new_session();
         // Use a guard struct to ensure dispose even on panic.
         struct ScopeGuard<'a, F: Functions> {
@@ -452,11 +447,7 @@ impl<F: Functions> FasterKv<F> {
     /// assert_eq!(value, Some(42));
     /// store.dispose_session(session);
     /// ```
-    pub fn read_simple(
-        &self,
-        session: &mut FasterSession<F>,
-        key: &F::Key,
-    ) -> F::Output
+    pub fn read_simple(&self, session: &mut FasterSession<F>, key: &F::Key) -> F::Output
     where
         F::Input: Default,
         F::Context: Default,
@@ -488,11 +479,7 @@ impl<F: Functions> FasterKv<F> {
     /// let status = store.delete_simple(&mut session, &1u64);
     /// store.dispose_session(session);
     /// ```
-    pub fn delete_simple(
-        &self,
-        session: &mut FasterSession<F>,
-        key: &F::Key,
-    ) -> OperationStatus
+    pub fn delete_simple(&self, session: &mut FasterSession<F>, key: &F::Key) -> OperationStatus
     where
         F::Context: Default,
     {
@@ -645,8 +632,7 @@ impl<F: Functions> FasterKv<F> {
             hash_index: &self.hash_index,
             allocator: &self.allocator,
         };
-        let status =
-            internal_delete(&ctx, guard.session_mut(), &self.functions, key, context);
+        let status = internal_delete(&ctx, guard.session_mut(), &self.functions, key, context);
         drop(guard);
         if status == OperationStatus::Pending {
             self.dispatch_pending_io(session);
@@ -702,10 +688,7 @@ impl<F: Functions> FasterKv<F> {
     /// Write-path completions are not yet implemented (requires re-entering
     /// the hash index to perform copy-to-tail). They are tracked as in-flight
     /// I/O but dropped on completion with a debug warning.
-    pub fn complete_pending(
-        &self,
-        session: &mut FasterSession<F>,
-    ) -> Vec<(F::Output, F::Context)> {
+    pub fn complete_pending(&self, session: &mut FasterSession<F>) -> Vec<(F::Output, F::Context)> {
         let completed = session.take_completed_io();
         let mut results = Vec::with_capacity(completed.len());
 
@@ -950,7 +933,6 @@ impl<F: Functions> FasterKv<F> {
             self.evictor.evict_pages(&self.allocator);
         }
     }
-
 
     // ── Hash Index Grow ─────────────────────────────────────────────
 
@@ -1745,8 +1727,8 @@ mod tests {
 
     #[test]
     fn concurrent_session_pending_operations() {
-        use std::sync::Arc;
         use crate::device::InMemoryDevice;
+        use std::sync::Arc;
 
         let config = FasterKvConfig {
             hash_index_size_log2: 10,
@@ -1816,8 +1798,7 @@ mod tests {
 
         let result = store.session_scope(|session, store| {
             let _ = store.upsert_simple(session, &1u64, &42u64);
-            let out = store.read_simple(session, &1u64);
-            out
+            store.read_simple(session, &1u64)
         });
         assert_eq!(result, Some(42));
     }

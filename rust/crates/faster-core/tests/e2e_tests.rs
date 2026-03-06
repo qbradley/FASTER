@@ -45,7 +45,7 @@ fn counter_store() -> FasterKv<CounterFunctions<u64>> {
 /// Store with tiny buffer to force page sealing quickly.
 fn tiny_buffer_store(device: impl faster_core::Device) -> FasterKv<SimpleFunctions<u64, u64>> {
     let config = FasterKvConfig {
-            grow_config: GrowConfig::default(),
+        grow_config: GrowConfig::default(),
         hash_index_size_log2: 14, // 16 K buckets
         buffer_size_pages: 4,     // very small buffer
         mutable_fraction: 0.5,    // half mutable → pages seal quickly
@@ -253,7 +253,7 @@ fn disk_eviction_and_readback() {
     .expect("create SyncFileDevice");
 
     let config = FasterKvConfig {
-            grow_config: GrowConfig::default(),
+        grow_config: GrowConfig::default(),
         hash_index_size_log2: 14,
         buffer_size_pages: 4,
         mutable_fraction: 0.5,
@@ -489,7 +489,7 @@ fn config_small_hash_table() {
 #[test]
 fn config_large_buffer() {
     let config = FasterKvConfig {
-            grow_config: GrowConfig::default(),
+        grow_config: GrowConfig::default(),
         hash_index_size_log2: 12,
         buffer_size_pages: 64, // large in-memory buffer
         mutable_fraction: 0.95,
@@ -636,7 +636,7 @@ fn many_sessions_concurrent() {
 #[test]
 fn maintenance_under_concurrent_load() {
     let config = FasterKvConfig {
-            grow_config: GrowConfig::default(),
+        grow_config: GrowConfig::default(),
         hash_index_size_log2: 14,
         buffer_size_pages: 8,
         mutable_fraction: 0.5,

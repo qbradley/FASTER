@@ -345,12 +345,18 @@ mod tests {
         use proptest::prelude::*;
 
         fn logical_address_strategy() -> impl Strategy<Value = LogicalAddress> {
-            (0u32..=crate::address::MAX_PAGE, 0u32..=crate::address::MAX_OFFSET)
+            (
+                0u32..=crate::address::MAX_PAGE,
+                0u32..=crate::address::MAX_OFFSET,
+            )
                 .prop_map(|(p, o)| LogicalAddress::new(Page(p), Offset(o)))
         }
 
         fn checkpoint_type_strategy() -> impl Strategy<Value = CheckpointType> {
-            prop_oneof![Just(CheckpointType::FoldOver), Just(CheckpointType::Snapshot),]
+            prop_oneof![
+                Just(CheckpointType::FoldOver),
+                Just(CheckpointType::Snapshot),
+            ]
         }
 
         proptest! {

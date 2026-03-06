@@ -187,8 +187,7 @@ impl Default for SessionRecoveryEngine {
 mod tests {
     use super::*;
     use crate::checkpoint::{
-        CheckpointToken, CheckpointType, IndexRecoveryInfo, LogRecoveryInfo,
-        SessionRecoveryInfo,
+        CheckpointToken, CheckpointType, IndexRecoveryInfo, LogRecoveryInfo, SessionRecoveryInfo,
     };
 
     // -- helpers ------------------------------------------------------------
@@ -354,10 +353,7 @@ mod tests {
         let err = engine.recover_session(&info).unwrap_err();
         match &err {
             RecoveryError::CorruptMetadata(msg) => {
-                assert!(
-                    msg.contains("serial_number is 0"),
-                    "got: {msg}"
-                );
+                assert!(msg.contains("serial_number is 0"), "got: {msg}");
             }
             other => panic!("expected CorruptMetadata, got {other:?}"),
         }
@@ -421,10 +417,10 @@ mod tests {
     fn recover_sessions_mixed_replay_states() {
         let engine = SessionRecoveryEngine::new();
         let plan = plan_with_sessions(vec![
-            session_info(0, 100, vec![]),           // clean
-            session_info(1, 200, vec![190, 195]),   // needs replay
-            session_info(2, 300, vec![]),            // clean
-            session_info(3, 400, vec![399]),         // needs replay
+            session_info(0, 100, vec![]),         // clean
+            session_info(1, 200, vec![190, 195]), // needs replay
+            session_info(2, 300, vec![]),         // clean
+            session_info(3, 400, vec![399]),      // needs replay
         ]);
         let sessions = engine.recover_sessions(&plan).unwrap();
         assert_eq!(sessions.len(), 4);

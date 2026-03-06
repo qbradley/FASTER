@@ -283,11 +283,7 @@ impl GrowStateMachine {
     /// assert!(sm.try_advance(GrowPhase::Prepare, GrowPhase::InProgress).unwrap());
     /// assert_eq!(sm.phase(), GrowPhase::InProgress);
     /// ```
-    pub fn try_advance(
-        &self,
-        expected: GrowPhase,
-        next: GrowPhase,
-    ) -> Result<bool, GrowError> {
+    pub fn try_advance(&self, expected: GrowPhase, next: GrowPhase) -> Result<bool, GrowError> {
         // Validate that `next` is the valid successor of `expected`.
         let valid_next = expected.next().ok_or(GrowError::NotInExpectedPhase {
             expected,
@@ -354,13 +350,11 @@ impl GrowStateMachine {
 
                 let mut guard = self.state.write().unwrap();
                 *guard = Some(grow_state);
-                self.new_size_bits
-                    .store(new_size_bits, Ordering::Release);
+                self.new_size_bits.store(new_size_bits, Ordering::Release);
                 Ok(())
             }
             Err(actual_raw) => {
-                let actual = GrowPhase::try_from(actual_raw)
-                    .expect("corrupted grow phase");
+                let actual = GrowPhase::try_from(actual_raw).expect("corrupted grow phase");
                 if actual == GrowPhase::Rest {
                     // Spurious CAS failure — treat as contention.
                     Err(GrowError::AlreadyInProgress)
@@ -410,8 +404,7 @@ impl GrowStateMachine {
                 Ok(())
             }
             Err(actual_raw) => {
-                let actual = GrowPhase::try_from(actual_raw)
-                    .expect("corrupted grow phase");
+                let actual = GrowPhase::try_from(actual_raw).expect("corrupted grow phase");
                 Err(GrowError::NotInExpectedPhase {
                     expected: GrowPhase::Completed,
                     actual,
@@ -575,7 +568,7 @@ mod tests {
     fn phase_derives() {
         let a = GrowPhase::Rest;
         let b = a; // Copy
-        let c = a.clone(); // Clone
+        let c = a; // Copy (GrowPhase implements Copy)
         assert_eq!(a, b);
         assert_eq!(b, c);
 
@@ -672,21 +665,24 @@ mod tests {
         }
 
         // Prepare → InProgress
-        assert!(sm
-            .try_advance(GrowPhase::Prepare, GrowPhase::InProgress)
-            .unwrap());
+        assert!(
+            sm.try_advance(GrowPhase::Prepare, GrowPhase::InProgress)
+                .unwrap()
+        );
         assert_eq!(sm.phase(), GrowPhase::InProgress);
 
         // InProgress → WaitCompletion
-        assert!(sm
-            .try_advance(GrowPhase::InProgress, GrowPhase::WaitCompletion)
-            .unwrap());
+        assert!(
+            sm.try_advance(GrowPhase::InProgress, GrowPhase::WaitCompletion)
+                .unwrap()
+        );
         assert_eq!(sm.phase(), GrowPhase::WaitCompletion);
 
         // WaitCompletion → Completed
-        assert!(sm
-            .try_advance(GrowPhase::WaitCompletion, GrowPhase::Completed)
-            .unwrap());
+        assert!(
+            sm.try_advance(GrowPhase::WaitCompletion, GrowPhase::Completed)
+                .unwrap()
+        );
         assert_eq!(sm.phase(), GrowPhase::Completed);
 
         // Completed → Rest

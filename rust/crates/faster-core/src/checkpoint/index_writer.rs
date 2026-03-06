@@ -149,9 +149,8 @@ impl IndexCheckpointWriter {
             // The atomic values are read with an implicit Relaxed ordering
             // (byte copy). The caller is responsible for ensuring no concurrent
             // writers are active (checkpoint quiescence).
-            let bytes: &[u8; BUCKET_SIZE] = unsafe {
-                &*(bucket as *const HashBucket as *const [u8; BUCKET_SIZE])
-            };
+            let bytes: &[u8; BUCKET_SIZE] =
+                unsafe { &*(bucket as *const HashBucket as *const [u8; BUCKET_SIZE]) };
             writer.write_all(bytes)?;
             hasher.update(bytes);
         }
@@ -497,12 +496,8 @@ mod tests {
 
         // Corrupt a byte in the body area (after the header).
         {
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .open(&path)
-                .unwrap();
-            file.seek(SeekFrom::Start(HEADER_SIZE as u64 + 10))
-                .unwrap();
+            let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            file.seek(SeekFrom::Start(HEADER_SIZE as u64 + 10)).unwrap();
             file.write_all(&[0xFF]).unwrap();
         }
 
@@ -523,10 +518,7 @@ mod tests {
 
         // Corrupt the entry_count field in the header (offset 20).
         {
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .open(&path)
-                .unwrap();
+            let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
             file.seek(SeekFrom::Start(20)).unwrap();
             file.write_all(&[0xFF, 0xFF]).unwrap();
         }
@@ -673,11 +665,8 @@ mod tests {
         let hash = KeyHash::new(0xDEAD_BEEF_CAFE_0001);
         let result = table.find_or_create_entry(hash, LogicalAddress::INVALID);
         assert!(result.created);
-        let committed = HashBucketEntry::new(
-            result.entry.tag(),
-            LogicalAddress::from_raw(0x42),
-            false,
-        );
+        let committed =
+            HashBucketEntry::new(result.entry.tag(), LogicalAddress::from_raw(0x42), false);
         table.update_entry(result.slot, result.entry, committed);
 
         writer
@@ -697,9 +686,8 @@ mod tests {
 
             // SAFETY: same justification as write_index — reading raw repr(C)
             // bytes of a HashBucket for comparison.
-            let mem_bytes: &[u8; BUCKET_SIZE] = unsafe {
-                &*(bucket as *const HashBucket as *const [u8; BUCKET_SIZE])
-            };
+            let mem_bytes: &[u8; BUCKET_SIZE] =
+                unsafe { &*(bucket as *const HashBucket as *const [u8; BUCKET_SIZE]) };
             assert_eq!(&file_bucket, mem_bytes, "bucket bytes mismatch");
         }
     }

@@ -322,10 +322,7 @@ fn validate_address_consistency(log_info: &LogRecoveryInfo) -> Result<(), Recove
 ///
 /// Returns the number of records "scanned" (currently 0 — full record-chain
 /// scanning is reserved for a future enhancement).
-fn validate_log_file(
-    base_dir: &Path,
-    log_info: &LogRecoveryInfo,
-) -> Result<u64, RecoveryError> {
+fn validate_log_file(base_dir: &Path, log_info: &LogRecoveryInfo) -> Result<u64, RecoveryError> {
     let tail = log_info.final_address;
 
     // An empty log (tail at zero) is trivially valid — no file required.
@@ -401,7 +398,11 @@ fn pages_between_addresses(from: LogicalAddress, to: LogicalAddress) -> u32 {
     let from_page = from.page().0;
     let to_page = to.page().0;
     if from_page == to_page {
-        if to.offset().0 > from.offset().0 { 1 } else { 0 }
+        if to.offset().0 > from.offset().0 {
+            1
+        } else {
+            0
+        }
     } else {
         let base = to_page - from_page;
         if to.offset().0 > 0 { base + 1 } else { base }
@@ -431,9 +432,7 @@ fn validate_snapshot_type(log_info: &LogRecoveryInfo) -> Result<(), RecoveryErro
 /// - `snapshot_start == head` (snapshot covers from head to tail)
 /// - `snapshot_start <= snapshot_final`
 /// - `final_address == snapshot_final_address`
-fn validate_snapshot_address_consistency(
-    log_info: &LogRecoveryInfo,
-) -> Result<(), RecoveryError> {
+fn validate_snapshot_address_consistency(log_info: &LogRecoveryInfo) -> Result<(), RecoveryError> {
     let mut issues = Vec::new();
 
     if log_info.begin_address > log_info.head_address {
@@ -547,9 +546,11 @@ fn validate_snapshot_file(
     }
 
     let reader = SnapshotFileReader::open(&snapshot_path)
-        .map_err(|e| RecoveryError::IoError(std::io::Error::other(
-            format!("failed to open snapshot file: {e}"),
-        )))?
+        .map_err(|e| {
+            RecoveryError::IoError(std::io::Error::other(format!(
+                "failed to open snapshot file: {e}"
+            )))
+        })?
         .with_page_size(PAGE_SIZE as usize);
 
     let start_page = snap_start.page().0 as u64;
@@ -636,11 +637,7 @@ mod tests {
     }
 
     /// Write checkpoint metadata to disk so the recovery plan can be loaded.
-    fn write_checkpoint(
-        base_dir: &Path,
-        token: &CheckpointToken,
-        log_info: &LogRecoveryInfo,
-    ) {
+    fn write_checkpoint(base_dir: &Path, token: &CheckpointToken, log_info: &LogRecoveryInfo) {
         let store = CheckpointMetadataStore::new(base_dir.to_path_buf());
         store
             .write_checkpoint_metadata(token, &sample_index_info(), log_info, &[])
@@ -764,9 +761,7 @@ mod tests {
 
         // Don't create the log file.
         let engine = LogRecoveryEngine::new();
-        let err = engine
-            .recover_fold_over(&plan, dir.path())
-            .unwrap_err();
+        let err = engine.recover_fold_over(&plan, dir.path()).unwrap_err();
 
         match err {
             RecoveryError::ValidationFailed(issues) => {
@@ -797,9 +792,7 @@ mod tests {
         create_log_file(dir.path(), 0, needed / 2);
 
         let engine = LogRecoveryEngine::new();
-        let err = engine
-            .recover_fold_over(&plan, dir.path())
-            .unwrap_err();
+        let err = engine.recover_fold_over(&plan, dir.path()).unwrap_err();
 
         match err {
             RecoveryError::ValidationFailed(issues) => {
@@ -821,8 +814,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let token = sample_token();
 
-        let mut log_info =
-            fold_over_log_info(LogicalAddress::ZERO, LogicalAddress::ZERO, LogicalAddress::ZERO);
+        let mut log_info = fold_over_log_info(
+            LogicalAddress::ZERO,
+            LogicalAddress::ZERO,
+            LogicalAddress::ZERO,
+        );
         log_info.checkpoint_type = CheckpointType::Snapshot;
 
         // Write checkpoint metadata manually with FoldOver type in the descriptor
@@ -837,9 +833,7 @@ mod tests {
         let plan = mgr.select_checkpoint(Some(token)).expect("plan");
 
         let engine = LogRecoveryEngine::new();
-        let err = engine
-            .recover_fold_over(&plan, dir.path())
-            .unwrap_err();
+        let err = engine.recover_fold_over(&plan, dir.path()).unwrap_err();
 
         match err {
             RecoveryError::CorruptMetadata(msg) => {
@@ -868,9 +862,7 @@ mod tests {
         let plan = build_plan(dir.path(), &token, &log_info);
 
         let engine = LogRecoveryEngine::new();
-        let err = engine
-            .recover_fold_over(&plan, dir.path())
-            .unwrap_err();
+        let err = engine.recover_fold_over(&plan, dir.path()).unwrap_err();
 
         match err {
             RecoveryError::ValidationFailed(issues) => {
@@ -895,9 +887,7 @@ mod tests {
         let plan = build_plan(dir.path(), &token, &log_info);
 
         let engine = LogRecoveryEngine::new();
-        let err = engine
-            .recover_fold_over(&plan, dir.path())
-            .unwrap_err();
+        let err = engine.recover_fold_over(&plan, dir.path()).unwrap_err();
 
         match err {
             RecoveryError::ValidationFailed(issues) => {
@@ -1025,10 +1015,7 @@ mod tests {
     #[test]
     fn logical_address_to_byte_offset_with_offset() {
         let addr = LogicalAddress::new(Page(2), Offset(512));
-        assert_eq!(
-            logical_address_to_byte_offset(addr),
-            2 * PAGE_SIZE + 512
-        );
+        assert_eq!(logical_address_to_byte_offset(addr), 2 * PAGE_SIZE + 512);
     }
 
     #[test]

@@ -624,9 +624,7 @@ mod tests {
             writer.finalize().unwrap();
         }
 
-        let reader = SnapshotFileReader::open(&path)
-            .unwrap()
-            .with_page_size(512);
+        let reader = SnapshotFileReader::open(&path).unwrap().with_page_size(512);
         let pages: Vec<_> = reader.pages().collect();
         assert!(pages.is_empty());
     }

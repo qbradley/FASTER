@@ -44,10 +44,7 @@ fn main() {
     for key in 0..num_keys {
         let value = key * 10;
         let status = store.upsert(&mut session, &key, &value, ());
-        assert!(
-            status.is_success(),
-            "upsert failed for key {key}: {status}"
-        );
+        assert!(status.is_success(), "upsert failed for key {key}: {status}");
     }
     println!("Upserted {num_keys} key-value pairs (key → key * 10)");
 

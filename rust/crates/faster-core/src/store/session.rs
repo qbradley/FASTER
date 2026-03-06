@@ -398,7 +398,10 @@ impl<F: Functions> FasterSession<F> {
     /// and return the expired contexts.
     #[inline]
     pub fn expired_pending_count(&self) -> usize {
-        self.io_contexts.iter().filter(|ctx| ctx.is_expired()).count()
+        self.io_contexts
+            .iter()
+            .filter(|ctx| ctx.is_expired())
+            .count()
     }
 
     /// Cancel a specific pending I/O operation by its context ID.
@@ -411,7 +414,10 @@ impl<F: Functions> FasterSession<F> {
     /// `Err(PendingIoError::Cancelled { .. })` if no context with that ID
     /// exists (it may have already completed or been cancelled).
     pub fn cancel_pending(&mut self, context_id: u64) -> Result<(), PendingIoError> {
-        let pos = self.io_contexts.iter().position(|ctx| ctx.id() == context_id);
+        let pos = self
+            .io_contexts
+            .iter()
+            .position(|ctx| ctx.id() == context_id);
         match pos {
             Some(idx) => {
                 let _removed = self.io_contexts.swap_remove(idx);
@@ -898,10 +904,10 @@ mod tests {
 
     #[test]
     fn pending_count_includes_io_contexts() {
-        use std::sync::atomic::{AtomicBool, AtomicU32};
-        use std::sync::{Arc, Mutex};
         use crate::buffer_pool::AlignedBuffer;
         use crate::device::IoStatus;
+        use std::sync::atomic::{AtomicBool, AtomicU32};
+        use std::sync::{Arc, Mutex};
 
         let (_, pool) = make_pool();
         let mut session = pool.create_session();
@@ -931,10 +937,10 @@ mod tests {
 
     #[test]
     fn take_completed_io_filters_correctly() {
-        use std::sync::atomic::{AtomicBool, AtomicU32};
-        use std::sync::{Arc, Mutex};
         use crate::buffer_pool::AlignedBuffer;
         use crate::device::IoStatus;
+        use std::sync::atomic::{AtomicBool, AtomicU32};
+        use std::sync::{Arc, Mutex};
 
         let (_, pool) = make_pool();
         let mut session = pool.create_session();
@@ -968,18 +974,22 @@ mod tests {
 
     // ── L4: Timeout & Cancellation ──────────────────────────────────
 
-    use std::sync::atomic::{AtomicBool, AtomicU32};
-    use std::sync::{Arc, Mutex};
     use crate::buffer_pool::AlignedBuffer;
     use crate::device::IoStatus;
+    use std::sync::atomic::{AtomicBool, AtomicU32};
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn expired_pending_count_with_no_expired() {
         let (_, pool) = make_pool();
         let mut session = pool.create_session();
         let ctx = PendingIoContext::<TestFunctions>::new_for_test(
-            make_pending_op(1), AlignedBuffer::new(512, 512), 0,
-            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
+            make_pending_op(1),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None::<IoStatus>)),
+            Arc::new(AtomicU32::new(0)),
         );
         session.enqueue_io_context(ctx);
         assert_eq!(session.expired_pending_count(), 0);
@@ -991,13 +1001,22 @@ mod tests {
         let (_, pool) = make_pool();
         let mut session = pool.create_session();
         let expired_ctx = PendingIoContext::<TestFunctions>::new_for_test_with_timeout(
-            make_pending_op(1), AlignedBuffer::new(512, 512), 0,
-            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
-            Duration::ZERO, Instant::now() - Duration::from_millis(1),
+            make_pending_op(1),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None::<IoStatus>)),
+            Arc::new(AtomicU32::new(0)),
+            Duration::ZERO,
+            Instant::now() - Duration::from_millis(1),
         );
         let fresh_ctx = PendingIoContext::<TestFunctions>::new_for_test(
-            make_pending_op(2), AlignedBuffer::new(512, 512), 0,
-            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
+            make_pending_op(2),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None::<IoStatus>)),
+            Arc::new(AtomicU32::new(0)),
         );
         session.enqueue_io_context(expired_ctx);
         session.enqueue_io_context(fresh_ctx);
@@ -1010,8 +1029,12 @@ mod tests {
         let (_, pool) = make_pool();
         let mut session = pool.create_session();
         let ctx = PendingIoContext::<TestFunctions>::new_for_test(
-            make_pending_op(1), AlignedBuffer::new(512, 512), 0,
-            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
+            make_pending_op(1),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None::<IoStatus>)),
+            Arc::new(AtomicU32::new(0)),
         );
         let ctx_id = ctx.id();
         session.enqueue_io_context(ctx);
@@ -1037,13 +1060,21 @@ mod tests {
         let (_, pool) = make_pool();
         let mut session = pool.create_session();
         let ctx1 = PendingIoContext::<TestFunctions>::new_for_test(
-            make_pending_op(1), AlignedBuffer::new(512, 512), 0,
-            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
+            make_pending_op(1),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None::<IoStatus>)),
+            Arc::new(AtomicU32::new(0)),
         );
         let id1 = ctx1.id();
         let ctx2 = PendingIoContext::<TestFunctions>::new_for_test(
-            make_pending_op(2), AlignedBuffer::new(512, 512), 0,
-            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
+            make_pending_op(2),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None::<IoStatus>)),
+            Arc::new(AtomicU32::new(0)),
         );
         session.enqueue_io_context(ctx1);
         session.enqueue_io_context(ctx2);
@@ -1057,18 +1088,32 @@ mod tests {
         let (_, pool) = make_pool();
         let mut session = pool.create_session();
         let expired1 = PendingIoContext::<TestFunctions>::new_for_test_with_timeout(
-            make_pending_op(1), AlignedBuffer::new(512, 512), 0,
-            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
-            Duration::ZERO, Instant::now() - Duration::from_millis(10),
+            make_pending_op(1),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None::<IoStatus>)),
+            Arc::new(AtomicU32::new(0)),
+            Duration::ZERO,
+            Instant::now() - Duration::from_millis(10),
         );
         let expired2 = PendingIoContext::<TestFunctions>::new_for_test_with_timeout(
-            make_pending_op(2), AlignedBuffer::new(512, 512), 0,
-            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
-            Duration::from_millis(1), Instant::now() - Duration::from_secs(1),
+            make_pending_op(2),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None::<IoStatus>)),
+            Arc::new(AtomicU32::new(0)),
+            Duration::from_millis(1),
+            Instant::now() - Duration::from_secs(1),
         );
         let fresh = PendingIoContext::<TestFunctions>::new_for_test(
-            make_pending_op(3), AlignedBuffer::new(512, 512), 0,
-            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
+            make_pending_op(3),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None::<IoStatus>)),
+            Arc::new(AtomicU32::new(0)),
         );
         session.enqueue_io_context(expired1);
         session.enqueue_io_context(expired2);
@@ -1085,8 +1130,12 @@ mod tests {
         let (_, pool) = make_pool();
         let mut session = pool.create_session();
         let ctx = PendingIoContext::<TestFunctions>::new_for_test(
-            make_pending_op(1), AlignedBuffer::new(512, 512), 0,
-            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
+            make_pending_op(1),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None::<IoStatus>)),
+            Arc::new(AtomicU32::new(0)),
         );
         session.enqueue_io_context(ctx);
         let cancelled = session.cancel_all_expired();
@@ -1107,9 +1156,14 @@ mod tests {
         let (_, pool) = make_pool();
         let mut session = pool.create_session();
         let expired = PendingIoContext::<TestFunctions>::new_for_test_with_timeout(
-            make_pending_op(1), AlignedBuffer::new(512, 512), 0,
-            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
-            Duration::ZERO, Instant::now() - Duration::from_millis(10),
+            make_pending_op(1),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None::<IoStatus>)),
+            Arc::new(AtomicU32::new(0)),
+            Duration::ZERO,
+            Instant::now() - Duration::from_millis(10),
         );
         session.enqueue_io_context(expired);
         let done = session.take_completed_io();
@@ -1124,17 +1178,30 @@ mod tests {
         let (_, pool) = make_pool();
         let mut session = pool.create_session();
         let completed_ctx = PendingIoContext::<TestFunctions>::new_for_test(
-            make_pending_op(1), AlignedBuffer::new(512, 512), 0,
-            Arc::new(AtomicBool::new(true)), Arc::new(Mutex::new(Some(IoStatus::Success))), Arc::new(AtomicU32::new(512)),
+            make_pending_op(1),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(Mutex::new(Some(IoStatus::Success))),
+            Arc::new(AtomicU32::new(512)),
         );
         let expired_ctx = PendingIoContext::<TestFunctions>::new_for_test_with_timeout(
-            make_pending_op(2), AlignedBuffer::new(512, 512), 0,
-            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
-            Duration::ZERO, Instant::now() - Duration::from_millis(10),
+            make_pending_op(2),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None::<IoStatus>)),
+            Arc::new(AtomicU32::new(0)),
+            Duration::ZERO,
+            Instant::now() - Duration::from_millis(10),
         );
         let fresh_ctx = PendingIoContext::<TestFunctions>::new_for_test(
-            make_pending_op(3), AlignedBuffer::new(512, 512), 0,
-            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None::<IoStatus>)), Arc::new(AtomicU32::new(0)),
+            make_pending_op(3),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None::<IoStatus>)),
+            Arc::new(AtomicU32::new(0)),
         );
         session.enqueue_io_context(completed_ctx);
         session.enqueue_io_context(expired_ctx);

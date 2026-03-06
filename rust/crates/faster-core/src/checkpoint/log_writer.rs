@@ -191,10 +191,7 @@ impl LogCheckpointWriter {
     ///
     /// Returns [`CheckpointError::InvalidState`] if the checkpoint type in
     /// the context does not match this writer's type.
-    pub fn complete(
-        &self,
-        ctx: LogCheckpointContext,
-    ) -> Result<LogRecoveryInfo, CheckpointError> {
+    pub fn complete(&self, ctx: LogCheckpointContext) -> Result<LogRecoveryInfo, CheckpointError> {
         if ctx.checkpoint_type != self.checkpoint_type {
             return Err(CheckpointError::InvalidState(format!(
                 "context type {:?} does not match writer type {:?}",
@@ -615,9 +612,7 @@ mod tests {
     fn context_debug_format() {
         let log = make_allocator();
         let writer = LogCheckpointWriter::new(CheckpointType::FoldOver);
-        let ctx = writer
-            .begin_checkpoint(&log, &make_token(1))
-            .unwrap();
+        let ctx = writer.begin_checkpoint(&log, &make_token(1)).unwrap();
         let dbg = format!("{ctx:?}");
         assert!(dbg.contains("LogCheckpointContext"));
         assert!(dbg.contains("FoldOver"));

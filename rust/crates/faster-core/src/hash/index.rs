@@ -571,8 +571,7 @@ impl HashIndex {
         }
 
         if cleaned > 0 {
-            self.live_entry_count
-                .fetch_sub(cleaned, Ordering::Relaxed);
+            self.live_entry_count.fetch_sub(cleaned, Ordering::Relaxed);
         }
         cleaned
     }
@@ -1424,9 +1423,7 @@ mod tests {
             }
         }
         assert_eq!(index.entry_count(), 5);
-        let invalidated = index.invalidate_entries_in_range(
-            make_addr(3, 0), make_addr(4, 0),
-        );
+        let invalidated = index.invalidate_entries_in_range(make_addr(3, 0), make_addr(4, 0));
         assert_eq!(invalidated, 5);
         assert_eq!(index.entry_count(), 0);
     }
