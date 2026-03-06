@@ -34,13 +34,14 @@
 
 use std::sync::Arc;
 
-use crate::address::LogicalAddress;
+use crate::address::{LogicalAddress, Page};
 use crate::device::Device;
 use crate::epoch::EpochTable;
 use crate::hash::index::HashIndex;
 use crate::hybrid_log::eviction::{EvictionPolicy, PageEvictor};
 use crate::hybrid_log::flush::PageFlusher;
 use crate::hybrid_log::log_allocator::HybridLogAllocator;
+use crate::hybrid_log::page::PageState;
 use crate::status::OperationStatus;
 use crate::store::functions::Functions;
 use crate::store::operations::{
@@ -155,6 +156,80 @@ pub struct FasterKv<F: Functions> {
 unsafe impl<F: Functions> Send for FasterKv<F> {}
 // SAFETY: All methods take &self and internal mutation is through atomics.
 unsafe impl<F: Functions> Sync for FasterKv<F> {}
+
+impl<F: Functions> Drop for FasterKv<F> {
+    fn drop(&mut self) {
+        // Ordered shutdown (SF-10): drain in-flight I/O before releasing memory.
+        //
+        // Flush callbacks hold raw pointers to the PageTable (see
+        // `FlushCallbackContext` in flush.rs). We must ensure all callbacks
+        // have completed before the allocator (and its PageTable) is dropped.
+        //
+        // Shutdown sequence:
+        //   1. Synchronously flush remaining sealed pages (avoids creating
+        //      new async callbacks during shutdown).
+        //   2. Spin-wait (with timeout) for all Flushing pages to complete.
+        //   3. Close the device to join I/O worker threads.
+        //   4. Normal field-declaration-order drop proceeds:
+        //      hash_index, allocator, functions, device, epoch_table,
+        //      session_pool, flusher, evictor, config.
+
+        use std::sync::atomic::Ordering;
+
+        let page_table = self.allocator.page_table();
+        let head_page = self.allocator.head_address().page().0;
+        let tail_page = self.allocator.tail_address().page().0;
+
+        // Step 1: Flush remaining sealed pages synchronously.
+        for p in head_page..=tail_page {
+            let page = Page(p);
+            if let Some(frame) = page_table.get_frame(page) {
+                if frame.state().load(Ordering::Acquire) == PageState::Sealed {
+                    let _ = self.flusher.flush_page_sync(
+                        page,
+                        page_table,
+                        self.device.as_ref(),
+                        self.allocator.page_size(),
+                    );
+                }
+            }
+        }
+
+        // Step 2: Wait for in-flight async flushes (Flushing -> Flushed).
+        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+        const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1);
+        let deadline = std::time::Instant::now() + TIMEOUT;
+
+        loop {
+            let has_flushing = (head_page..=tail_page).any(|p| {
+                page_table
+                    .get_frame(Page(p))
+                    .is_some_and(|f| {
+                        f.state().load(Ordering::Acquire) == PageState::Flushing
+                    })
+            });
+
+            if !has_flushing {
+                break;
+            }
+
+            if std::time::Instant::now() >= deadline {
+                eprintln!(
+                    "FasterKv::drop: timeout waiting for in-flight I/O \
+                     ({TIMEOUT:?} exceeded)"
+                );
+                break;
+            }
+
+            std::thread::sleep(POLL_INTERVAL);
+        }
+
+        // Step 3: Close the device — joins I/O worker threads, ensuring all
+        // enqueued callbacks have fired. The device's own Drop is a no-op
+        // after an explicit close().
+        self.device.close();
+    }
+}
 
 impl<F: Functions> FasterKv<F> {
     /// Create a new FasterKv store.
@@ -767,5 +842,89 @@ mod tests {
 
         let debug = format!("{:?}", config);
         assert!(debug.contains("FasterKvConfig"));
+    }
+
+    // ── Drop safety: empty store ────────────────────────────────────
+
+    #[test]
+    fn drop_empty_store() {
+        let _store = test_store();
+        // Implicit drop — must not panic.
+    }
+
+    // ── Drop safety: store with data ────────────────────────────────
+
+    #[test]
+    fn drop_store_with_data() {
+        let store = test_store();
+        let mut session = store.new_session();
+
+        for i in 0u64..100 {
+            let _ = store.upsert(&mut session, &i, &(i * 10), ());
+        }
+
+        store.dispose_session(session);
+        drop(store);
+    }
+
+    // ── Drop safety: after flush cycle ──────────────────────────────
+
+    #[test]
+    fn drop_after_flush() {
+        let config = FasterKvConfig {
+            hash_index_size_log2: 8,
+            buffer_size_pages: 4,
+            mutable_fraction: 0.5,
+            sector_size: 512,
+            eviction_policy: EvictionPolicy::default(),
+        };
+        let store: SimpleStore =
+            FasterKv::new(config, SimpleFunctions::default(), NullDevice::new());
+        let mut session = store.new_session();
+
+        for i in 0u64..500 {
+            let _ = store.upsert(&mut session, &i, &(i * 100), ());
+        }
+
+        // Full maintenance: shift read-only, flush, evict.
+        store.maintenance();
+
+        store.dispose_session(session);
+        drop(store);
+    }
+
+    // ── Drop during active flushes ──────────────────────────────────
+
+    #[test]
+    fn drop_during_active_flushes() {
+        let config = FasterKvConfig {
+            hash_index_size_log2: 8,
+            buffer_size_pages: 4,
+            mutable_fraction: 0.5,
+            sector_size: 512,
+            eviction_policy: EvictionPolicy::default(),
+        };
+        let store: SimpleStore =
+            FasterKv::new(config, SimpleFunctions::default(), NullDevice::new());
+        let mut session = store.new_session();
+
+        for i in 0u64..500 {
+            let _ = store.upsert(&mut session, &i, &(i * 100), ());
+        }
+
+        // Trigger async flush, then immediately drop — the Drop impl must
+        // drain pending I/O without panicking.
+        let _ = store.flush();
+        store.dispose_session(session);
+        // Drop happens here — exercises ordered shutdown.
+    }
+
+    // ── Send + Sync still hold with Drop impl ───────────────────────
+
+    #[test]
+    fn send_sync_with_drop() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<FasterKv<SimpleFunctions<u64, u64>>>();
+        assert_send_sync::<FasterKv<CounterFunctions<u64>>>();
     }
 }
