@@ -10,8 +10,12 @@
 
 pub mod log_allocator;
 pub mod page;
+pub mod record_ops;
 pub mod regions;
 
 pub use log_allocator::HybridLogAllocator;
 pub use page::{AtomicPageState, PageFrame, PageState, PageTable};
+pub use record_ops::{
+    LogRecordReader, LogRecordWriter, MutableRecordAccessor, RecordAccessor, VersionChainIterator,
+};
 pub use regions::{AddressInfo, AddressRegion};
