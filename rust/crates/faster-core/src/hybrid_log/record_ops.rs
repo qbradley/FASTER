@@ -131,6 +131,29 @@ impl RecordAccessor {
     pub fn record_size(&self) -> u32 {
         self.record_size
     }
+
+    /// Creates a read-only accessor to a record at `addr` using the allocator
+    /// for logical-to-physical translation.
+    ///
+    /// Returns `None` if the address is not currently in memory.
+    ///
+    /// This encapsulates the unsafe pointer construction — the allocator's
+    /// contract guarantees that returned physical pointers are valid, aligned,
+    /// and within allocated page frames.
+    #[inline]
+    pub(crate) fn from_log(
+        allocator: &HybridLogAllocator,
+        addr: LogicalAddress,
+        record_size: u32,
+    ) -> Option<Self> {
+        let ptr = allocator.get_physical_address(addr)?;
+        // SAFETY: `HybridLogAllocator::get_physical_address` returns a valid
+        // pointer within an allocated page frame. Record offsets are always
+        // multiples of 8 (RECORD_ALIGNMENT), ensuring 8-byte alignment.
+        // The caller supplies the correct `record_size` for the record at
+        // this address.
+        Some(unsafe { Self::new(ptr as *const u8, record_size) })
+    }
 }
 
 // ── MutableRecordAccessor ───────────────────────────────────────────
@@ -224,7 +247,7 @@ impl MutableRecordAccessor {
 
     /// Returns a mutable raw pointer to the start of the value data.
     #[inline]
-    pub fn value_mut_ptr(&self, layout: &RecordLayout) -> *mut u8 {
+    pub fn value_mut_ptr(&mut self, layout: &RecordLayout) -> *mut u8 {
         self.as_mut_slice()[layout.value_offset()..].as_mut_ptr()
     }
 
@@ -246,13 +269,13 @@ impl MutableRecordAccessor {
 
     /// Writes the [`RecordInfo`] header (first 8 bytes).
     #[inline]
-    pub fn write_record_info(&self, info: &RecordInfo) {
+    pub fn write_record_info(&mut self, info: &RecordInfo) {
         self.as_mut_slice()[..RECORD_HEADER_SIZE].copy_from_slice(&info.raw().to_le_bytes());
     }
 
     /// Serializes and writes a key at the position specified by `layout`.
     #[inline]
-    pub fn write_key<K: Key>(&self, key: &K, layout: &RecordLayout) {
+    pub fn write_key<K: Key>(&mut self, key: &K, layout: &RecordLayout) {
         let buf = self.as_mut_slice();
         let key_end = layout.key_offset() + key.serialized_size();
         key.serialize(&mut buf[layout.key_offset()..key_end]);
@@ -260,7 +283,7 @@ impl MutableRecordAccessor {
 
     /// Serializes and writes a value at the position specified by `layout`.
     #[inline]
-    pub fn write_value<V: Value>(&self, value: &V, layout: &RecordLayout) {
+    pub fn write_value<V: Value>(&mut self, value: &V, layout: &RecordLayout) {
         let buf = self.as_mut_slice();
         let value_end = layout.value_offset() + value.serialized_size();
         value.serialize(&mut buf[layout.value_offset()..value_end]);
@@ -270,7 +293,7 @@ impl MutableRecordAccessor {
     /// [`write_record`](crate::record::write_record) helper.
     #[inline]
     pub fn write_full_record<K: Key, V: Value>(
-        &self,
+        &mut self,
         info: &RecordInfo,
         key: &K,
         value: &V,
@@ -279,28 +302,23 @@ impl MutableRecordAccessor {
         layout_write_record(self.as_mut_slice(), info, key, value, layout);
     }
 
+    /// Zeros the entire record (for clearing or reinitializing).
+    ///
+    /// Safe because `&mut self` guarantees exclusive access — no aliasing
+    /// violation.
+    #[inline]
+    pub fn zero(&mut self) {
+        self.as_mut_slice().fill(0);
+    }
+
     /// Returns the full record as a mutable byte slice.
     ///
-    /// # Safety note
-    ///
-    /// This method takes `&self` rather than `&mut self` because the
-    /// `MutableRecordAccessor` represents an *owned* mutable view of the
-    /// underlying page memory (guaranteed exclusive by the caller at
-    /// construction time). The `*mut u8` already carries the mutability
-    /// permission.
-    ///
-    /// # TODO (SF-2)
-    ///
-    /// This creates `&mut [u8]` from `&self`, which violates Stacked Borrows.
-    /// Multiple calls produce overlapping `&mut` references. Refactor to use
-    /// raw pointer operations (`ptr::copy_nonoverlapping`) internally, or
-    /// change write methods to take `&mut self`. Validate with `cargo +nightly
-    /// miri test`.
+    /// The `&mut self` receiver guarantees exclusive access, preventing
+    /// overlapping `&mut [u8]` references (Stacked Borrows compliant).
     #[inline]
-    #[allow(clippy::mut_from_ref)]
-    pub fn as_mut_slice(&self) -> &mut [u8] {
-        // SAFETY: `ptr` is valid for `record_size` writable bytes and we have
-        // exclusive access (constructor invariant).
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        // SAFETY: `ptr` is valid for `record_size` writable bytes (constructor
+        // invariant). `&mut self` guarantees no aliased references exist.
         unsafe { core::slice::from_raw_parts_mut(self.ptr, self.record_size as usize) }
     }
 
@@ -375,7 +393,7 @@ impl<'a> LogRecordWriter<'a> {
         value: &V,
     ) -> Option<LogicalAddress> {
         let layout = RecordLayout::for_kv(key, value);
-        let (addr, accessor) = self.allocate_record(key, value)?;
+        let (addr, mut accessor) = self.allocate_record(key, value)?;
         accessor.write_full_record(info, key, value, &layout);
         Some(addr)
     }
@@ -406,13 +424,7 @@ impl<'a> LogRecordReader<'a> {
     ///
     /// Returns `None` if the address is not in memory.
     pub fn get_record(&self, addr: LogicalAddress, record_size: u32) -> Option<RecordAccessor> {
-        let ptr = self.allocator.get_physical_address(addr)?;
-
-        // SAFETY: The allocator returned a valid pointer within an allocated page
-        // frame. The caller guarantees `record_size` matches the actual record at
-        // this address. The pointer is 8-byte aligned because record offsets are
-        // always multiples of 8.
-        Some(unsafe { RecordAccessor::new(ptr as *const u8, record_size) })
+        RecordAccessor::from_log(self.allocator, addr, record_size)
     }
 
     /// Read the [`RecordInfo`] header at the given address.
@@ -422,14 +434,11 @@ impl<'a> LogRecordReader<'a> {
     ///
     /// Returns `None` if the address is not in memory.
     pub fn read_record_info(&self, addr: LogicalAddress) -> Option<RecordInfo> {
-        let ptr = self.allocator.get_physical_address(addr)?;
-
-        // SAFETY: The allocator returned a valid pointer within a page frame.
-        // RecordInfo occupies the first 8 bytes of any record, and all page
-        // frames are at least one page in size. The pointer is 8-byte aligned
-        // because record offsets are always multiples of 8.
-        let accessor =
-            unsafe { RecordAccessor::new(ptr as *const u8, RECORD_HEADER_SIZE as u32) };
+        let accessor = RecordAccessor::from_log(
+            self.allocator,
+            addr,
+            RECORD_HEADER_SIZE as u32,
+        )?;
         Some(accessor.record_info())
     }
 
@@ -463,15 +472,8 @@ impl<'a> LogRecordReader<'a> {
         key: &K,
         layout: &RecordLayout,
     ) -> Option<(RecordInfo, bool)> {
-        let ptr = self.allocator.get_physical_address(addr)?;
-
-        // Use a single RecordAccessor for both header and key reads,
-        // avoiding a redundant unsafe `from_raw_parts` for the header.
         let record_size = layout.total_size() as u32;
-        // SAFETY: The allocator returned a valid pointer within a page frame
-        // and `record_size` matches the layout. The pointer is 8-byte aligned
-        // because record offsets are always multiples of 8.
-        let accessor = unsafe { RecordAccessor::new(ptr as *const u8, record_size) };
+        let accessor = RecordAccessor::from_log(self.allocator, addr, record_size)?;
         let ri = accessor.record_info();
         let stored_key: K = accessor.key(layout);
         Some((ri, stored_key == *key))
@@ -651,7 +653,7 @@ mod tests {
         let layout = RecordLayout::for_kv(&key, &original);
 
         // Allocate and write the initial record.
-        let (addr, accessor) = writer.allocate_record(&key, &original).expect("alloc");
+        let (addr, mut accessor) = writer.allocate_record(&key, &original).expect("alloc");
         accessor.write_full_record(&info, &key, &original, &layout);
 
         // Verify original value.
@@ -661,7 +663,7 @@ mod tests {
         // Update value in place via a new mutable accessor.
         let ptr = alloc.get_physical_address(addr).expect("phys addr");
         // SAFETY: ptr is valid, 8-byte aligned, and we control access in this test.
-        let mut_acc = unsafe { MutableRecordAccessor::new(ptr, layout.total_size() as u32) };
+        let mut mut_acc = unsafe { MutableRecordAccessor::new(ptr, layout.total_size() as u32) };
         mut_acc.write_value(&updated, &layout);
 
         // Verify updated value.

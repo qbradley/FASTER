@@ -1082,7 +1082,7 @@ impl<F: Functions> FasterKv<F> {
                 self.functions
                     .upsert(key, &mut new_val, input, old_ref, &mut output);
 
-                let (new_addr, accessor) = match allocate_at_tail(&self.allocator, key, &new_val) {
+                let (new_addr, mut accessor) = match allocate_at_tail(&self.allocator, key, &new_val) {
                     Some(pair) => pair,
                     None => return,
                 };
@@ -1107,7 +1107,7 @@ impl<F: Functions> FasterKv<F> {
                     self.functions
                         .rmw_initial(key, input, &mut new_val, &mut output);
 
-                    let (new_addr, accessor) =
+                    let (new_addr, mut accessor) =
                         match allocate_at_tail(&self.allocator, key, &new_val) {
                             Some(pair) => pair,
                             None => return,
@@ -1130,7 +1130,7 @@ impl<F: Functions> FasterKv<F> {
                         &mut output,
                     );
 
-                    let (new_addr, accessor) =
+                    let (new_addr, mut accessor) =
                         match allocate_at_tail(&self.allocator, key, &new_value) {
                             Some(pair) => pair,
                             None => return,
@@ -1155,7 +1155,7 @@ impl<F: Functions> FasterKv<F> {
                     cio.read_value(layout)
                 };
 
-                let (new_addr, accessor) =
+                let (new_addr, mut accessor) =
                     match allocate_at_tail(&self.allocator, key, &dummy_value) {
                         Some(pair) => pair,
                         None => return,
