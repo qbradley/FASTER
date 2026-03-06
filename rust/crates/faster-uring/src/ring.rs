@@ -44,8 +44,8 @@ impl Default for UringConfig {
 /// Between submission and completion the kernel holds references to the
 /// caller-supplied buffers. The caller **must** ensure buffers remain valid
 /// and are not freed or moved until the corresponding completion is reaped.
-/// This is the caller's responsibility in U1; U2 will add registered-buffer
-/// support.
+/// This is the caller's responsibility for unregistered I/O; for registered
+/// buffers use a [`BufferPool`](crate::BufferPool).
 ///
 /// # Crash Analysis
 ///
@@ -234,6 +234,49 @@ impl Ring {
     /// Returns the number of operations currently in flight.
     pub fn inflight(&self) -> u32 {
         self.inflight
+    }
+
+    // ── Buffer registration ───────────────────────────────────────────
+
+    /// Register a [`BufferPool`](crate::BufferPool) with the kernel for
+    /// fixed-buffer I/O.
+    ///
+    /// After registration, buffers from the pool can be used with
+    /// `ReadFixed` and `WriteFixed` operations, avoiding per-I/O page
+    /// pinning overhead.
+    ///
+    /// # Lifetime Contract
+    ///
+    /// The [`BufferPool`](crate::BufferPool) **must** outlive the
+    /// registration. Call [`Ring::unregister_buffers`] before dropping the
+    /// pool, and ensure all in-flight I/O using registered buffers has
+    /// completed first (see [`Ring::drain`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if registration fails (e.g., buffers are already
+    /// registered, or the kernel rejects the iovec array).
+    pub fn register_buffers(&mut self, pool: &crate::buffer::BufferPool) -> io::Result<()> {
+        let iovecs = pool.iovecs();
+        // SAFETY: The iovecs describe valid, aligned memory owned by the pool.
+        // The caller is responsible for keeping the pool alive until
+        // `unregister_buffers` is called, as documented above.
+        unsafe {
+            self.ring.submitter().register_buffers(iovecs)?;
+        }
+        Ok(())
+    }
+
+    /// Unregister previously registered buffers.
+    ///
+    /// Must be called after all in-flight I/O using registered buffers has
+    /// completed. Call [`Ring::drain`] first if I/O may still be pending.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no buffers are currently registered.
+    pub fn unregister_buffers(&mut self) -> io::Result<()> {
+        self.ring.submitter().unregister_buffers()
     }
 }
 
