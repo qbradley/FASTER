@@ -37,6 +37,8 @@ pub enum FasterStatus {
     BufferTooSmall = 102,
     /// An internal error occurred (panic recovery, lock poison, etc.).
     InternalError = 103,
+    /// A checkpoint or recovery operation failed.
+    CheckpointError = 104,
 }
 
 impl FasterStatus {
@@ -67,6 +69,7 @@ impl std::fmt::Display for FasterStatus {
             Self::InvalidArgument => write!(f, "InvalidArgument"),
             Self::BufferTooSmall => write!(f, "BufferTooSmall"),
             Self::InternalError => write!(f, "InternalError"),
+            Self::CheckpointError => write!(f, "CheckpointError"),
         }
     }
 }
@@ -87,6 +90,7 @@ mod tests {
         assert_eq!(FasterStatus::InvalidArgument as u32, 101);
         assert_eq!(FasterStatus::BufferTooSmall as u32, 102);
         assert_eq!(FasterStatus::InternalError as u32, 103);
+        assert_eq!(FasterStatus::CheckpointError as u32, 104);
     }
 
     #[test]
@@ -104,8 +108,10 @@ mod tests {
         assert!(FasterStatus::InvalidArgument.is_error());
         assert!(FasterStatus::BufferTooSmall.is_error());
         assert!(FasterStatus::InternalError.is_error());
+        assert!(FasterStatus::CheckpointError.is_error());
 
         assert!(!FasterStatus::InvalidHandle.is_success());
+        assert!(!FasterStatus::CheckpointError.is_success());
     }
 
     #[test]

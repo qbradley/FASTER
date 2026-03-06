@@ -278,6 +278,7 @@ version = "0.1.0"
 dependencies = [
  "faster-core",
  "faster-device",
+ "tempfile",
 ]
 
 [[package]]
