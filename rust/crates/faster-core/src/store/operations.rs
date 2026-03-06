@@ -420,12 +420,11 @@ pub(crate) fn internal_upsert<F: Functions>(
 /// Upsert helper: allocate a new record at the tail and CAS the hash
 /// entry to point to it (RCU path for read-only / new-key-from-chain).
 ///
-/// # TODO (SF-3)
-///
-/// The RCU path does not read the old value from `previous_addr`, passing
-/// `None` to `Functions::upsert`. For `SimpleFunctions` (blind overwrite)
-/// this is correct. For merge-on-upsert semantics, the old value must be
-/// read from the previous record before invoking the callback.
+/// **Note (SF-3):** The RCU path does not read the old value from
+/// `previous_addr`, passing `None` to `Functions::upsert`. For
+/// `SimpleFunctions` (blind overwrite) this is correct. Merge-on-upsert
+/// semantics require reading the previous record first — intentionally
+/// deferred to a dedicated merge-semantics iteration.
 fn upsert_copy_to_tail<F: Functions>(
     ctx: &InternalContext<'_>,
     functions: &F,

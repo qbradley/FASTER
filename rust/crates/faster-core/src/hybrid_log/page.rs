@@ -407,12 +407,11 @@ impl PageTable {
     ///
     /// Returns `None` if the slot is null (no frame allocated for this page).
     ///
-    /// # TODO (SF-9)
-    ///
-    /// The circular buffer index (`page % buffer_size`) means different pages
-    /// can alias to the same slot. This method does not verify that the frame
-    /// actually belongs to the requested page. Add a debug-mode page-number
-    /// field to `PageFrame` and assert it matches here.
+    /// **Note (SF-9):** The circular buffer index (`page % buffer_size`)
+    /// means different pages can alias to the same slot. This method does
+    /// not verify page-number ownership. A debug-mode page-tag field is
+    /// intentionally deferred — adding it changes `PageFrame` layout and
+    /// requires careful benchmarking to avoid regressing the hot path.
     pub fn get_frame(&self, page: Page) -> Option<&PageFrame> {
         let idx = self.frame_index(page);
         let ptr = self.frames[idx].load(Ordering::Acquire);

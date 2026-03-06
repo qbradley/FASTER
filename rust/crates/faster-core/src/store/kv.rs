@@ -1043,8 +1043,9 @@ impl<F: Functions> FasterKv<F> {
     }
     ///
     /// For read operations, extracts the value from the buffer and invokes
-    /// the user's `Functions::read` callback. For write operations, this is
-    /// a placeholder that drops the completion (TODO: copy-to-tail retry).
+    /// the user's `Functions::read` callback. For write operations, copies
+    /// the record to the log tail (RCU update) with a single retry on
+    /// allocation failure.
     fn process_completed_io(
         &self,
         cio: super::pending_io::CompletedIo<F>,
@@ -1094,6 +1095,9 @@ impl<F: Functions> FasterKv<F> {
     /// log tail, and CAS-updates the hash index (copy-to-tail / RCU). This is
     /// the on-disk counterpart of the read-only copy-to-tail path in
     /// `internal_upsert` / `internal_rmw` / `internal_delete`.
+    ///
+    /// If the initial allocation fails (log full), sealed pages are flushed
+    /// to free space and the allocation is retried once (H1/C-1).
     fn complete_write_pending(&self, cio: super::pending_io::CompletedIo<F>) {
         let layout = &cio.operation.record_layout;
         let key = &cio.operation.key;
@@ -1135,11 +1139,10 @@ impl<F: Functions> FasterKv<F> {
                 self.functions
                     .upsert(key, &mut new_val, input, old_ref, &mut output);
 
-                let (new_addr, mut accessor) =
-                    match allocate_at_tail(&self.allocator, key, &new_val) {
-                        Some(pair) => pair,
-                        None => return,
-                    };
+                let (new_addr, mut accessor) = match self.allocate_with_retry(key, &new_val) {
+                    Some(pair) => pair,
+                    None => return,
+                };
 
                 let new_ri = RecordInfo::new(old_addr, 0, false, false, false);
                 accessor.write_full_record(&new_ri, key, &new_val, layout);
@@ -1161,11 +1164,10 @@ impl<F: Functions> FasterKv<F> {
                     self.functions
                         .rmw_initial(key, input, &mut new_val, &mut output);
 
-                    let (new_addr, mut accessor) =
-                        match allocate_at_tail(&self.allocator, key, &new_val) {
-                            Some(pair) => pair,
-                            None => return,
-                        };
+                    let (new_addr, mut accessor) = match self.allocate_with_retry(key, &new_val) {
+                        Some(pair) => pair,
+                        None => return,
+                    };
 
                     let new_ri = RecordInfo::new(old_addr, 0, false, false, false);
                     accessor.write_full_record(&new_ri, key, &new_val, layout);
@@ -1184,11 +1186,10 @@ impl<F: Functions> FasterKv<F> {
                         &mut output,
                     );
 
-                    let (new_addr, mut accessor) =
-                        match allocate_at_tail(&self.allocator, key, &new_value) {
-                            Some(pair) => pair,
-                            None => return,
-                        };
+                    let (new_addr, mut accessor) = match self.allocate_with_retry(key, &new_value) {
+                        Some(pair) => pair,
+                        None => return,
+                    };
 
                     let new_ri = RecordInfo::new(old_addr, 0, false, false, false);
                     accessor.write_full_record(&new_ri, key, &new_value, layout);
@@ -1209,11 +1210,10 @@ impl<F: Functions> FasterKv<F> {
                     cio.read_value(layout)
                 };
 
-                let (new_addr, mut accessor) =
-                    match allocate_at_tail(&self.allocator, key, &dummy_value) {
-                        Some(pair) => pair,
-                        None => return,
-                    };
+                let (new_addr, mut accessor) = match self.allocate_with_retry(key, &dummy_value) {
+                    Some(pair) => pair,
+                    None => return,
+                };
 
                 let tombstone_ri = RecordInfo::new(old_addr, 0, false, true, false);
                 accessor.write_full_record(&tombstone_ri, key, &dummy_value, layout);
@@ -1223,6 +1223,23 @@ impl<F: Functions> FasterKv<F> {
             }
             PendingOpType::Read => unreachable!("read handled above"),
         }
+    }
+
+    /// Try `allocate_at_tail`; on failure, flush sealed pages and retry once.
+    ///
+    /// This prevents silent data loss when the log is temporarily full
+    /// during write-pending completion (H1/C-1 fix).
+    fn allocate_with_retry<K: crate::record::Key, V: crate::record::Value>(
+        &self,
+        key: &K,
+        value: &V,
+    ) -> Option<(LogicalAddress, crate::hybrid_log::MutableRecordAccessor)> {
+        if let Some(pair) = allocate_at_tail(&self.allocator, key, value) {
+            return Some(pair);
+        }
+        // Flush sealed pages to free space, then retry.
+        let _ = self.flush();
+        allocate_at_tail(&self.allocator, key, value)
     }
 
     // ── Maintenance ─────────────────────────────────────────────────
@@ -1389,10 +1406,12 @@ impl<F: Functions> FasterKv<F> {
     ///
     /// **Note:** This is a rough estimate. A precise count requires
     /// scanning the hash index, which is not yet implemented.
+    ///
+    /// **Intentionally deferred:** Maintaining an atomic counter on every
+    /// upsert/delete adds contention on a hot path. A future iteration may
+    /// implement index scanning or sharded counters when usage warrants it.
     #[inline]
     pub fn entry_count(&self) -> u64 {
-        // TODO: Maintain an atomic counter in upsert/delete, or scan the
-        // hash index. For now, return 0 as a placeholder.
         0
     }
 

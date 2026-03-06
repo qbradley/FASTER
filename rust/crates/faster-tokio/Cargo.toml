@@ -13,5 +13,6 @@ publish = false
 
 [dependencies]
 faster-core = { path = "../faster-core" }
-faster-device = { path = "../faster-device" }
-tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
