@@ -143,6 +143,7 @@ pub mod sync_file_device;
 
 pub use device::{
     Device, InMemoryDevice, IoCompletionCallback, IoRequestResult, IoStatus, NullDevice,
+    TypedIoContext,
 };
 pub use metrics::Metrics;
 pub use store::{

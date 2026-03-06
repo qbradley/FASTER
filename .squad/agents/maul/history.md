@@ -91,3 +91,36 @@
 
 **Next Steps:** Risk mitigation task force (Jyn lead), unsafe audit planning (Maul lead), Phase 1 sprint (Cassian lead), async adapter spike (Kenobi lead).
 
+
+---
+
+## 2026-03-05T20:XX: Phase 4 — SAFETY Documentation Sweep (No-Op)
+
+**What:** Tasked with adding SAFETY comments to all unsafe blocks missing them (~44 sites from audit). Upon systematic review, found that **all SAFETY comments are already in place** across every file in scope. Additionally, `lib.rs` already enforces three critical lints:
+
+- `#![deny(unsafe_op_in_unsafe_fn)]` — forces explicit `unsafe {}` blocks inside unsafe fn bodies
+- `#![forbid(clippy::undocumented_unsafe_blocks)]` — compilation fails if any unsafe block lacks a `// SAFETY:` comment
+- `#![warn(missing_docs)]` — warns on undocumented public items
+
+**Files Audited (no changes needed):**
+- `allocator.rs` — 18 unsafe blocks, 3 unsafe fns, 3 unsafe impls — all documented
+- `buffer_pool.rs` — 4 unsafe blocks, 2 unsafe impls — all documented
+- `checkpoint/index_writer.rs` — 2 unsafe blocks — all documented
+- `epoch/drain.rs` — 8 unsafe blocks, 2 unsafe fns, 2 unsafe impls — all documented
+- `hash/index.rs` — 1 unsafe block — documented
+- `hash/table.rs` — 2 unsafe blocks — all documented
+- `hybrid_log/log_allocator.rs` — 3 unsafe blocks — all documented
+- `hybrid_log/page.rs` — 15 unsafe blocks, 2 unsafe fns, 4 unsafe impls — all documented
+- `hybrid_log/record_ops.rs` — 10 unsafe blocks, 2 unsafe fns — all documented
+- `hybrid_log/scan.rs` — 1 unsafe block — documented
+- `recovery/index_recovery.rs` — 1 unsafe block — documented
+- `store/functions.rs` — 6 unsafe blocks, 4 unsafe fns — all documented
+- `store/operations.rs` — 6 unsafe blocks — all documented
+- `store/kv.rs` — 2 unsafe impls — all documented
+
+**Skipped (Mando's territory):** `device.rs`, `sync_file_device.rs`, `flush.rs`, `pending_io.rs`
+
+**SAFETY comments added/fixed: 0** — prior work (likely Phase 2/3) already completed this.
+**Tests:** 1161 passed, 3 skipped. **Clippy:** clean (0 warnings).
+
+**Key Insight:** The `#![forbid(clippy::undocumented_unsafe_blocks)]` lint makes this task self-enforcing — the codebase cannot compile with undocumented unsafe blocks. This is the strongest possible guarantee. The 44-site gap identified in the original audit has been fully closed.

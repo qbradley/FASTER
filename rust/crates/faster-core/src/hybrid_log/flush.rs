@@ -25,7 +25,7 @@ use std::sync::atomic::Ordering;
 use std::{fmt, io};
 
 use crate::address::Page;
-use crate::device::{Device, IoCompletionCallback, IoRequestResult, IoStatus};
+use crate::device::{Device, IoCompletionCallback, IoRequestResult, IoStatus, TypedIoContext};
 
 use super::log_allocator::HybridLogAllocator;
 use super::page::{PageState, PageTable};
@@ -102,8 +102,8 @@ impl std::error::Error for FlushError {
 
 /// Context passed to the device completion callback.
 ///
-/// Allocated on the heap via `Box::into_raw` before issuing `write_async`, and
-/// reclaimed via `Box::from_raw` inside the callback.
+/// Allocated via [`TypedIoContext::new`] before issuing `write_async`, and
+/// reclaimed via [`TypedIoContext::from_raw`] inside the callback.
 #[allow(dead_code)] // `bytes_flushed` is read via raw-pointer dereference in the callback.
 struct FlushCallbackContext {
     /// Page being flushed.
@@ -133,12 +133,12 @@ unsafe impl Send for FlushCallbackContext {}
 ///
 /// # Safety
 ///
-/// `context` must be a valid pointer to a `Box<FlushCallbackContext>` that was
-/// leaked via `Box::into_raw`.
+/// `context` must be a valid pointer to a `FlushCallbackContext` that was
+/// created via [`TypedIoContext::new`].
 unsafe fn flush_completion_callback(context: *mut u8, status: IoStatus, bytes_transferred: u32) {
     // SAFETY: Caller guarantees `context` is a valid `FlushCallbackContext`
-    // pointer created via `Box::into_raw`.
-    let ctx = unsafe { Box::from_raw(context as *mut FlushCallbackContext) };
+    // pointer created via `TypedIoContext::new`. We are the sole consumer.
+    let ctx = unsafe { TypedIoContext::<FlushCallbackContext>::from_raw(context) };
 
     // SAFETY: The `PageTable` outlives in-flight flushes — `FasterKv::Drop`
     // drains pending I/O before the allocator is dropped (SF-10).
@@ -222,19 +222,19 @@ impl PageFlusher {
         let write_size = self.align_to_sector(valid_bytes);
         let offset = self.device_offset(page);
 
-        // Create the callback context (heap-allocated, leaked to raw pointer).
-        let ctx = Box::new(FlushCallbackContext {
+        // Heap-allocate the callback context via TypedIoContext (manages the
+        // Box → raw → typed lifecycle safely).
+        let io_ctx = TypedIoContext::new(FlushCallbackContext {
             page,
             page_table: page_table as *const PageTable,
             bytes_flushed: write_size,
         });
-        let ctx_ptr = Box::into_raw(ctx) as *mut u8;
 
         // SAFETY:
         // - `frame.as_ptr()` is valid for `write_size` bytes (PageFrame is at
         //   least `page_size` bytes, sector-aligned).
-        // - `ctx_ptr` is a valid heap pointer that will be consumed by the
-        //   callback.
+        // - `io_ctx.as_raw()` is a valid heap pointer that will be consumed by
+        //   the callback.
         // - `offset` and `write_size` are sector-aligned.
         let result = unsafe {
             device.write_async(
@@ -242,7 +242,7 @@ impl PageFlusher {
                 offset,
                 write_size,
                 flush_completion_callback as IoCompletionCallback,
-                ctx_ptr,
+                io_ctx.as_raw(),
             )
         };
 
@@ -253,11 +253,8 @@ impl PageFlusher {
                 frame
                     .state()
                     .try_transition(PageState::Flushing, PageState::Sealed);
-                // SAFETY: `ctx_ptr` was created by `Box::into_raw` and was NOT
-                // consumed by the callback (the write was never submitted).
-                unsafe {
-                    drop(Box::from_raw(ctx_ptr as *mut FlushCallbackContext));
-                }
+                // I/O was never submitted — safely reclaim the context.
+                let _ = io_ctx.reclaim();
                 Err(FlushError::QueueFull(page))
             }
             IoRequestResult::Error(e) => {
@@ -265,10 +262,8 @@ impl PageFlusher {
                 frame
                     .state()
                     .try_transition(PageState::Flushing, PageState::Sealed);
-                // SAFETY: Same as QueueFull — callback was not invoked.
-                unsafe {
-                    drop(Box::from_raw(ctx_ptr as *mut FlushCallbackContext));
-                }
+                // I/O was never submitted — safely reclaim the context.
+                let _ = io_ctx.reclaim();
                 Err(FlushError::IoError(e))
             }
         }

@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::buffer_pool::{AlignedBuffer, BufferPool};
-use crate::device::{Device, IoCompletionCallback, IoRequestResult, IoStatus};
+use crate::device::{Device, IoCompletionCallback, IoRequestResult, IoStatus, TypedIoContext};
 use crate::record::{RecordInfo, RecordLayout, read_key, read_record_info, read_value};
 use crate::store::Functions;
 
@@ -163,14 +163,14 @@ struct ReadCallbackContext {
 ///
 /// # Safety
 ///
-/// `context` must be a valid pointer to a `Box<ReadCallbackContext>` that was
-/// created via [`Box::into_raw`]. This function takes ownership of the box and
-/// drops it after updating the shared state.
+/// `context` must be a valid pointer to a `ReadCallbackContext` that was
+/// created via [`TypedIoContext::new`]. This function takes ownership of the
+/// box and drops it after updating the shared state.
 unsafe fn read_completion_callback(context: *mut u8, status: IoStatus, bytes: u32) {
     // SAFETY: The caller (issue_read) created this pointer via
-    // `Box::into_raw(Box::new(ReadCallbackContext { .. }))`. We are the sole
-    // consumer, so reconstructing the Box is safe.
-    let ctx = unsafe { Box::from_raw(context as *mut ReadCallbackContext) };
+    // `TypedIoContext::new`. We are the sole consumer, so reconstructing
+    // the Box is safe.
+    let ctx = unsafe { TypedIoContext::<ReadCallbackContext>::from_raw(context) };
     *ctx.io_status.lock().expect("io_status mutex poisoned") = Some(status);
     ctx.bytes_transferred.store(bytes, Ordering::Release);
     ctx.completed.store(true, Ordering::Release);
@@ -471,27 +471,26 @@ impl PendingIoManager {
         let io_status = Arc::new(Mutex::new(None));
         let bytes_transferred = Arc::new(AtomicU32::new(0));
 
-        let cb_ctx = Box::new(ReadCallbackContext {
+        // Heap-allocate the callback context via TypedIoContext.
+        let io_ctx = TypedIoContext::new(ReadCallbackContext {
             completed: Arc::clone(&completed),
             io_status: Arc::clone(&io_status),
             bytes_transferred: Arc::clone(&bytes_transferred),
         });
 
-        let ctx_ptr = Box::into_raw(cb_ctx) as *mut u8;
-
         // SAFETY:
         // - `buffer.as_mut_ptr()` is valid for `read_size` bytes (allocated above).
         // - The buffer is owned by this function and moved into PendingIoContext,
         //   keeping it alive until the callback fires.
-        // - `ctx_ptr` is a valid Box pointer; ownership transfers to the callback
-        //   on success, or is reclaimed on error.
+        // - `io_ctx.as_raw()` is a valid heap pointer; ownership transfers to the
+        //   callback on success, or is reclaimed on error.
         let result = unsafe {
             device.read_async(
                 device_offset,
                 buffer.as_mut_ptr(),
                 read_size,
                 read_completion_callback as IoCompletionCallback,
-                ctx_ptr,
+                io_ctx.as_raw(),
             )
         };
 
@@ -508,21 +507,16 @@ impl PendingIoManager {
                 bytes_transferred,
             }),
             IoRequestResult::QueueFull => {
-                // SAFETY: ctx_ptr was created by Box::into_raw and the callback
-                // was NOT invoked (device rejected the request).
-                unsafe {
-                    drop(Box::from_raw(ctx_ptr as *mut ReadCallbackContext));
-                }
+                // I/O was never submitted — safely reclaim the context.
+                let _ = io_ctx.reclaim();
                 Err(PendingIoError::IoError(std::io::Error::new(
                     std::io::ErrorKind::WouldBlock,
                     "device I/O queue full",
                 )))
             }
             IoRequestResult::Error(e) => {
-                // SAFETY: Same as QueueFull — callback was not invoked.
-                unsafe {
-                    drop(Box::from_raw(ctx_ptr as *mut ReadCallbackContext));
-                }
+                // I/O was never submitted — safely reclaim the context.
+                let _ = io_ctx.reclaim();
                 Err(PendingIoError::IoError(e))
             }
         }
