@@ -46,6 +46,7 @@ use crate::hash::KeyHash;
 use crate::record::RecordLayout;
 
 use super::Functions;
+use super::pending_io::{CompletedIo, PendingIoContext};
 
 // ── PendingOpType ───────────────────────────────────────────────────
 
@@ -111,8 +112,17 @@ pub struct FasterSession<F: Functions> {
     epoch_thread: crate::epoch::EpochThread,
     /// Reference to the shared epoch table.
     epoch_table: Arc<EpochTable>,
-    /// Queue of pending operations awaiting I/O completion.
+    /// Queue of pending operations awaiting I/O dispatch.
+    ///
+    /// Operations land here when `internal_*` returns `Pending`. They are
+    /// drained and converted into [`PendingIoContext`]s by
+    /// [`FasterKv`](super::FasterKv) after the CRUD call returns.
     pending_ops: Vec<PendingOperation<F>>,
+    /// In-flight I/O contexts waiting for device completion.
+    ///
+    /// Each entry represents an issued disk read whose callback has not yet
+    /// signalled completion. Polled by [`take_completed_io`](Self::take_completed_io).
+    io_contexts: Vec<PendingIoContext<F>>,
     /// Monotonic serial number for ordering operations within this session.
     serial_number: u64,
     /// Whether the session is currently in an epoch-protected region.
@@ -131,6 +141,7 @@ impl<F: Functions> FasterSession<F> {
             epoch_thread,
             epoch_table,
             pending_ops: Vec::new(),
+            io_contexts: Vec::new(),
             serial_number: 0,
             in_epoch: false,
             _not_send: PhantomData,
@@ -175,53 +186,129 @@ impl<F: Functions> FasterSession<F> {
         sn
     }
 
-    /// Enqueues a pending operation for later completion.
+    /// Enqueues a pending operation for later I/O dispatch.
+    ///
+    /// Called by `internal_*` operations when a record falls into the on-disk
+    /// region. The operation sits in `pending_ops` until
+    /// [`drain_pending_ops`](Self::drain_pending_ops) is called by the store
+    /// to issue the actual disk read.
     #[inline]
-    #[allow(dead_code)] // Used by FasterKv CRUD operations (not yet implemented).
     pub(crate) fn enqueue_pending(&mut self, op: PendingOperation<F>) {
         self.pending_ops.push(op);
     }
 
-    /// Drains all completed pending operations.
+    /// Drains all un-dispatched pending operations.
     ///
-    /// Returns operations whose I/O has completed and are ready for retry.
-    ///
-    /// # Current Limitations
-    ///
-    /// TODO: Currently returns *all* pending ops because we do not yet have
-    /// disk I/O completion tracking (comes with item 4e). Once the async I/O
-    /// subsystem is integrated, this will filter to only completed operations.
-    pub fn drain_completed(&mut self) -> Vec<PendingOperation<F>> {
+    /// Returns operations that have been enqueued but not yet submitted for
+    /// disk I/O. After this call, `pending_ops` is empty. The caller
+    /// (typically `FasterKv`) is responsible for issuing reads and pushing
+    /// the resulting [`PendingIoContext`]s back via
+    /// [`enqueue_io_context`](Self::enqueue_io_context).
+    pub(crate) fn drain_pending_ops(&mut self) -> Vec<PendingOperation<F>> {
         std::mem::take(&mut self.pending_ops)
     }
 
-    /// Returns the number of pending operations in the queue.
+    /// Pushes an in-flight I/O context into the session.
+    ///
+    /// Called after the store issues a disk read for a pending operation.
+    /// The context is polled by [`take_completed_io`](Self::take_completed_io).
+    #[inline]
+    pub(crate) fn enqueue_io_context(&mut self, ctx: PendingIoContext<F>) {
+        self.io_contexts.push(ctx);
+    }
+
+    /// Polls in-flight I/O contexts and returns those that have completed.
+    ///
+    /// Contexts whose device callback has not yet fired remain in the session.
+    /// Returns a vec of [`CompletedIo`] ready for the store to retry.
+    pub(crate) fn take_completed_io(&mut self) -> Vec<CompletedIo<F>> {
+        let mut completed = Vec::new();
+        let mut still_pending = Vec::new();
+
+        for ctx in self.io_contexts.drain(..) {
+            match ctx.try_complete() {
+                Ok(c) => completed.push(c),
+                Err(ctx) => still_pending.push(ctx),
+            }
+        }
+
+        self.io_contexts = still_pending;
+        completed
+    }
+
+    /// Spin-waits for **all** in-flight I/O to complete and returns the results.
+    ///
+    /// Used during session teardown or when the caller needs synchronous
+    /// completion of every outstanding request.
+    ///
+    /// # Blocking
+    ///
+    /// This method busy-waits (with a `thread::yield_now` hint) until every
+    /// [`PendingIoContext`] signals completion. It should only be called when
+    /// the caller can tolerate blocking (e.g., session dispose, shutdown).
+    pub(crate) fn wait_for_all_io(&mut self) -> Vec<CompletedIo<F>> {
+        let mut completed = Vec::with_capacity(self.io_contexts.len());
+
+        for ctx in self.io_contexts.drain(..) {
+            // Spin until the device callback fires.
+            let mut pending_ctx = ctx;
+            loop {
+                match pending_ctx.try_complete() {
+                    Ok(c) => {
+                        completed.push(c);
+                        break;
+                    }
+                    Err(ctx) => {
+                        std::thread::yield_now();
+                        pending_ctx = ctx;
+                    }
+                }
+            }
+        }
+
+        completed
+    }
+
+    /// Drains all pending operations (both un-dispatched and in-flight).
+    ///
+    /// Returns pending operations that had not yet been dispatched for I/O.
+    /// In-flight I/O contexts are dropped (their callbacks will fire harmlessly
+    /// into the `Arc`-shared completion state).
+    ///
+    /// This is used for session cleanup when the caller does not need the
+    /// results (e.g., abort). Prefer [`FasterKv::complete_pending`] for
+    /// normal completion.
+    pub fn drain_completed(&mut self) -> Vec<PendingOperation<F>> {
+        self.io_contexts.clear();
+        std::mem::take(&mut self.pending_ops)
+    }
+
+    /// Returns the number of outstanding operations (dispatched + in-flight).
     #[inline]
     pub fn pending_count(&self) -> usize {
-        self.pending_ops.len()
+        self.pending_ops.len() + self.io_contexts.len()
     }
 
-    /// Returns `true` if this session has any pending operations.
+    /// Returns `true` if this session has any outstanding operations.
     #[inline]
     pub fn has_pending(&self) -> bool {
-        !self.pending_ops.is_empty()
+        !self.pending_ops.is_empty() || !self.io_contexts.is_empty()
     }
 
-    /// Completes all pending operations synchronously (blocking).
+    /// Returns the number of I/O requests currently in flight.
+    #[inline]
+    pub fn io_pending_count(&self) -> usize {
+        self.io_contexts.len()
+    }
+
+    /// Clears all pending state (operations and I/O contexts).
     ///
-    /// Used during session teardown to ensure no operations are lost.
-    ///
-    /// # Current Limitations
-    ///
-    /// TODO: Real implementation comes with item 4e (pending disk I/O).
-    /// For now, drains the pending queue and returns an empty vec since
-    /// we cannot produce `(Output, Context)` pairs without the full I/O
-    /// completion path.
-    pub fn complete_pending(&mut self) -> Vec<(F::Output, F::Context)> {
-        // Drain pending ops to release memory. Once the I/O completion path
-        // is implemented, each operation will be retried and produce output.
+    /// Used during session teardown when the caller does not need results.
+    /// In-flight I/O callbacks will fire into dangling `Arc`s, which is safe
+    /// (the atomics are ref-counted and the callback just writes booleans).
+    pub fn complete_pending(&mut self) {
         self.pending_ops.clear();
-        Vec::new()
+        self.io_contexts.clear();
     }
 
     /// Returns whether this session is currently in an epoch-protected region.
@@ -243,6 +330,9 @@ impl<F: Functions> Drop for FasterSession<F> {
         if self.in_epoch {
             self.end_unsafe();
         }
+        // Drop in-flight I/O contexts. The device callbacks write into Arc-shared
+        // atomics, which is harmless after the session is gone.
+        self.io_contexts.clear();
     }
 }
 
@@ -585,9 +675,7 @@ mod tests {
         session.enqueue_pending(make_pending_op(2));
         assert_eq!(session.pending_count(), 2);
 
-        let results = session.complete_pending();
-        // Currently returns empty vec (no I/O completion path yet).
-        assert!(results.is_empty());
+        session.complete_pending();
         assert_eq!(session.pending_count(), 0);
     }
 
@@ -620,5 +708,103 @@ mod tests {
             assert!(!session.is_in_epoch());
             assert_eq!(epoch_table.active_count(), 0);
         }
+    }
+
+    // ── 10. io_pending_count ────────────────────────────────────────
+
+    #[test]
+    fn io_pending_count_starts_at_zero() {
+        let (_, pool) = make_pool();
+        let session = pool.create_session();
+        assert_eq!(session.io_pending_count(), 0);
+    }
+
+    // ── 11. drain_pending_ops ───────────────────────────────────────
+
+    #[test]
+    fn drain_pending_ops_empties_queue() {
+        let (_, pool) = make_pool();
+        let mut session = pool.create_session();
+
+        session.enqueue_pending(make_pending_op(1));
+        session.enqueue_pending(make_pending_op(2));
+        assert_eq!(session.pending_count(), 2);
+
+        let ops = session.drain_pending_ops();
+        assert_eq!(ops.len(), 2);
+        assert_eq!(session.pending_count(), 0);
+        assert!(!session.has_pending());
+    }
+
+    // ── 12. pending_count includes io_contexts ──────────────────────
+
+    #[test]
+    fn pending_count_includes_io_contexts() {
+        use std::sync::atomic::{AtomicBool, AtomicU32};
+        use std::sync::{Arc, Mutex};
+        use crate::buffer_pool::AlignedBuffer;
+        use crate::device::IoStatus;
+
+        let (_, pool) = make_pool();
+        let mut session = pool.create_session();
+
+        // Enqueue one pending op.
+        session.enqueue_pending(make_pending_op(1));
+        assert_eq!(session.pending_count(), 1);
+
+        // Manually create a PendingIoContext (simulating an issued read).
+        let fake_io_ctx = PendingIoContext::<TestFunctions>::new_for_test(
+            make_pending_op(2),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None::<IoStatus>)),
+            Arc::new(AtomicU32::new(0)),
+        );
+        session.enqueue_io_context(fake_io_ctx);
+
+        // pending_count = pending_ops(1) + io_contexts(1) = 2
+        assert_eq!(session.pending_count(), 2);
+        assert!(session.has_pending());
+        assert_eq!(session.io_pending_count(), 1);
+    }
+
+    // ── 13. take_completed_io filters correctly ─────────────────────
+
+    #[test]
+    fn take_completed_io_filters_correctly() {
+        use std::sync::atomic::{AtomicBool, AtomicU32};
+        use std::sync::{Arc, Mutex};
+        use crate::buffer_pool::AlignedBuffer;
+        use crate::device::IoStatus;
+
+        let (_, pool) = make_pool();
+        let mut session = pool.create_session();
+
+        // One completed, one not.
+        let completed_ctx = PendingIoContext::<TestFunctions>::new_for_test(
+            make_pending_op(1),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(Mutex::new(Some(IoStatus::Success))),
+            Arc::new(AtomicU32::new(512)),
+        );
+        let pending_ctx = PendingIoContext::<TestFunctions>::new_for_test(
+            make_pending_op(2),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None::<IoStatus>)),
+            Arc::new(AtomicU32::new(0)),
+        );
+
+        session.enqueue_io_context(completed_ctx);
+        session.enqueue_io_context(pending_ctx);
+        assert_eq!(session.io_pending_count(), 2);
+
+        let done = session.take_completed_io();
+        assert_eq!(done.len(), 1);
+        assert_eq!(session.io_pending_count(), 1); // one still in-flight
     }
 }

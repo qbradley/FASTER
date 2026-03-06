@@ -201,6 +201,29 @@ impl<F: Functions> std::fmt::Debug for PendingIoContext<F> {
 }
 
 impl<F: Functions> PendingIoContext<F> {
+    /// Create a `PendingIoContext` for testing purposes.
+    ///
+    /// Allows tests to construct contexts with controlled completion state
+    /// without issuing real device I/O.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        operation: PendingOperation<F>,
+        buffer: AlignedBuffer,
+        record_offset: usize,
+        completed: Arc<AtomicBool>,
+        io_status: Arc<Mutex<Option<IoStatus>>>,
+        bytes_transferred: Arc<AtomicU32>,
+    ) -> Self {
+        Self {
+            operation,
+            buffer: Some(buffer),
+            record_offset,
+            completed,
+            io_status,
+            bytes_transferred,
+        }
+    }
+
     /// Check whether the I/O has completed.
     ///
     /// # TODO (SF-14)
