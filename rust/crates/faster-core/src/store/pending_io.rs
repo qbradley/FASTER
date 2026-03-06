@@ -361,6 +361,7 @@ impl<F: Functions> PendingIoContext<F> {
     ///
     /// Returns `Ok(CompletedIo)` if the I/O is done, or `Err(self)` if it
     /// has not yet completed (allowing the caller to retry later).
+    #[allow(clippy::result_large_err)]
     pub fn try_complete(mut self) -> Result<CompletedIo<F>, Self> {
         if !self.is_completed() {
             return Err(self);
