@@ -210,6 +210,7 @@ impl PageFlusher {
         device: &dyn Device,
         valid_bytes: u32,
     ) -> Result<bool, FlushError> {
+        trace_span!("flush_page", page = ?page, valid_bytes = valid_bytes);
         let frame = page_table
             .get_frame(page)
             .ok_or(FlushError::PageNotFound(page))?;
@@ -349,6 +350,7 @@ impl PageFlusher {
         allocator: &HybridLogAllocator,
         device: &dyn Device,
     ) -> Result<u32, FlushError> {
+        trace_span!("flush_sealed_pages");
         let head_page = allocator.head_address().page().0;
         let ro_page = allocator.read_only_address().page().0;
         let page_table = allocator.page_table();

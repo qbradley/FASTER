@@ -1050,6 +1050,7 @@ impl<F: Functions> FasterKv<F> {
         &self,
         cio: super::pending_io::CompletedIo<F>,
     ) -> Option<(F::Output, F::Context)> {
+        trace_span!("read_completion");
         use crate::device::IoStatus;
 
         if cio.status != IoStatus::Success {
