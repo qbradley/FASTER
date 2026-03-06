@@ -284,7 +284,11 @@ pub struct MallocFixedPageSize<T> {
     ///
     /// Each freed item stores the raw u64 of the previous head in its first
     /// 8 bytes, forming a singly-linked list.
-    free_list: AtomicU64,
+    ///
+    /// Boxed to provide a stable heap address that survives `&mut self`
+    /// reborrows (e.g., during `Drop`), so deferred epoch callbacks holding
+    /// a raw pointer to this value remain valid.
+    free_list: Box<AtomicU64>,
 
     /// Mutex protecting directory growth (doubles the directory).
     /// Held only during the rare grow operation; never on the allocation
@@ -431,7 +435,7 @@ impl<T> MallocFixedPageSize<T> {
             // Start at flat index 2 ⇒ first returned address is
             // LogicalAddress::MIN_VALID (page=0, offset=2).
             count: AtomicU64::new(2),
-            free_list: AtomicU64::new(FREE_LIST_EMPTY),
+            free_list: Box::new(AtomicU64::new(FREE_LIST_EMPTY)),
             grow_lock: Mutex::new(()),
             retired_dirs: Mutex::new(Vec::new()),
             epoch: None,
@@ -570,7 +574,7 @@ impl<T> MallocFixedPageSize<T> {
             // Epoch-gated: defer the free-list push until all threads have
             // advanced past the current epoch, preventing ABA.
             let push = FreeListPush {
-                free_list: &self.free_list as *const AtomicU64,
+                free_list: &*self.free_list as *const AtomicU64,
                 item_ptr: self.get_ptr(addr) as *mut u8,
                 addr_raw: addr.raw(),
             };
@@ -592,7 +596,7 @@ impl<T> MallocFixedPageSize<T> {
     /// no other thread holds a reference to the freed item (SF-11: bypassing
     /// epoch protection means concurrent readers could observe recycled data).
     #[allow(dead_code)] // Retained for Drop/cleanup paths and tested below.
-    pub(crate) fn free_immediate(&self, addr: LogicalAddress) {
+    pub fn free_immediate(&self, addr: LogicalAddress) {
         self.push_free_list(addr);
     }
 

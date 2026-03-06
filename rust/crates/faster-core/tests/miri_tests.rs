@@ -574,9 +574,7 @@ mod miri_epoch_gated_allocator {
 #[cfg(miri)]
 mod miri_device {
     use core::sync::atomic::{AtomicU32, Ordering};
-    use faster_core::device::{
-        Device, InMemoryDevice, IoCompletionCallback, IoRequestResult, IoStatus, NullDevice,
-    };
+    use faster_core::device::{Device, InMemoryDevice, IoRequestResult, IoStatus, NullDevice};
 
     /// Callback that asserts success and sets an atomic flag.
     unsafe fn success_callback(ctx: *mut u8, status: IoStatus, _bytes: u32) {
