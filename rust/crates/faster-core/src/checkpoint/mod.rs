@@ -15,6 +15,9 @@ mod participant;
 mod session_state;
 mod state_machine;
 
+pub mod index_writer;
+pub mod log_writer;
+
 pub use manager::{
     CheckpointError, CheckpointManager, CheckpointManagerImpl, CheckpointStatus,
 };

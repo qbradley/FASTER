@@ -47,6 +47,9 @@ pub struct HybridLogAllocator {
     /// Next allocation point (bump pointer).
     tail_address: AtomicLogicalAddress,
 
+    /// How far the log has been flushed to disk (monotonically advancing).
+    flushed_until_address: AtomicLogicalAddress,
+
     /// Bytes per page (2^OFFSET_BITS).
     page_size: u32,
     /// Number of mutable pages before the read-only boundary advances.
@@ -82,6 +85,7 @@ impl HybridLogAllocator {
             read_only_address: AtomicLogicalAddress::new(start),
             safe_read_only_address: AtomicLogicalAddress::new(start),
             tail_address: AtomicLogicalAddress::new(start),
+            flushed_until_address: AtomicLogicalAddress::new(start),
             page_size,
             mutable_fraction_pages,
             sealed: AtomicBool::new(false),
@@ -318,6 +322,37 @@ impl HybridLogAllocator {
     #[inline]
     pub fn safe_read_only_address(&self) -> LogicalAddress {
         self.safe_read_only_address.load(Ordering::Acquire)
+    }
+
+    /// Get the current flushed-until address.
+    ///
+    /// All log data below this address has been durably written to disk.
+    /// Advances monotonically as page flushes complete.
+    #[inline]
+    pub fn flushed_until_address(&self) -> LogicalAddress {
+        self.flushed_until_address.load(Ordering::Acquire)
+    }
+
+    /// Try to advance `flushed_until_address` to a new value.
+    ///
+    /// Only succeeds if `new_flushed` > current flushed-until (monotonic
+    /// advance). Returns the actual flushed-until address after the attempt.
+    pub fn try_advance_flushed_until(&self, new_flushed: LogicalAddress) -> LogicalAddress {
+        loop {
+            let current = self.flushed_until_address.load(Ordering::Acquire);
+            if new_flushed.raw() <= current.raw() {
+                return current;
+            }
+            match self.flushed_until_address.compare_exchange(
+                current,
+                new_flushed,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return new_flushed,
+                Err(_) => continue,
+            }
+        }
     }
 
     /// Take a consistent snapshot of the current address boundaries.
