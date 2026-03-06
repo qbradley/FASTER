@@ -1,0 +1,80 @@
+{
+  "meta": {
+    "description": "YCSB benchmark baseline for FASTER Rust - Iteration 3",
+    "criterion_flags": "--quick (3 runs, best-of-3 median reported)",
+    "generated_by": "cargo bench -p faster-core --bench ycsb -- --quick",
+    "note": "Measured on shared 20-core machine with load avg 2.2-2.8; numbers may be conservative vs idle baseline"
+  },
+  "benchmarks": [
+    {
+      "name": "ycsb/sequential_upsert/100K_ops",
+      "time_median": 30.972,
+      "time_unit": "ms",
+      "throughput_median": 3.2287,
+      "throughput_unit": "Melem/s"
+    },
+    {
+      "name": "ycsb/sequential_read/100K_ops",
+      "time_median": 21.302,
+      "time_unit": "ms",
+      "throughput_median": 4.6945,
+      "throughput_unit": "Melem/s"
+    },
+    {
+      "name": "ycsb/mixed_50_50/workload_a",
+      "time_median": 85.234,
+      "time_unit": "ms",
+      "throughput_median": 2.9331,
+      "throughput_unit": "Melem/s"
+    },
+    {
+      "name": "ycsb/read_heavy_95_5/workload_b",
+      "time_median": 86.671,
+      "time_unit": "ms",
+      "throughput_median": 2.8845,
+      "throughput_unit": "Melem/s"
+    },
+    {
+      "name": "ycsb/rmw/100K_ops",
+      "time_median": 21.396,
+      "time_unit": "ms",
+      "throughput_median": 4.6738,
+      "throughput_unit": "Melem/s"
+    },
+    {
+      "name": "ycsb/multithread_upsert/threads/1",
+      "time_median": 37.358,
+      "time_unit": "ms",
+      "throughput_median": 2.6768,
+      "throughput_unit": "Melem/s"
+    },
+    {
+      "name": "ycsb/multithread_upsert/threads/2",
+      "time_median": 52.224,
+      "time_unit": "ms",
+      "throughput_median": 3.8297,
+      "throughput_unit": "Melem/s"
+    },
+    {
+      "name": "ycsb/multithread_upsert/threads/4",
+      "time_median": 69.550,
+      "time_unit": "ms",
+      "throughput_median": 5.7512,
+      "throughput_unit": "Melem/s"
+    },
+    {
+      "name": "ycsb/multithread_upsert/threads/8",
+      "time_median": 99.031,
+      "time_unit": "ms",
+      "throughput_median": 8.0782,
+      "throughput_unit": "Melem/s"
+    },
+    {
+      "name": "ycsb/read_latency/point_read",
+      "time_median": 298.02,
+      "time_unit": "ns",
+      "throughput_median": 3.3555,
+      "throughput_unit": "Melem/s"
+    }
+  ]
+}
