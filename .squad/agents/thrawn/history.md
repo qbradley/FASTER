@@ -88,3 +88,33 @@
 
 **Action items written to:** `.squad/decisions/inbox/thrawn-retrospective-actions.md` (7 action items, 3 decision proposals)
 
+### 2026-03-06: Wave 0 — Foundation & Hardening (H1+H2+H3)
+
+**What:** Implemented all three Wave 0 hardening items for Iteration 4 in a single commit.
+
+**H1 — Deferred TODOs resolved:**
+- `allocate_with_retry` method added to `FasterKv` — flushes sealed pages on allocation failure then retries once, preventing silent data loss in write-pending completion.
+- `SyncFileDevice` alignment checks promoted from `debug_assert` to runtime error returns in all four I/O methods (`read_async`, `write_async`, `read_sync`, `write_sync`).
+- `flush_completion_callback` now validates `bytes_transferred >= expected` before transitioning to Flushed — short writes stay in Flushing for retry.
+- `DrainList::claim_chain` pre-allocates `Vec::with_capacity(16)` to reduce per-drain allocation overhead.
+- Three items documented as intentionally deferred: `entry_count` (contention concern), SF-3 merge-on-upsert (future feature), SF-9 page alias check (perf concern).
+- 6 new alignment validation tests for `SyncFileDevice`.
+
+**H2 — ARM memory ordering audit:**
+- Audited all ~60 `Ordering::Relaxed` sites. All are advisory counters (metrics, live_entry_count, high_water) — safe on ARM.
+- All synchronization-critical paths already use Acquire/Release/AcqRel correctly.
+- No `#[cfg(target_arch = "aarch64")]` fences needed — documented rationale in `sync.rs`.
+- `cargo check --target aarch64-unknown-linux-gnu` passes clean.
+
+**H3 — Metrics & observability:**
+- Added 4 new counters: `pending_io_inflight`, `checkpoint_count`, `total_operations`, `flush_count`.
+- Created `metrics_inc!` macro — compiles to nothing when `metrics` feature is disabled.
+- Added `trace_span!` to 5 key paths: `flush_page`, `flush_sealed_pages`, `take_checkpoint`, `read_completion`, `store_flush`.
+- Wired counters into all 4 CRUD operations, flush, checkpoint, and pending I/O dispatch.
+- Added `FasterKv::metrics()` accessor (feature-gated).
+- Verified zero overhead: compiles identically with features off.
+
+**Key decision:** ARM doesn't need conditional fences because Rust's `Ordering` enum provides sufficient abstraction — the compiler emits correct barrier instructions per-target. `Relaxed` on advisory-only data is safe even on weakly-ordered architectures.
+
+**Test results:** All 1173 tests pass. Clippy clean. Fmt clean. Cross-compile for aarch64 passes.
+
