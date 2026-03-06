@@ -55,6 +55,76 @@ pub enum IoRequestResult {
 }
 
 // ---------------------------------------------------------------------------
+// TypedIoContext — safe wrapper for callback context lifecycle
+// ---------------------------------------------------------------------------
+
+/// Type-safe wrapper for I/O completion callback contexts.
+///
+/// Manages the `Box → raw pointer → typed reconstruct` lifecycle that all
+/// device callback contexts follow:
+///
+/// 1. **Allocation**: [`TypedIoContext::new`] heap-allocates the context.
+/// 2. **Submission**: [`as_raw()`](TypedIoContext::as_raw) provides the
+///    `*mut u8` for [`Device::read_async`] / [`Device::write_async`].
+/// 3. **Completion**: The callback calls [`TypedIoContext::from_raw`] to
+///    reconstruct the `Box<T>` (still `unsafe` — this is the FFI boundary).
+/// 4. **Error paths**: If the device rejects the I/O (QueueFull / Error),
+///    [`reclaim()`](TypedIoContext::reclaim) safely recovers the allocation
+///    without any `unsafe` at the call site.
+///
+/// # No `Drop` implementation
+///
+/// This type intentionally has **no** `Drop` impl. On the success path the
+/// raw pointer's ownership transfers to the I/O subsystem — the completion
+/// callback is responsible for freeing it. Dropping a `TypedIoContext` whose
+/// I/O was successfully submitted is a safe no-op (the pointer is consumed
+/// elsewhere).
+pub struct TypedIoContext<T> {
+    ptr: *mut T,
+}
+
+impl<T> TypedIoContext<T> {
+    /// Heap-allocate an I/O context.
+    pub fn new(data: T) -> Self {
+        Self {
+            ptr: Box::into_raw(Box::new(data)),
+        }
+    }
+
+    /// Return the type-erased raw pointer for passing to [`Device`] methods.
+    ///
+    /// The pointer remains valid until either [`reclaim`](Self::reclaim) is
+    /// called or the completion callback reconstructs it via [`from_raw`](Self::from_raw).
+    pub fn as_raw(&self) -> *mut u8 {
+        self.ptr as *mut u8
+    }
+
+    /// Safely reclaim the context on error paths.
+    ///
+    /// Use this when the I/O was **not** submitted (the device returned
+    /// `QueueFull` or `Error`) and the completion callback will **not** fire.
+    /// Consumes `self` and returns the owned data.
+    pub fn reclaim(self) -> T {
+        // SAFETY: `ptr` was created by `Box::into_raw` in `new()` and has not
+        // been consumed by a callback — the caller guarantees the I/O was never
+        // submitted.
+        *unsafe { Box::from_raw(self.ptr) }
+    }
+
+    /// Reconstruct the `Box<T>` from a raw callback pointer.
+    ///
+    /// # Safety
+    ///
+    /// - `ptr` must have originated from [`TypedIoContext::<T>::as_raw`].
+    /// - Must be called **exactly once** per context (double-free otherwise).
+    pub unsafe fn from_raw(ptr: *mut u8) -> Box<T> {
+        // SAFETY: Caller guarantees `ptr` is a valid `*mut T` produced by
+        // `Box::into_raw`.
+        unsafe { Box::from_raw(ptr as *mut T) }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Device trait
 // ---------------------------------------------------------------------------
 

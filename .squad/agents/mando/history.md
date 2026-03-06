@@ -402,3 +402,39 @@ Created `rust/crates/faster-core/examples/cache_store.rs` — a Rust port of the
 - `as_mut_slice()` on MutableRecordAccessor — `from_raw_parts_mut`
 - `LogRecordWriter::allocate_record()` — `MutableRecordAccessor::new()` call (freshly allocated region)
 - 1 test unsafe (direct `MutableRecordAccessor::new()` for in-place update test)
+
+---
+
+## Phase 3: Device I/O Safe Callback Wrappers
+
+**What:** Introduced `TypedIoContext<T>` in `device.rs` — a zero-cost wrapper that encapsulates the `Box → raw pointer → typed reconstruct` lifecycle used by all device I/O completion callbacks. Refactored flush.rs and pending_io.rs to use it.
+
+**Changes:**
+- **device.rs**: Added `TypedIoContext<T>` with `new()`, `as_raw()`, safe `reclaim()`, and `unsafe from_raw()`. Exported via `lib.rs`.
+- **flush.rs**: `flush_page()` error paths (QueueFull, Error) now use `io_ctx.reclaim()` instead of `unsafe { Box::from_raw(...) }`. Callback uses `TypedIoContext::from_raw()`.
+- **pending_io.rs**: `issue_read()` error paths now use `io_ctx.reclaim()` instead of `unsafe { Box::from_raw(...) }`. Callback uses `TypedIoContext::from_raw()`.
+
+**Unsafe block count (across 4 target files):**
+| File | Before | After | Delta |
+|------|--------|-------|-------|
+| device.rs | 11 | 13 | +2 (encapsulated in TypedIoContext) |
+| sync_file_device.rs | 6 | 6 | 0 |
+| flush.rs | 6 | 4 | −2 |
+| pending_io.rs | 5 | 3 | −2 |
+| **Total** | **28** | **26** | **−2 net** |
+
+**Overall crate unsafe blocks:** 102 → 100
+
+**What stayed unsafe and why:**
+- `Device::read_async`/`write_async` — FFI boundary, raw pointer contracts
+- `flush_completion_callback`/`read_completion_callback` — receive `*mut u8` from device, must remain `unsafe fn`
+- `TypedIoContext::from_raw` — callback boundary, must be called exactly once
+- `unsafe impl Send for IoRequest` / `FlushCallbackContext` — justified by lifetime contracts
+- `execute_request` raw pointer slicing — inherent to the buffer contract
+
+**Tests:** 1161 passed, 3 skipped (unchanged). Clippy clean.
+
+**Learnings:**
+- The callback pattern (Box::into_raw → pass to device → Box::from_raw in callback) appears in every async I/O call site. TypedIoContext centralizes the invariants.
+- Error-path reclaim is the biggest win: callers no longer need to remember the cast type in `Box::from_raw(ptr as *mut T)` — `reclaim()` is type-safe and requires no unsafe.
+- TypedIoContext intentionally has no Drop impl: on the success path, ownership transfers to the I/O subsystem silently.
