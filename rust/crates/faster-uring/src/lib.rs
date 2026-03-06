@@ -28,9 +28,13 @@
 #[cfg(target_os = "linux")]
 mod buffer;
 #[cfg(target_os = "linux")]
+mod device;
+#[cfg(target_os = "linux")]
 mod ring;
 
 #[cfg(target_os = "linux")]
 pub use buffer::{BufferPool, RegisteredBuffer, SECTOR_ALIGNMENT};
+#[cfg(target_os = "linux")]
+pub use device::{UringDevice, UringDeviceConfig};
 #[cfg(target_os = "linux")]
 pub use ring::{Ring, UringConfig};
