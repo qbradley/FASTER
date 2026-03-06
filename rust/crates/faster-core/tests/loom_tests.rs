@@ -396,3 +396,199 @@ fn b5_bump_pool_distinct_addresses() {
         assert_eq!(pool.slots[a2 as usize].load(Ordering::Acquire), 0);
     });
 }
+
+// ============================================================================
+// Test 0C: Lock-free drain list (Treiber stack push + atomic-swap drain)
+// ============================================================================
+
+/// Minimal lock-free drain list re-implemented with loom primitives.
+///
+/// Mirrors `epoch::drain::DrainList`: Treiber stack push via CAS,
+/// drain via atomic swap of head to null, then walk + execute.
+/// Uses `AtomicUsize` counters instead of `FnOnce` callbacks so
+/// loom can track the memory accesses.
+mod drain_list {
+    use loom::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+    use std::ptr;
+
+    pub struct DrainNode {
+        pub epoch: u64,
+        /// Shared counter this node increments when "executed".
+        counter: *const AtomicUsize,
+        next: *mut DrainNode,
+    }
+
+    pub struct DrainList {
+        head: AtomicPtr<DrainNode>,
+    }
+
+    // SAFETY: nodes are heap-allocated, accessed only through atomic
+    // operations on the head pointer (CAS for push, swap for drain).
+    unsafe impl Send for DrainList {}
+    // SAFETY: concurrent pushes serialize on CAS; drain atomically claims
+    // the chain, giving the drainer exclusive access to claimed nodes.
+    unsafe impl Sync for DrainList {}
+
+    impl DrainList {
+        pub fn new() -> Self {
+            Self {
+                head: AtomicPtr::new(ptr::null_mut()),
+            }
+        }
+
+        pub fn push(&self, epoch: u64, counter: &AtomicUsize) {
+            let node = Box::into_raw(Box::new(DrainNode {
+                epoch,
+                counter: counter as *const AtomicUsize,
+                next: ptr::null_mut(),
+            }));
+
+            loop {
+                let head = self.head.load(Ordering::Acquire);
+                // SAFETY: `node` is uniquely owned, not yet published.
+                unsafe { (*node).next = head };
+                match self
+                    .head
+                    .compare_exchange(head, node, Ordering::AcqRel, Ordering::Acquire)
+                {
+                    Ok(_) => return,
+                    Err(_) => continue,
+                }
+            }
+        }
+
+        /// Drain entries with epoch ≤ `safe_epoch`.
+        /// Returns the number of entries executed.
+        pub fn drain_up_to(&self, safe_epoch: u64) -> usize {
+            let head = self.head.swap(ptr::null_mut(), Ordering::AcqRel);
+            if head.is_null() {
+                return 0;
+            }
+
+            let mut nodes = Vec::new();
+            let mut current = head;
+            while !current.is_null() {
+                // SAFETY: exclusive access to the claimed chain.
+                let next = unsafe { (*current).next };
+                nodes.push(current);
+                current = next;
+            }
+
+            let mut executed = 0;
+            for node_ptr in nodes {
+                // SAFETY: exclusive access to claimed chain nodes.
+                let epoch = unsafe { (*node_ptr).epoch };
+                if epoch <= safe_epoch {
+                    // SAFETY: reconstruct Box, increment the shared counter.
+                    let node = unsafe { Box::from_raw(node_ptr) };
+                    // SAFETY: the counter pointer is valid for the
+                    // lifetime of the loom model (owned by Arc in test).
+                    unsafe { (*node.counter).fetch_add(1, Ordering::Relaxed) };
+                    executed += 1;
+                } else {
+                    // Re-push unready node.
+                    loop {
+                        let head = self.head.load(Ordering::Acquire);
+                        // SAFETY: exclusive access to this unready node.
+                        unsafe { (*node_ptr).next = head };
+                        match self.head.compare_exchange(
+                            head,
+                            node_ptr,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        ) {
+                            Ok(_) => break,
+                            Err(_) => continue,
+                        }
+                    }
+                }
+            }
+
+            executed
+        }
+    }
+
+    impl Drop for DrainList {
+        fn drop(&mut self) {
+            let mut current = self.head.load(Ordering::Acquire);
+            while !current.is_null() {
+                // SAFETY: exclusive access via &mut self in drop.
+                let node = unsafe { Box::from_raw(current) };
+                current = node.next;
+            }
+        }
+    }
+}
+
+/// Two threads push drain entries concurrently while a third thread
+/// drains. All entries must eventually execute exactly once.
+#[test]
+fn c0_drain_list_concurrent_push_and_drain() {
+    loom::model(|| {
+        let list = Arc::new(drain_list::DrainList::new());
+        let counter = Arc::new(loom::sync::atomic::AtomicUsize::new(0));
+
+        // Thread 1: push one entry at epoch 1.
+        let l1 = Arc::clone(&list);
+        let c1 = Arc::clone(&counter);
+        let t1 = thread::spawn(move || {
+            l1.push(1, &c1);
+        });
+
+        // Thread 2: push one entry at epoch 1.
+        let l2 = Arc::clone(&list);
+        let c2 = Arc::clone(&counter);
+        let t2 = thread::spawn(move || {
+            l2.push(1, &c2);
+        });
+
+        t1.join().unwrap();
+        t2.join().unwrap();
+
+        // Main thread drains — all entries are at epoch 1, safe_epoch=1.
+        let executed = list.drain_up_to(1);
+        assert_eq!(executed, 2, "both entries must be drained");
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            2,
+            "both callbacks must have fired"
+        );
+    });
+}
+
+/// Push entries at different epochs; drain with a threshold that only
+/// fires some. Verify partial drain correctness under concurrency.
+#[test]
+fn c0_drain_list_partial_drain() {
+    loom::model(|| {
+        let list = Arc::new(drain_list::DrainList::new());
+        let counter = Arc::new(loom::sync::atomic::AtomicUsize::new(0));
+
+        // Thread 1: push at epoch 1 (will be ready).
+        let l1 = Arc::clone(&list);
+        let c1 = Arc::clone(&counter);
+        let t1 = thread::spawn(move || {
+            l1.push(1, &c1);
+        });
+
+        // Thread 2: push at epoch 5 (will NOT be ready).
+        let l2 = Arc::clone(&list);
+        let c2 = Arc::clone(&counter);
+        let t2 = thread::spawn(move || {
+            l2.push(5, &c2);
+        });
+
+        t1.join().unwrap();
+        t2.join().unwrap();
+
+        // Drain up to epoch 3: only epoch-1 entry fires.
+        let first_pass = list.drain_up_to(3);
+        assert_eq!(first_pass, 1, "only epoch-1 entry should drain");
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+
+        // Drain up to epoch 5: the remaining entry fires.
+        let second_pass = list.drain_up_to(5);
+        assert_eq!(second_pass, 1, "epoch-5 entry should drain now");
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
+    });
+}

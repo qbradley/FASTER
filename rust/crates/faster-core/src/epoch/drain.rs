@@ -1,81 +1,220 @@
-//! Drain list for deferred epoch-keyed callbacks.
+//! Lock-free drain list for deferred epoch-keyed callbacks.
 //!
 //! When the global epoch is bumped, a callback may be queued to execute
 //! once no thread references the prior epoch. The [`DrainList`] stores
 //! these deferred actions and executes them when the safe-to-reclaim
 //! epoch advances past their tagged epoch.
+//!
+//! # Design Choice: Lock-Free Treiber Stack
+//!
+//! The previous `Mutex<Vec<>>` implementation serialized all threads on
+//! push. Under heavy epoch drain (e.g., page eviction during compaction),
+//! this mutex becomes a bottleneck. A Treiber stack eliminates contention
+//! on the push path — each thread only needs a single successful CAS to
+//! enqueue its callback.
+//!
+//! - **Push**: lock-free CAS loop on the head pointer. No ABA concern
+//!   because nodes are heap-allocated and never recycled into the list.
+//! - **Drain**: atomic swap of head to null (claims the entire chain),
+//!   then a linear walk to partition ready vs. unready nodes.
+//! - **Order**: the stack is LIFO, but we reverse the claimed chain
+//!   before execution to preserve FIFO insertion order.
 
-use std::sync::Mutex;
+use std::ptr;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
-/// A single deferred action associated with an epoch.
-struct DrainAction {
+/// A single deferred action in the lock-free drain list.
+///
+/// Heap-allocated via [`Box`], linked through raw `next` pointers.
+/// Nodes are allocated on push and freed on drain (or when [`DrainList`]
+/// is dropped). They are never recycled, so there is no ABA concern.
+struct DrainNode {
     /// The epoch at which this action was queued (the prior epoch before
     /// the bump that created it).
     epoch: u64,
     /// The callback to execute when the epoch becomes safe.
-    action: Box<dyn FnOnce() + Send>,
+    /// Wrapped in `Option` so we can `take()` it out for `FnOnce` consumption.
+    action: Option<Box<dyn FnOnce() + Send>>,
+    /// Next node in the stack (toward the bottom). Null for the last node.
+    next: *mut DrainNode,
 }
 
-/// A thread-safe queue of deferred callbacks keyed by epoch.
+/// A lock-free queue of deferred callbacks keyed by epoch.
 ///
-/// # Design Choice: Mutex + Vec
+/// Implemented as a Treiber stack (LIFO linked list) with:
+/// - **Push**: CAS loop on the head pointer (lock-free, minimal contention)
+/// - **Drain**: atomic swap of head to null, then linear walk
 ///
-/// A lock-free structure is unnecessary here because:
-/// - `push` happens only on `bump_current_epoch` (relatively rare — not
-///   on every read/write operation)
-/// - `drain_up_to` happens on `try_drain` (also rare)
-/// - The critical section is short (just Vec manipulation, no I/O)
+/// # Memory Safety
 ///
-/// Actions are collected under the lock, then executed after releasing it.
-/// This prevents deadlocks if a callback calls `push()` or
-/// `bump_current_epoch()`.
+/// Nodes are heap-allocated via `Box::into_raw` on push and reclaimed
+/// via `Box::from_raw` on drain or drop. Each node is consumed exactly
+/// once. The `Drop` impl walks any remaining nodes to prevent leaks.
 pub(crate) struct DrainList {
-    actions: Mutex<Vec<DrainAction>>,
+    head: AtomicPtr<DrainNode>,
 }
+
+// SAFETY: `DrainList` is safe to send between threads. The raw
+// `*mut DrainNode` inside `AtomicPtr` is only accessed through atomic
+// operations (CAS on push, swap on drain). Node ownership transfers
+// cleanly: `Box::into_raw` on push, `Box::from_raw` on drain/drop.
+unsafe impl Send for DrainList {}
+
+// SAFETY: `DrainList` is safe to share between threads. Concurrent
+// pushes are serialized by CAS on the head pointer. Drain atomically
+// claims the entire list via swap, after which only the draining thread
+// accesses the claimed nodes.
+unsafe impl Sync for DrainList {}
 
 impl DrainList {
     /// Creates an empty drain list.
     pub(crate) fn new() -> Self {
         Self {
-            actions: Mutex::new(Vec::new()),
+            head: AtomicPtr::new(ptr::null_mut()),
         }
     }
 
     /// Enqueues a deferred action to execute when `safe_epoch >= epoch`.
+    ///
+    /// Lock-free: uses a CAS loop on the head pointer. Each push
+    /// allocates a fresh heap node, so there is no ABA concern.
     pub(crate) fn push(&self, epoch: u64, action: Box<dyn FnOnce() + Send>) {
-        let mut actions = self.actions.lock().expect("drain list lock poisoned");
-        actions.push(DrainAction { epoch, action });
+        let node = Box::into_raw(Box::new(DrainNode {
+            epoch,
+            action: Some(action),
+            next: ptr::null_mut(),
+        }));
+
+        loop {
+            let head = self.head.load(Ordering::Acquire);
+
+            // SAFETY: `node` is a valid, uniquely-owned heap pointer that
+            // we just allocated. No other thread can access it because it
+            // has not yet been published to the list.
+            unsafe { (*node).next = head };
+
+            match self
+                .head
+                .compare_exchange_weak(head, node, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return,
+                Err(_) => continue,
+            }
+        }
     }
 
     /// Executes and removes all actions whose epoch is ≤ `safe_epoch`.
     ///
-    /// Actions are collected under the lock, then executed after releasing
-    /// it. This prevents deadlocks if a callback enqueues more drain actions.
-    /// Execution order preserves insertion order for actions at the same epoch.
+    /// Atomically swaps the head to null (claiming the entire chain),
+    /// reverses it to restore FIFO insertion order, then partitions into
+    /// ready and unready nodes. Ready callbacks are executed; unready
+    /// nodes are pushed back for future drain passes.
+    ///
+    /// Callbacks are executed after the chain is fully claimed, so a
+    /// callback that calls `push()` will not deadlock — it simply pushes
+    /// to the (now-empty or partially-repopulated) head.
     pub(crate) fn drain_up_to(&self, safe_epoch: u64) {
-        let to_execute = {
-            let mut actions = self.actions.lock().expect("drain list lock poisoned");
-            if actions.is_empty() {
-                return;
-            }
-            // Partition: extract ready actions, keep the rest.
-            // drain(..) empties the vec; partition splits into two vecs.
-            let (ready, remaining): (Vec<_>, Vec<_>) =
-                actions.drain(..).partition(|a| a.epoch <= safe_epoch);
-            *actions = remaining;
-            ready
-        };
+        let head = self.head.swap(ptr::null_mut(), Ordering::AcqRel);
 
-        // Execute outside the lock, preserving insertion order.
-        for action in to_execute {
-            (action.action)();
+        if head.is_null() {
+            return;
+        }
+
+        // Walk the claimed LIFO chain, collecting node pointers.
+        let mut nodes = Vec::new();
+        let mut current = head;
+        while !current.is_null() {
+            // SAFETY: `current` was reached by following `next` pointers
+            // starting from the head we atomically swapped out. Each node
+            // was allocated via `Box::into_raw` in `push` and has not been
+            // freed. We have exclusive access to the entire claimed chain
+            // because the swap replaced head with null.
+            let next = unsafe { (*current).next };
+            nodes.push(current);
+            current = next;
+        }
+
+        // Reverse to restore FIFO insertion order (Treiber stack is LIFO).
+        nodes.reverse();
+
+        // Partition: execute ready actions, collect unready node pointers.
+        let mut unready: Vec<*mut DrainNode> = Vec::new();
+        for node_ptr in nodes {
+            // SAFETY: exclusive access to claimed nodes (see above).
+            let epoch = unsafe { (*node_ptr).epoch };
+
+            if epoch <= safe_epoch {
+                // SAFETY: reconstruct the `Box` to take ownership.
+                // The node was allocated via `Box::into_raw` in `push`
+                // and has not been freed. This is the single point of
+                // ownership transfer back to a `Box` for deallocation.
+                let mut node = unsafe { Box::from_raw(node_ptr) };
+                if let Some(action) = node.action.take() {
+                    action();
+                }
+                // `node` dropped here → memory freed
+            } else {
+                unready.push(node_ptr);
+            }
+        }
+
+        // Re-push unready nodes so they survive until a future drain.
+        for node_ptr in unready {
+            loop {
+                let head = self.head.load(Ordering::Acquire);
+
+                // SAFETY: `node_ptr` is a valid node from the claimed
+                // chain that was not freed (epoch > safe_epoch). We have
+                // exclusive access until the CAS publishes it.
+                unsafe { (*node_ptr).next = head };
+
+                match self.head.compare_exchange_weak(
+                    head,
+                    node_ptr,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => break,
+                    Err(_) => continue,
+                }
+            }
         }
     }
 
     /// Returns the number of pending (not yet drained) actions.
+    ///
+    /// Traverses the entire linked list — O(n). Only for use in
+    /// single-threaded test contexts; not safe to call concurrently
+    /// with `drain_up_to`.
     #[cfg(test)]
     pub(crate) fn pending_count(&self) -> usize {
-        self.actions.lock().expect("drain list lock poisoned").len()
+        let mut count = 0;
+        let mut current = self.head.load(Ordering::Acquire);
+        while !current.is_null() {
+            count += 1;
+            // SAFETY: `current` is a valid node in the list, reachable
+            // from head. We only read the `next` pointer (no mutation,
+            // no ownership transfer). This is safe in single-threaded
+            // test contexts where no concurrent drain can free nodes
+            // underneath us.
+            current = unsafe { (*current).next };
+        }
+        count
+    }
+}
+
+impl Drop for DrainList {
+    fn drop(&mut self) {
+        // `get_mut`: exclusive access guaranteed by `&mut self`.
+        let mut current = *self.head.get_mut();
+        while !current.is_null() {
+            // SAFETY: exclusive access via `&mut self` in `drop`. Each
+            // node was allocated via `Box::into_raw` in `push` and has
+            // not been freed. We reconstruct the `Box` to free it.
+            let node = unsafe { Box::from_raw(current) };
+            current = node.next;
+            // `node` dropped here → memory freed
+        }
     }
 }
 
@@ -83,6 +222,7 @@ impl DrainList {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
