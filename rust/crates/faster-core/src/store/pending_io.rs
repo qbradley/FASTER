@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::buffer_pool::{AlignedBuffer, BufferPool};
-use crate::device::{Device, IoCompletionCallback, IoStatus};
+use crate::device::{Device, IoCompletionCallback, IoRequestResult, IoStatus};
 use crate::record::{RecordInfo, RecordLayout, read_key, read_record_info, read_value};
 use crate::store::Functions;
 
@@ -277,7 +277,7 @@ impl PendingIoManager {
         &self,
         pending_op: PendingOperation<F>,
         device: &dyn Device,
-    ) -> PendingIoContext<F> {
+    ) -> Result<PendingIoContext<F>, PendingIoError> {
         let addr = pending_op.address;
         let page = addr.page();
         let offset_in_page = addr.offset().0;
@@ -309,28 +309,51 @@ impl PendingIoManager {
             bytes_transferred: Arc::clone(&bytes_transferred),
         });
 
+        let ctx_ptr = Box::into_raw(cb_ctx) as *mut u8;
+
         // SAFETY:
         // - `buffer.as_mut_ptr()` is valid for `read_size` bytes (allocated above).
         // - The buffer is owned by this function and moved into PendingIoContext,
         //   keeping it alive until the callback fires.
-        // - `cb_ctx` is a valid Box pointer; ownership transfers to the callback.
-        let _result = unsafe {
+        // - `ctx_ptr` is a valid Box pointer; ownership transfers to the callback
+        //   on success, or is reclaimed on error.
+        let result = unsafe {
             device.read_async(
                 device_offset,
                 buffer.as_mut_ptr(),
                 read_size,
                 read_completion_callback as IoCompletionCallback,
-                Box::into_raw(cb_ctx) as *mut u8,
+                ctx_ptr,
             )
         };
 
-        PendingIoContext {
-            operation: pending_op,
-            buffer: Some(buffer),
-            record_offset,
-            completed,
-            io_status,
-            bytes_transferred,
+        match result {
+            IoRequestResult::Submitted | IoRequestResult::CompletedSync => Ok(PendingIoContext {
+                operation: pending_op,
+                buffer: Some(buffer),
+                record_offset,
+                completed,
+                io_status,
+                bytes_transferred,
+            }),
+            IoRequestResult::QueueFull => {
+                // SAFETY: ctx_ptr was created by Box::into_raw and the callback
+                // was NOT invoked (device rejected the request).
+                unsafe {
+                    drop(Box::from_raw(ctx_ptr as *mut ReadCallbackContext));
+                }
+                Err(PendingIoError::IoError(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "device I/O queue full",
+                )))
+            }
+            IoRequestResult::Error(e) => {
+                // SAFETY: Same as QueueFull — callback was not invoked.
+                unsafe {
+                    drop(Box::from_raw(ctx_ptr as *mut ReadCallbackContext));
+                }
+                Err(PendingIoError::IoError(e))
+            }
         }
     }
 
@@ -474,7 +497,7 @@ mod tests {
         write_test_record(&device, device_offset, 7, 77);
 
         let pending = make_pending_op(2, 0);
-        let ctx = manager.issue_read(pending, &device);
+        let ctx = manager.issue_read(pending, &device).unwrap();
 
         // InMemoryDevice completes synchronously, so it should be done.
         assert!(ctx.is_completed());
@@ -530,7 +553,7 @@ mod tests {
         write_test_record(&device, 0, 1, 2);
 
         let pending = make_pending_op(0, 0);
-        let ctx = manager.issue_read(pending, &device);
+        let ctx = manager.issue_read(pending, &device).unwrap();
 
         // InMemoryDevice is synchronous — should already be done.
         assert!(ctx.is_completed());
