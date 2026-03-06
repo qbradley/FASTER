@@ -197,3 +197,41 @@
 
 **Quality:** All 1161 tests pass, 3 skipped. Clippy clean (zero warnings). Zero performance regression — `current_dir()` is `#[inline(always)]` producing identical codegen to the inlined unsafe pattern.
 
+---
+
+## 2026-07-25: Phase 2B — DrainList Encapsulation, Allocator Cleanup, PageTable Refactor (Chirrut)
+
+**What:** Deeper unsafe isolation across three core files: extracted private helpers in DrainList, eliminated unnecessary unsafe in allocator new()/Drop, added frame_ref() helper in PageTable, and documented sector-alignment constraints preventing safe allocation patterns.
+
+**drain.rs changes:**
+1. **`link_and_cas_push()` private unsafe fn** — encapsulates the CAS-loop raw pointer linkage for the Treiber stack push. Used by both `push()` and `drain_up_to()` re-push path.
+2. **`claim_chain()` private unsafe fn** — atomically walks a claimed chain, reconstitutes each node as `Box<DrainNode>`, returns in FIFO order. Replaces manual walk + separate `nodes`/`unready` Vecs.
+3. **`push()`** — now delegates to `link_and_cas_push()` with a single `unsafe` call.
+4. **`drain_up_to()`** — simplified: one `claim_chain()` call replaces 4 inline unsafe blocks. Unready nodes re-pushed via `link_and_cas_push()`.
+5. **`Drop`** — uses `claim_chain()` for consistent ownership reconstitution.
+
+**allocator.rs changes:**
+1. **`new()`** — call `get_or_add_page(0)` on the `Box<PageDir>` before `Box::into_raw`, eliminating 1 unsafe block.
+2. **`Drop`** — consolidated `unsafe { &*dir }` + `unsafe { Box::from_raw(dir) }` into single `Box::from_raw(dir_raw)`, saving 1 unsafe block.
+3. **`dir` field documentation** — added explanation of why `AtomicPtr<PageDir<T>>` is required instead of `Box<PageDir<T>>` (atomic swap needed for `expand_directory()`).
+
+**page.rs changes:**
+1. **`frame_ref()` private unsafe fn** — centralizes `*mut PageFrame` → `&PageFrame` conversion with debug_assert and documented safety contract. Used by `get_frame()`, `get_or_allocate_frame()`, and `try_evict_frame()`.
+2. **`get_or_allocate_frame()` CAS error path** — consolidated 2 unsafe blocks into 1.
+3. **`PageTable::Drop`** — switched from `slot.load(Ordering::Acquire)` to `slot.get_mut()` (safe: `&mut self` guarantees exclusive access).
+4. **`PageFrame::new()` doc** — added "Why `alloc_zeroed` instead of `Vec`/`Box<[u8]>`" section explaining sector-alignment (512B) prevents standard allocator patterns.
+
+**Unsafe block counts (non-test `unsafe { }` blocks):**
+| File | Before | After | Delta |
+|------|--------|-------|-------|
+| drain.rs | 6 | 7 | +1* |
+| allocator.rs | 18 | 16 | −2 |
+| page.rs | 14 | 14 | 0** |
+
+\* drain.rs count increased by 1 because `claim_chain()` uses 2 explicit inner blocks (required by `unsafe_op_in_unsafe_fn`), but the structural win is that all raw pointer manipulation is now in 2 private helpers, and public methods have only safe delegation calls.
+\*\* page.rs consolidated 2 → 1 in CAS error path but added `frame_ref()` inner block, net neutral in count but better documented.
+
+**Overall project unsafe { } blocks:** ~104 (down from ~105 at Phase 1B baseline).
+
+**Quality:** All 1161 tests pass, 3 skipped. Clippy clean. Zero performance regression — lock-free operations and atomic orderings unchanged.
+
