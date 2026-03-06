@@ -75,3 +75,16 @@
 
 **Next Steps:** Risk mitigation task force (Jyn lead), unsafe audit planning (Maul lead), Phase 1 sprint (Cassian lead), async adapter spike (Kenobi lead).
 
+### 2026-03-05: Iteration 3 Retrospective — Facilitated Full Squad Retro
+
+**What:** Facilitated retrospective covering Iterations 1–3 on the `squad` branch. 76 Rust commits, 50K+ lines, 1,280 tests (1,276 passing, 4 failing doctests, 8 ignored).
+
+**Key findings:**
+1. **Doctests are a blind spot.** 4 builder.rs doctests reference `TestFunctions` (internal type) instead of `SimpleFunctions` (public API). Went undetected because our test flow runs `cargo test --lib` + integration tests, not `cargo test --doc`. Quality gate must include all test types.
+2. **Documentation-before-stabilization causes rework.** QUICKSTART.md was written during Iteration 3, then had to be patched (`6b94ce3c`) to be "honest about pending I/O semantics" after write-path pending was implemented. Lesson: batch docs as a trailing phase.
+3. **Sleep-based test synchronization creates fragile, slow tests.** `write_pending_completion` tests took 18.5s before 20× speedup. Convention needed: no `thread::sleep` in tests without justification.
+4. **Performance target gap.** 8.11M ops/sec vs 10M target — shared infrastructure may explain ~20% gap but needs dedicated-hardware validation.
+5. **Unsafe footprint (23 files, ~191 occurrences) needs SAFETY documentation audit** before Iteration 4 adds io_uring and C FFI.
+
+**Action items written to:** `.squad/decisions/inbox/thrawn-retrospective-actions.md` (7 action items, 3 decision proposals)
+
