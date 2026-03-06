@@ -11,6 +11,8 @@
 
 mod manager;
 mod metadata;
+mod participant;
+mod session_state;
 mod state_machine;
 
 pub use manager::{
@@ -19,4 +21,6 @@ pub use manager::{
 pub use metadata::{
     CheckpointToken, CheckpointType, IndexRecoveryInfo, LogRecoveryInfo, SessionRecoveryInfo,
 };
+pub use participant::CheckpointParticipant;
+pub use session_state::SessionCheckpointState;
 pub use state_machine::{CheckpointPhase, CheckpointStateMachine};
