@@ -322,6 +322,50 @@ impl HybridLogAllocator {
             tail_address: self.tail_address.load(Ordering::SeqCst),
         }
     }
+
+    /// Try to advance `head_address` to a new value.
+    ///
+    /// Only succeeds if `new_head` > current head (monotonic advance).
+    /// Returns the actual head after the attempt.
+    pub fn try_advance_head(&self, new_head: LogicalAddress) -> LogicalAddress {
+        loop {
+            let current = self.head_address.load(Ordering::SeqCst);
+            if new_head.raw() <= current.raw() {
+                return current;
+            }
+            match self.head_address.compare_exchange(
+                current,
+                new_head,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return new_head,
+                Err(_) => continue,
+            }
+        }
+    }
+
+    /// Try to advance `begin_address` to a new value (for truncation).
+    ///
+    /// Only succeeds if `new_begin` > current begin (monotonic advance).
+    /// Returns the actual begin after the attempt.
+    pub fn try_advance_begin(&self, new_begin: LogicalAddress) -> LogicalAddress {
+        loop {
+            let current = self.begin_address.load(Ordering::SeqCst);
+            if new_begin.raw() <= current.raw() {
+                return current;
+            }
+            match self.begin_address.compare_exchange(
+                current,
+                new_begin,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return new_begin,
+                Err(_) => continue,
+            }
+        }
+    }
 }
 
 // ===========================================================================
