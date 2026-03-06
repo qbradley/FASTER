@@ -1419,6 +1419,21 @@ impl<F: Functions> FasterKv<F> {
         self.allocator.head_address()
     }
 
+    /// Get the address of the first data record in the log.
+    ///
+    /// The store reserves a small sentinel region at the start of the log
+    /// (to keep addresses 0 and 1 unused). This method returns the address
+    /// immediately after that sentinel — the first position where a real
+    /// record can be written.
+    ///
+    /// Use this (rather than `head_address`) as the `begin_address` for
+    /// compaction scans when the log has never been truncated.
+    #[inline]
+    pub fn first_data_address(&self) -> LogicalAddress {
+        use crate::record::RECORD_ALIGNMENT;
+        LogicalAddress::from_raw(self.allocator.begin_address().raw() + RECORD_ALIGNMENT as u64)
+    }
+
     /// Get the approximate number of entries in the store.
     ///
     /// **Note:** This is a rough estimate. A precise count requires

@@ -133,6 +133,8 @@ pub mod address;
 pub mod allocator;
 pub mod buffer_pool;
 pub mod checkpoint;
+#[deny(unsafe_code)]
+pub mod compaction;
 pub mod device;
 pub mod epoch;
 #[deny(unsafe_code)]
