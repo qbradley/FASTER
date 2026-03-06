@@ -14,6 +14,7 @@ pub mod log_allocator;
 pub mod page;
 pub mod record_ops;
 pub mod regions;
+pub mod scan;
 
 pub use eviction::{EvictionPolicy, PageEvictor};
 pub use flush::{FlushError, FlushRequest, PageFlusher};
@@ -23,3 +24,4 @@ pub use record_ops::{
     LogRecordReader, LogRecordWriter, MutableRecordAccessor, RecordAccessor, VersionChainIterator,
 };
 pub use regions::{AddressInfo, AddressRegion};
+pub use scan::{LogScanIterator, ScanOptions, ScanRecord};
