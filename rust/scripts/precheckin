@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+#
+# precheckin — run all FASTER Rust quality gates without committing
+#
+# Usage: rust/scripts/precheckin [--skip-tests]
+#
+# Runs fmt → clippy → doctests → tests and reports pass/fail.
+# Use --skip-tests to run only fmt + clippy (faster iteration).
+# Exit code 0 = all gates passed, non-zero = failure.
+
+set -euo pipefail
+
+# ── Colors ──────────────────────────────────────────────────────────────────
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BOLD='\033[1m'
+RESET='\033[0m'
+
+# ── Resolve repo root ──────────────────────────────────────────────────────
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+    echo -e "${RED}❌ Not inside a git repository.${RESET}" >&2
+    exit 1
+}
+
+RUST_DIR="$REPO_ROOT/rust"
+if [[ ! -f "$RUST_DIR/Cargo.toml" ]]; then
+    echo -e "${RED}❌ Cannot find rust/Cargo.toml — is this the FASTER repo?${RESET}" >&2
+    exit 1
+fi
+
+# ── Parse --skip-tests flag ────────────────────────────────────────────────
+SKIP_TESTS=false
+for arg in "$@"; do
+    if [[ "$arg" == "--skip-tests" ]]; then
+        SKIP_TESTS=true
+    fi
+done
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+run_gate() {
+    local name="$1"
+    shift
+    local start end elapsed
+
+    echo -e "\n${BOLD}▶ ${name}${RESET}"
+    echo "  $ $*"
+
+    start=$(date +%s)
+    if "$@"; then
+        end=$(date +%s)
+        elapsed=$((end - start))
+        echo -e "${GREEN}  ✅ ${name} passed${RESET}  (${elapsed}s)"
+    else
+        end=$(date +%s)
+        elapsed=$((end - start))
+        echo -e "${RED}  ❌ ${name} FAILED${RESET}  (${elapsed}s)"
+        return 1
+    fi
+}
+
+# ── Run gates ───────────────────────────────────────────────────────────────
+cd "$RUST_DIR"
+
+echo -e "${BOLD}═══ FASTER Rust Pre-Checkin ═══${RESET}"
+if [[ "$SKIP_TESTS" == true ]]; then
+    echo -e "${YELLOW}⚡ --skip-tests: running fmt + clippy only${RESET}"
+fi
+
+run_gate "cargo fmt (check)" \
+    cargo fmt -p faster-core -- --check || {
+    echo -e "\n${RED}💡 Fix: run 'cargo fmt -p faster-core' then retry.${RESET}" >&2
+    exit 1
+}
+
+run_gate "cargo clippy" \
+    cargo clippy -p faster-core --all-targets -- -D warnings || {
+    echo -e "\n${RED}💡 Fix: address the clippy warnings above then retry.${RESET}" >&2
+    exit 1
+}
+
+if [[ "$SKIP_TESTS" == false ]]; then
+    run_gate "cargo test --doc" \
+        cargo test --doc -p faster-core || {
+        echo -e "\n${RED}💡 Fix: repair the failing doctests above then retry.${RESET}" >&2
+        exit 1
+    }
+
+    if command -v cargo-nextest &>/dev/null || cargo nextest --version &>/dev/null 2>&1; then
+        run_gate "cargo nextest run" \
+            cargo nextest run -p faster-core || {
+            echo -e "\n${RED}💡 Fix: repair the failing tests above then retry.${RESET}" >&2
+            exit 1
+        }
+    else
+        echo -e "${YELLOW}  ⚠ nextest not found — falling back to cargo test${RESET}"
+        run_gate "cargo test" \
+            cargo test -p faster-core || {
+            echo -e "\n${RED}💡 Fix: repair the failing tests above then retry.${RESET}" >&2
+            exit 1
+        }
+    fi
+fi
+
+echo -e "\n${GREEN}${BOLD}✅ All quality gates passed!${RESET}"
