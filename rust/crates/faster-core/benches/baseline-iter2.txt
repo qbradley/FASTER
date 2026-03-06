@@ -1,0 +1,98 @@
+    Finished `bench` profile [optimized + debuginfo] target(s) in 0.05s
+     Running benches/ycsb.rs (target/x86_64-unknown-linux-gnu/release/deps/ycsb-9d8bb236b14bc2e2)
+Benchmarking ycsb/sequential_upsert/100K_ops
+Benchmarking ycsb/sequential_upsert/100K_ops: Analyzing
+ycsb/sequential_upsert/100K_ops
+                        time:   [28.913 ms 28.954 ms 29.117 ms]
+                        thrpt:  [3.4344 Melem/s 3.4538 Melem/s 3.4587 Melem/s]
+                 change:
+                        time:   [+7.1985% +9.3752% +11.626%] (p = 0.08 > 0.05)
+                        thrpt:  [-10.415% -8.5716% -6.7151%]
+                        No change in performance detected.
+
+Benchmarking ycsb/sequential_read/100K_ops
+Benchmarking ycsb/sequential_read/100K_ops: Analyzing
+ycsb/sequential_read/100K_ops
+                        time:   [21.674 ms 21.802 ms 22.314 ms]
+                        thrpt:  [4.4815 Melem/s 4.5868 Melem/s 4.6139 Melem/s]
+                 change:
+                        time:   [-15.219% -13.269% -11.286%] (p = 0.07 > 0.05)
+                        thrpt:  [+12.722% +15.298% +17.951%]
+                        No change in performance detected.
+
+Benchmarking ycsb/mixed_50_50/workload_a
+Benchmarking ycsb/mixed_50_50/workload_a: Analyzing
+ycsb/mixed_50_50/workload_a
+                        time:   [80.270 ms 80.421 ms 80.459 ms]
+                        thrpt:  [3.1072 Melem/s 3.1086 Melem/s 3.1145 Melem/s]
+                 change:
+                        time:   [+5.4257% +5.6434% +5.8615%] (p = 0.10 > 0.05)
+                        thrpt:  [-5.5369% -5.3419% -5.1465%]
+                        No change in performance detected.
+
+Benchmarking ycsb/read_heavy_95_5/workload_b
+Benchmarking ycsb/read_heavy_95_5/workload_b: Analyzing
+ycsb/read_heavy_95_5/workload_b
+                        time:   [73.374 ms 74.145 ms 77.227 ms]
+                        thrpt:  [3.2372 Melem/s 3.3718 Melem/s 3.4072 Melem/s]
+                 change:
+                        time:   [-4.0226% +0.3460% +4.8817%] (p = 0.83 > 0.05)
+                        thrpt:  [-4.6544% -0.3448% +4.1912%]
+                        No change in performance detected.
+
+Benchmarking ycsb/rmw/100K_ops
+Benchmarking ycsb/rmw/100K_ops: Analyzing
+ycsb/rmw/100K_ops       time:   [20.434 ms 20.540 ms 20.566 ms]
+                        thrpt:  [4.8624 Melem/s 4.8686 Melem/s 4.8938 Melem/s]
+                 change:
+                        time:   [-1.7585% -0.7993% +0.1726%] (p = 0.30 > 0.05)
+                        thrpt:  [-0.1723% +0.8057% +1.7900%]
+                        No change in performance detected.
+
+Benchmarking ycsb/multithread_upsert/threads/1
+Benchmarking ycsb/multithread_upsert/threads/1: Analyzing
+ycsb/multithread_upsert/threads/1
+                        time:   [28.522 ms 29.425 ms 29.651 ms]
+                        thrpt:  [3.3726 Melem/s 3.3985 Melem/s 3.5060 Melem/s]
+                 change:
+                        time:   [-9.3384% -5.2186% -0.8862%] (p = 0.10 > 0.05)
+                        thrpt:  [+0.8941% +5.5059% +10.300%]
+                        No change in performance detected.
+Benchmarking ycsb/multithread_upsert/threads/2
+Benchmarking ycsb/multithread_upsert/threads/2: Analyzing
+ycsb/multithread_upsert/threads/2
+                        time:   [40.349 ms 41.341 ms 41.588 ms]
+                        thrpt:  [4.8090 Melem/s 4.8379 Melem/s 4.9568 Melem/s]
+                 change:
+                        time:   [-6.7010% -5.0311% -3.3529%] (p = 0.05 > 0.05)
+                        thrpt:  [+3.4692% +5.2976% +7.1823%]
+                        No change in performance detected.
+Benchmarking ycsb/multithread_upsert/threads/4
+Benchmarking ycsb/multithread_upsert/threads/4: Analyzing
+ycsb/multithread_upsert/threads/4
+                        time:   [54.121 ms 54.504 ms 56.036 ms]
+                        thrpt:  [7.1383 Melem/s 7.3389 Melem/s 7.3909 Melem/s]
+                 change:
+                        time:   [-10.456% -8.4276% -6.3789%] (p = 0.05 > 0.05)
+                        thrpt:  [+6.8135% +9.2032% +11.677%]
+                        No change in performance detected.
+Benchmarking ycsb/multithread_upsert/threads/8
+Benchmarking ycsb/multithread_upsert/threads/8: Analyzing
+ycsb/multithread_upsert/threads/8
+                        time:   [97.166 ms 97.378 ms 97.430 ms]
+                        thrpt:  [8.2110 Melem/s 8.2154 Melem/s 8.2333 Melem/s]
+                 change:
+                        time:   [+4.9244% +5.1311% +5.3381%] (p = 0.10 > 0.05)
+                        thrpt:  [-5.0676% -4.8807% -4.6933%]
+                        No change in performance detected.
+
+Benchmarking ycsb/read_latency/point_read
+Benchmarking ycsb/read_latency/point_read: Analyzing
+ycsb/read_latency/point_read
+                        time:   [272.39 ns 272.72 ns 272.81 ns]
+                        thrpt:  [3.6656 Melem/s 3.6667 Melem/s 3.6712 Melem/s]
+                 change:
+                        time:   [-4.0567% -1.6226% +0.9343%] (p = 0.72 > 0.05)
+                        thrpt:  [-0.9257% +1.6493% +4.2283%]
+                        No change in performance detected.
+
