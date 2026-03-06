@@ -12,6 +12,28 @@
 
 ---
 
+## 2026-03-06T20:25: Callback→Future Bridge Implemented (Wave 4 T1)
+
+**What:** Created `faster-tokio/src/bridge.rs` — the foundational async bridge that converts FASTER's completion-callback model into standard Rust Futures.
+
+**Key Types:**
+- `PendingFuture<T>` / `CompletionSender<T>` — linked pair via `Arc<Mutex<SharedState<T>>>`
+- `MaybePending<T>` — enum for zero-alloc synchronous completions (`Ready(T)`) vs pending I/O (`Pending(PendingFuture<T>)`), implements `IntoFuture`
+- `MaybePendingFuture<T>` — the `IntoFuture` output type; `impl Unpin for MaybePendingFuture<T>` is sound because T is never structurally pinned
+
+**Design Decisions:**
+- **Runtime-agnostic:** Only `std::future::Future` and `std::task::Waker` — zero Tokio types in the bridge
+- **Single allocation:** One `Arc<Mutex<SharedState>>` per pending operation
+- **Cancel-safe:** Dropping the future before completion is a no-op for the sender
+- **Waker replacement:** Latest waker always wins (correct per Future contract)
+- **Abandoned I/O:** Dropping sender without completing leaves future permanently pending (expected)
+
+**Testing:** 9 unit tests + 4 doc-tests, including multi-threaded Tokio integration (100 concurrent futures completed from OS threads), waker replacement, and both drop-safety scenarios.
+
+**Dependencies:** `tokio` is dev-dependency only (for `#[tokio::test]`). The bridge itself compiles with zero external deps beyond `std`.
+
+---
+
 ## 2026-03-05T18:33: Thrawn Rust FASTER Architecture Finalized
 
 **What:** Thrawn completed 288 KB comprehensive Rust FASTER architecture specification (6101 lines, 14 sections). 3-part parallel document (Thrawn-A/B/C) due to massive context requirements.
