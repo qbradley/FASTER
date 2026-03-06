@@ -12,6 +12,49 @@
 
 ---
 
+## 2026-03-05T19:15: Comprehensive Unsafe Audit Completed
+
+**What:** Systematic security audit of all 90 unsafe sites in `rust/crates/faster-core/src/`. Categorized each into Eliminable (3%), Abstractable (24%), or Necessary (72%). Identified 44 missing SAFETY comments (49% gap).
+
+**Artifact Location:** `.squad/decisions/inbox/maul-unsafe-audit.md` (49KB detailed report)
+
+**Key Findings:**
+- **Total surface:** 71 unsafe blocks, 10 unsafe fns, 9 unsafe impls
+- **Highest-risk modules:** `allocator.rs` (28 sites, lock-free Treiber stack), `page.rs` (21 sites, raw frame manipulation), `record_ops.rs` (16 sites, pointer-based accessors)
+- **Critical gaps:** 49% of unsafe code lacks SAFETY justifications (violation of SF-7 best practices)
+- **ABA risk:** Allocator's 16-bit tag in Treiber stack could overflow under extreme churn; mitigated by epoch deferral but not runtime-enforced
+- **FFI callbacks:** Device completion callbacks assume context pointer validity with no runtime validation
+
+**Category Breakdown:**
+1. **Category A (Eliminable, 3 sites):** Checkpoint writer casts `HashBucket` to byte array — replace with `bytemuck::bytes_of`; allocator init dereferences raw pointer — refactor to safe accessor
+2. **Category B (Abstractable, 22 sites):** `PageFrame::as_mut_slice`/`::zero` could take `&mut self`; `RecordAccessor::new` could have safe factory; manual Send/Sync impls could be eliminated via Arc wrapper
+3. **Category C (Necessary, 65 sites):** FFI boundaries, custom allocators, lock-free CAS loops, pointer arithmetic for records — intrinsically require unsafe
+
+**Critical Recommendations (Phase 0 Blockers):**
+1. Add SAFETY comments to all 44 missing sites (Mando responsibility)
+2. Run Miri on allocator + epoch drain tests (Jyn responsibility)
+3. Fix 3 Category A eliminable sites (30 min effort)
+
+**Non-Blocking Improvements (Phase 1+):**
+- Refactor 22 Category B sites to reduce unsafe surface
+- Add debug assertions to FFI callbacks for null context checks
+- Document ABA tag overflow risk in allocator header
+- Consider phantom lifetime for `RecordAccessor` to tie to epoch guard
+
+**What This Means For You:**
+- **Mando:** No new unsafe code without SAFETY comments. Fix 3 Category A sites and add 44 missing comments before Phase 1 feature work.
+- **Jyn:** Run Miri stress tests on allocator before Mando depends on it. Focus on concurrent alloc/free churn (Treiber stack ABA scenarios).
+- **Cassian:** Phase 0 must include unsafe documentation sprint (1-2 days). Block Phase 1 until Miri passes and comments are complete.
+- **Chirrut:** Add debug assertions to device callbacks (null context checks). Review FFI boundary safety contracts.
+- **Kenobi:** Consider lifetime-parameterized record accessors for Phase 2 API stabilization (optional for Phase 1).
+- **Thrawn:** Audit validates your architecture's unsafe usage is appropriate but under-documented. 72% necessary aligns with FASTER's performance goals.
+
+**Risk Profile:** Overall verdict: unsafe usage is **appropriate but under-documented**. No memory safety bugs detected. Lock-free algorithms follow standard patterns. Main risk is ABA tag overflow if epoch integration breaks (currently mitigated but not compile-time enforced).
+
+**Next Steps:** Phase 0 cleanup sprint (SAFETY comments + Category A fixes + Miri validation) before any Phase 1 implementation work begins.
+
+---
+
 ## 2026-03-05T18:33: Thrawn Rust FASTER Architecture Finalized
 
 **What:** Thrawn completed 288 KB comprehensive Rust FASTER architecture specification (6101 lines, 14 sections). 3-part parallel document (Thrawn-A/B/C) due to massive context requirements.
