@@ -9,24 +9,34 @@ For detailed test categories, tooling, and time budgets see [TESTING.md](TESTING
 
 ## Quality Gate (must pass before commit)
 
-Run these four checks before pushing any change.
-CI enforces all of them — save yourself a round-trip.
+**Use the `checkin` script for every commit.** It runs all gates automatically
+and blocks the commit on any failure.
 
 ```bash
-# 1. Unit + integration tests (nextest for speed & output)
-cargo nextest run -p faster-core
+# Standard commit — runs fmt, clippy, doctests, and tests then commits
+rust/scripts/checkin -m "feat: add epoch framework"
 
-# 2. Doc examples — must compile AND pass
-cargo test --doc -p faster-core
-
-# 3. Clippy — zero warnings policy
-cargo clippy -p faster-core --all-targets -- -D warnings
-
-# 4. Formatting — must be clean
-cargo fmt -p faster-core -- --check
+# Fast iteration — fmt + clippy only (skips tests)
+rust/scripts/checkin --skip-tests -m "wip: refactor allocator"
 ```
 
+The script works from any directory in the repo. It auto-detects the repo root,
+stages all changes with `git add -A`, and appends the required `Co-authored-by`
+trailer if not already present.
+
+### What the script runs (in order, fail-fast)
+
+| # | Gate | Command |
+|---|------|---------|
+| 1 | Formatting | `cargo fmt -p faster-core -- --check` |
+| 2 | Clippy | `cargo clippy -p faster-core --all-targets -- -D warnings` |
+| 3 | Doctests | `cargo test --doc -p faster-core` |
+| 4 | Tests | `cargo nextest run -p faster-core` (falls back to `cargo test` if nextest not installed) |
+
 All four steps must succeed. A failure in any step blocks the commit.
+
+> **Manual runs are still fine for debugging**, but the `checkin` script is
+> the **mandatory** path for creating commits.
 
 > **Why `cargo test --doc` separately?**
 > `cargo nextest` does not run doctests. Without this explicit step, broken

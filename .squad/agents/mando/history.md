@@ -467,6 +467,7 @@ Created `rust/crates/faster-core/examples/cache_store.rs` — a Rust port of the
 
 ## Learnings
 
+- **Checkin script (`rust/scripts/checkin`):** Created a quality-gated commit wrapper that runs fmt→clippy→doctests→tests before allowing `git commit`. All agents must use this instead of raw `git commit`. Supports `--skip-tests` for fast iteration. Uses `set -euo pipefail` — beware that bash `(( i++ ))` when i=0 evaluates to falsy and trips `set -e`; use `i=$((i + 1))` instead.
 - `#[deny(unsafe_code)]` on a `mod` declaration in the parent propagates to the entire subtree — this is the most practical way to gate individual modules in a multi-file crate.
 - `#![forbid(unsafe_code)]` only works at the crate root (`lib.rs`/`main.rs`), not in arbitrary module files. For sub-modules, `#[deny(unsafe_code)]` on the `mod` item in the parent is the correct approach.
 - Cargo.toml `[lints.clippy]` applies to ALL targets (lib, tests, benchmarks, examples), while `#![forbid(...)]` in lib.rs only applies to the library. Both are needed for complete coverage.
