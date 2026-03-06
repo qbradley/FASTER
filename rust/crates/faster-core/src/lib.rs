@@ -14,6 +14,7 @@
 //! - [`hash`] — Hash index, bucket layout, overflow chains
 //! - [`record`] — Record format, inline variable-length key-value storage
 //! - [`address`] — Logical addressing: `LogicalAddress`, page/offset split
+//! - [`checkpoint`] — Checkpoint/recovery metadata types
 //! - [`status`] — Operation status codes (bitflag-based)
 //! - [`error`] — Error types for exceptional conditions
 //! - [`device`] — Storage device trait for hybrid log backends
@@ -33,6 +34,7 @@ pub(crate) mod sync;
 pub mod address;
 pub mod allocator;
 pub mod buffer_pool;
+pub mod checkpoint;
 pub mod device;
 pub mod epoch;
 pub mod error;
