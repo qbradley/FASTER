@@ -249,6 +249,7 @@ dependencies = [
  "crossbeam-utils",
  "loom",
  "proptest",
+ "tempfile",
  "tracing",
 ]
 
