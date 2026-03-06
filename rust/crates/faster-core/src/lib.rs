@@ -12,6 +12,7 @@
 //! - [`epoch`] — Epoch-based safe memory reclamation
 //! - [`allocator`] — Arena allocator, aligned buffers, overflow bucket pool
 //! - [`hash`] — Hash index, bucket layout, overflow chains
+//! - [`grow`] — Hash table online-resize (grow) data structures
 //! - [`record`] — Record format, inline variable-length key-value storage
 //! - [`address`] — Logical addressing: `LogicalAddress`, page/offset split
 //! - [`checkpoint`] — Checkpoint/recovery metadata types
@@ -38,6 +39,7 @@ pub mod checkpoint;
 pub mod device;
 pub mod epoch;
 pub mod error;
+pub mod grow;
 pub mod hash;
 pub use self::hash::bucket as hash_bucket;
 pub use self::hash::index as hash_index;
