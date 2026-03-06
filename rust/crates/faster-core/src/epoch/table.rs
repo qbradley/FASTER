@@ -252,6 +252,7 @@ impl EpochTable {
     /// assert!(fired.load(Ordering::Relaxed));
     /// ```
     pub fn bump_current_epoch<F: FnOnce() + Send + 'static>(&self, callback: F) {
+        trace_span!("epoch_bump");
         // SeqCst: total ordering required — see doc comment.
         let prior_epoch = self.current_epoch.fetch_add(1, Ordering::SeqCst);
         self.drain_list.push(prior_epoch, Box::new(callback));

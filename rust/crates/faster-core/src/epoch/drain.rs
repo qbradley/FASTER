@@ -114,6 +114,7 @@ impl DrainList {
     /// callback that calls `push()` will not deadlock — it simply pushes
     /// to the (now-empty or partially-repopulated) head.
     pub(crate) fn drain_up_to(&self, safe_epoch: u64) {
+        trace_span!("epoch_drain");
         let head = self.head.swap(ptr::null_mut(), Ordering::AcqRel);
 
         if head.is_null() {
