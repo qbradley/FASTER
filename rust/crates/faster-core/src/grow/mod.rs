@@ -5,12 +5,15 @@
 //! buckets in parallel, chunk by chunk, using a two-version scheme: the old
 //! table remains readable while the new (double-sized) table is populated.
 //!
-//! This module provides the foundational types for grow — **not** the state
-//! machine or the actual split logic. Those will be added in later items.
+//! This module provides the foundational types for grow as well as the
+//! phase-based [`GrowStateMachine`] that drives resize operations.
 //!
 //! # Key types
 //!
 //! - [`GrowState`] — per-grow metadata: version numbers, chunk progress.
+//! - [`GrowStateMachine`] — phase-based state machine driving grow lifecycle.
+//! - [`GrowPhase`] — the five phases of a grow operation.
+//! - [`GrowError`] — error type for invalid state transitions.
 //! - [`CHUNK_SIZE`] — number of buckets processed per split work unit.
 //! - [`bucket_index_for_version`] — computes the bucket a key maps to in
 //!   a table of a given size (used during split to decide left vs right).
@@ -20,10 +23,16 @@
 //! | Rust                        | C++ (`grow_state.h`)            | C# (`IndexResizeStateMachine.cs`) |
 //! |-----------------------------|---------------------------------|-----------------------------------|
 //! | `GrowState`                 | `GrowState<H>`                 | `IndexResizeInfo`                 |
+//! | `GrowStateMachine`          | `GrowStateMachine`             | `IndexResizeStateMachine`         |
+//! | `GrowPhase`                 | `Phase` enum values            | `Phase` enum                      |
+//! | `GrowError`                 | (status codes)                 | (exceptions)                      |
 //! | `CHUNK_SIZE`                | `kHashTableChunkSize`           | `Constants.kSizeofChunk`          |
 //! | `bucket_index_for_version`  | `key_hash_t::hash_table_index`  | `(hash & size_mask)`              |
 
 use core::sync::atomic::{AtomicU32, Ordering};
+
+pub mod state_machine;
+pub use state_machine::{GrowError, GrowPhase, GrowStateMachine};
 
 /// Number of buckets processed per split work-unit during grow.
 ///
