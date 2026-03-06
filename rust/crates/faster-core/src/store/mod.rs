@@ -14,12 +14,14 @@
 //! - `operations` — Internal CRUD operation implementations (read, upsert,
 //!   RMW, delete) tying the hash index, hybrid log, and session together.
 
+pub mod builder;
 mod functions;
 pub mod kv;
 pub(crate) mod operations;
 pub mod pending_io;
 mod session;
 
+pub use builder::FasterKvBuilder;
 pub use functions::{CounterFunctions, Functions, RmwInPlaceResult, SimpleFunctions};
 pub use kv::{FasterKv, FasterKvConfig};
 pub use pending_io::{CompletedIo, PendingIoContext, PendingIoError, PendingIoManager};

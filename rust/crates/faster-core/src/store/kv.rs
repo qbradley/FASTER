@@ -242,6 +242,27 @@ impl<F: Functions> Drop for FasterKv<F> {
 }
 
 impl<F: Functions> FasterKv<F> {
+    /// Create a [`FasterKvBuilder`](crate::store::builder::FasterKvBuilder)
+    /// for configuring a store with fluent method chaining and validation.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use faster_core::store::{FasterKv, SimpleFunctions};
+    /// use faster_core::NullDevice;
+    ///
+    /// let store: FasterKv<SimpleFunctions<u64, u64>> =
+    ///     FasterKv::builder()
+    ///         .hash_index_size_log2(16)
+    ///         .mutable_fraction(0.9)
+    ///         .build(SimpleFunctions::default(), NullDevice::new())
+    ///         .expect("valid config");
+    /// ```
+    #[must_use]
+    pub fn builder() -> crate::store::builder::FasterKvBuilder {
+        crate::store::builder::FasterKvBuilder::new()
+    }
+
     /// Create a new FasterKv store.
     ///
     /// # Arguments

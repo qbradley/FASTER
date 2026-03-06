@@ -56,5 +56,5 @@ pub use device::{
     Device, InMemoryDevice, IoCompletionCallback, IoRequestResult, IoStatus, NullDevice,
 };
 pub use metrics::Metrics;
-pub use store::{FasterKv, FasterKvConfig, FasterSession, Functions, SimpleFunctions};
+pub use store::{FasterKv, FasterKvBuilder, FasterKvConfig, FasterSession, Functions, SimpleFunctions};
 pub use sync_file_device::SyncFileDevice;
