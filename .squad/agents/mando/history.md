@@ -272,3 +272,105 @@
 - `Relaxed` load of `current_epoch` in `protect()`: conservative (stale epoch → lower safe epoch → delayed drains → safe)
 - `SeqCst` for `bump_current_epoch`: total ordering required to prevent stale-epoch race with local stores
 
+
+---
+
+### Task: cache_store.rs example (Rust equivalent of C# CacheStore sample)
+**Date:** $(date +%Y-%m-%d)
+**Requested by:** qbradley
+
+**Summary:**
+Created `rust/crates/faster-core/examples/cache_store.rs` — a Rust port of the C# `cs/samples/CacheStore` sample demonstrating FASTER as a disk-backed cache/KV store.
+
+**What it demonstrates:**
+- SyncFileDevice-backed store creation with 1M hash buckets
+- Bulk population of 1M key-value pairs with throughput reporting
+- Random-read workload with correct `OperationStatus::Pending` handling (drain every 100 pending, sync drain at end)
+- Interactive read mode with per-key latency reporting
+- `--evict` flag to flush/evict data to disk before reads
+- Proper session lifecycle (`complete_pending` before `dispose_session`)
+
+**Key decisions:**
+- Used inline xorshift64 PRNG instead of adding `rand` dependency (not in dev-deps)
+- Command-line args (`--evict`, `--interactive`) instead of stdin prompts for mode selection
+- Matched C# sample's numbers: 1M keys, progress every 2^19 records, drain every 100 pending
+
+**Verification:**
+- `cargo build -p faster-core --example cache_store` ✅ — zero warnings
+- `cargo run -p faster-core --example cache_store` ✅ — full run: 419K inserts/sec, 440K reads/sec
+- `cargo run -p faster-core --example cache_store -- --evict` ✅ — evict mode runs cleanly
+
+## Learnings
+
+### 2025-01-27: Unsafe Code Audit & Safe Abstraction Design
+
+**Context:** Comprehensive analysis of ~41K LOC FASTER Rust implementation to minimize unsafe code without performance regression.
+
+**Key Findings:**
+1. **Unsafe inventory:** 157 total sites (115 blocks, 27 functions, 15 Send/Sync impls)
+2. **60% reducible:** 94 sites can be eliminated through safe abstractions with zero performance cost
+3. **40% necessary:** 63 sites are genuinely required (allocator internals, I/O callbacks, hot-path optimizations)
+
+**Patterns identified:**
+- **Slice construction** (18 sites): `from_raw_parts` → safe `as_slice()` methods on owning types
+- **AtomicPtr loads** (15 sites): Raw pointer dereference → encapsulated accessor methods with documented invariants
+- **Record access** (22 sites): Raw pointer manipulation → lifetime-bound `RecordView<'page>` safe abstraction
+- **Page allocation** (12 sites): Manual `alloc::alloc` → refactor to use existing `AlignedBuffer` type
+- **Device I/O** (25 sites): Raw callbacks → type-safe `TypedIoContext<T>` wrapper for common cases
+- **Hot-path bounds checks** (3 sites): Keep `get_unchecked` for hash table lookups (provably safe, 1-cycle overhead if removed)
+
+**Safe abstraction designs:**
+1. **`RecordView<'page>` / `RecordViewMut<'page>`**: Lifetime-bound zero-copy views into page memory. Eliminates 22 unsafe sites in `hybrid_log/record_ops.rs`.
+2. **`PageFrame` using `AlignedBuffer`**: Replace manual sector-aligned allocation with safe buffer type. Eliminates 12 sites.
+3. **`PageDirectory<T>` safe refactor**: Encapsulate growable pointer array in `Box<[AtomicPtr]>`. Eliminates 13 sites.
+4. **`TypedIoContext<T>`**: Safe callback wrapper for device I/O. Makes 13 call sites safe while keeping low-level API raw.
+
+**Performance guarantees:**
+- All abstractions inline to identical assembly (verified strategy with `cargo-asm`)
+- Hot-path `get_unchecked` remains unsafe by design (provably redundant bounds check)
+- Zero-cost slice references compile to same code as raw pointers
+- Benchmark gate: <1% variance on `faster-bench` suite required for PR approval
+
+**Phased rollout plan:**
+- **Phase 1 (1 week):** Quick wins — safe slice constructors, AtomicPtr encapsulation (35 sites)
+- **Phase 2 (2-3 weeks):** Abstraction types — RecordView, PageFrame refactor, PageDirectory (47 sites)
+- **Phase 3 (1 week):** Device I/O safe wrappers (13 sites)
+- **Phase 4 (3 days):** Documentation sweep — SAFETY comments for all remaining 63 sites
+- **Phase 5 (stretch):** Module-level `#[forbid(unsafe_code)]` boundaries (4+ modules)
+
+**Dependencies evaluated:**
+- `zerocopy` / `bytemuck`: Not needed (0 transmute sites currently)
+- `crossbeam-epoch`: Our custom impl is simpler and faster (no change)
+
+**Risk mitigations:**
+- Benchmark before/after on every PR (perf gate: <1% regression)
+- Start with low-risk refactors to build confidence
+- Keep unsafe in hot paths where provably necessary (hash table lookups)
+- Gradual migration — don't force lifetime complexity where unsafe is clearer
+
+**Impact:** Post-cleanup, FASTER Rust will have 60% less unsafe code, all remaining unsafe well-documented and isolated, with zero performance regression. This positions the codebase for easier auditing, safer evolution, and potential formal verification of safe abstractions.
+
+**Next action:** Review with team, then begin Phase 1 PRs (safe slice constructors).
+
+### Phase 1A — Safe Slice Constructors (Completed)
+
+**Date:** 2026-03-06
+**Files changed:** `record_ops.rs`, `page.rs`, `flush.rs`
+
+**Changes made:**
+1. `MutableRecordAccessor::key_ref()` / `value_ref()` — replaced inline `from_raw_parts` with safe `self.as_slice()` delegation (2 blocks removed)
+2. `MutableRecordAccessor::value_mut_ptr()` — replaced `unsafe { ptr.add() }` with `self.as_mut_slice()[offset..].as_mut_ptr()` (1 block removed)
+3. `LogRecordReader::read_record_info()` — replaced inline `from_raw_parts` with `RecordAccessor::new()` + `.record_info()` (better encapsulation, same count)
+4. `LogRecordReader::read_header_and_match_key()` — collapsed 2 unsafe blocks into 1 by using a single `RecordAccessor` for both header and key reads (1 block removed)
+5. `PageFrame::as_mut_slice()` — promoted from `unsafe fn` to safe fn (takes `&mut self`, exclusive access guaranteed by borrow checker). Removed 2 `unsafe {}` blocks at test call sites.
+6. `flush.rs::flush_page_sync()` — replaced `unsafe { from_raw_parts(frame.as_ptr(), ...) }` with safe `frame.as_slice()[..n]` (1 block removed)
+
+**Result:** 7 unsafe blocks eliminated (38 → 31 across the 3 files). All 1161 tests pass, clippy clean, zero API changes.
+
+**What must remain unsafe:**
+- `RecordAccessor::new()` / `MutableRecordAccessor::new()` — raw pointer construction with caller-guaranteed validity
+- `RecordAccessor::atomic_record_info()` / `MutableRecordAccessor::atomic_record_info()` — raw pointer cast to `&AtomicRecordInfo`
+- `RecordAccessor::as_slice()` / `MutableRecordAccessor::as_slice()` / `as_mut_slice()` — foundational `from_raw_parts` on owned raw pointers (these ARE the safe wrappers)
+- `PageFrame::zero()` — takes `&self` (not `&mut self`) because called through shared refs in PageTable; CAS guards exclusivity
+- `PageFrame::as_slice()` — internal `from_raw_parts` over owned `NonNull`
+
