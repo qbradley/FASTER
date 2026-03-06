@@ -1,9 +1,15 @@
 //! Error types for exceptional conditions in FASTER.
 //!
-//! This module defines [`FasterError`] — the error enum for truly exceptional
-//! failures (I/O errors, corruption, invalid state). Normal operational
-//! outcomes (found, not found, pending) are represented by
+//! This module defines [`FasterError`] — the unified error enum for truly
+//! exceptional failures (I/O errors, corruption, invalid state). Normal
+//! operational outcomes (found, not found, pending) are represented by
 //! [`crate::status::OperationStatus`] codes — those are *not* errors.
+//!
+//! `FasterError` wraps the domain-specific error types
+//! ([`CheckpointError`](crate::checkpoint::CheckpointError),
+//! [`RecoveryError`](crate::recovery::RecoveryError),
+//! [`GrowError`](crate::grow::GrowError)) via [`From`] conversions so that
+//! callers at the crate boundary can use a single `Result<T, FasterError>`.
 //!
 //! The separation follows Rust idiom: `Result<T, FasterError>` carries
 //! exceptional failures that propagate with `?`, while
@@ -14,6 +20,61 @@
 //!
 //! The [`Result<T>`] type alias wraps `std::result::Result<T, FasterError>`
 //! for ergonomic use throughout the crate.
+//!
+//! # Error conversions
+//!
+//! | Source type | Target variant |
+//! |---|---|
+//! | [`std::io::Error`] | [`FasterError::Io`] |
+//! | [`CheckpointError`](crate::checkpoint::CheckpointError) | [`FasterError::CheckpointError`] |
+//! | [`RecoveryError`](crate::recovery::RecoveryError) | [`FasterError::RecoveryError`] |
+//! | [`GrowError`](crate::grow::GrowError) | [`FasterError::Grow`] |
+//!
+//! # Error handling audit
+//!
+//! The following `unwrap()` / `expect()` / `panic!()` / `unimplemented!()` calls
+//! exist in non-test code. Each is classified as **acceptable** (infallible
+//! invariant, lock poisoning, etc.) or **should-fix** (future work).
+//!
+//! ## Should-fix
+//!
+//! | Location | Kind | Note |
+//! |---|---|---|
+//! | `store/functions.rs:131` | `unimplemented!()` | Default `upsert_in_place_raw` — runtime panic if trait const not set |
+//! | `store/functions.rs:148` | `unimplemented!()` | Default `rmw_in_place_raw` — same issue |
+//!
+//! ## Acceptable — lock poisoning
+//!
+//! | Location | Kind | Note |
+//! |---|---|---|
+//! | `device.rs:312` | `expect` | `InMemoryDevice` RwLock poisoned — unrecoverable |
+//! | `device.rs:346` | `expect` | same |
+//! | `device.rs:369` | `expect` | same |
+//! | `device.rs:377` | `expect` | same |
+//! | `device.rs:385` | `expect` | same |
+//! | `device.rs:391` | `expect` | same |
+//! | `buffer_pool.rs:67` | `expect` | Buffer-pool Mutex poisoned — unrecoverable |
+//! | `buffer_pool.rs:73` | `expect` | same |
+//! | `buffer_pool.rs:76` | `expect` | same |
+//!
+//! ## Acceptable — layout / memory safety invariants
+//!
+//! | Location | Kind | Note |
+//! |---|---|---|
+//! | `allocator.rs:206` | `expect` | Page-size overflow — programmer error |
+//! | `allocator.rs:212` | `expect` | Invalid page layout — programmer error |
+//! | `allocator.rs:233` | `expect` | Invalid page layout — programmer error |
+//! | `buffer_pool.rs:63` | `expect` | Invalid layout for size/alignment |
+//!
+//! ## Acceptable — serialization / deserialization invariants
+//!
+//! | Location | Kind | Note |
+//! |---|---|---|
+//! | `record/traits.rs:127` | `expect` | Buffer too short for numeric Key deserialize |
+//! | `record/traits.rs:154` | `expect` | Buffer too short for numeric Value deserialize |
+//! | `record/traits.rs:190` | `expect` | Buffer too short for `Vec<u8>` length prefix |
+//! | `record/traits.rs:211` | `expect` | Buffer too short for String length prefix |
+//! | `record/traits.rs:230` | `expect` | Invalid UTF-8 in deserialized String |
 //!
 //! # Examples
 //!
@@ -35,6 +96,10 @@
 //! ```
 
 use core::fmt;
+
+use crate::checkpoint::CheckpointError;
+use crate::grow::GrowError;
+use crate::recovery::RecoveryError;
 
 /// The error type for exceptional FASTER failures.
 ///
@@ -124,6 +189,38 @@ pub enum FasterError {
     /// ```
     InvalidOperation(String),
 
+    /// A hash-table grow (resize) operation failed.
+    ///
+    /// Wraps a [`GrowError`](crate::grow::GrowError). Automatically
+    /// constructed via the `From<GrowError>` implementation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use faster_core::error::FasterError;
+    /// use faster_core::grow::GrowError;
+    ///
+    /// let err: FasterError = GrowError::AlreadyInProgress.into();
+    /// assert!(matches!(err, FasterError::Grow(_)));
+    /// ```
+    Grow(GrowError),
+
+    /// A configuration value is invalid.
+    ///
+    /// Returned when builder-level or runtime configuration validation
+    /// detects an invalid parameter (e.g., non-power-of-two page size,
+    /// zero-length hash table).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use faster_core::error::FasterError;
+    ///
+    /// let err = FasterError::Config("page_size must be a power of two".into());
+    /// assert!(err.to_string().contains("Configuration error"));
+    /// ```
+    Config(String),
+
     /// An internal invariant was violated.
     ///
     /// This indicates a bug in the FASTER implementation itself — not
@@ -162,6 +259,8 @@ impl fmt::Display for FasterError {
             Self::CheckpointError(msg) => write!(f, "Checkpoint failed: {msg}"),
             Self::RecoveryError(msg) => write!(f, "Recovery failed: {msg}"),
             Self::InvalidOperation(msg) => write!(f, "Invalid operation: {msg}"),
+            Self::Grow(err) => write!(f, "Grow failed: {err}"),
+            Self::Config(msg) => write!(f, "Configuration error: {msg}"),
             Self::InternalError(msg) => write!(f, "Internal error: {msg}"),
             Self::SessionError(msg) => write!(f, "Session error: {msg}"),
         }
@@ -172,6 +271,7 @@ impl std::error::Error for FasterError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(err) => Some(err),
+            Self::Grow(err) => Some(err),
             _ => None,
         }
     }
@@ -180,6 +280,24 @@ impl std::error::Error for FasterError {
 impl From<std::io::Error> for FasterError {
     fn from(err: std::io::Error) -> Self {
         Self::Io(err)
+    }
+}
+
+impl From<CheckpointError> for FasterError {
+    fn from(err: CheckpointError) -> Self {
+        Self::CheckpointError(err.to_string())
+    }
+}
+
+impl From<RecoveryError> for FasterError {
+    fn from(err: RecoveryError) -> Self {
+        Self::RecoveryError(err.to_string())
+    }
+}
+
+impl From<GrowError> for FasterError {
+    fn from(err: GrowError) -> Self {
+        Self::Grow(err)
     }
 }
 
@@ -241,6 +359,23 @@ mod tests {
     }
 
     #[test]
+    fn display_grow_error() {
+        let err = FasterError::Grow(GrowError::AlreadyInProgress);
+        let msg = err.to_string();
+        assert!(msg.starts_with("Grow failed:"), "got: {msg}");
+        assert!(msg.contains("already in progress"), "got: {msg}");
+    }
+
+    #[test]
+    fn display_config_error() {
+        let err = FasterError::Config("page size must be power of two".into());
+        assert_eq!(
+            err.to_string(),
+            "Configuration error: page size must be power of two"
+        );
+    }
+
+    #[test]
     fn display_internal_error() {
         let err = FasterError::InternalError("invariant violated".into());
         assert_eq!(err.to_string(), "Internal error: invariant violated");
@@ -252,7 +387,7 @@ mod tests {
         assert_eq!(err.to_string(), "Session error: session disposed");
     }
 
-    // ── std::error::Error ───────────────────────────────────────────
+    // ── std::error::Error — source chain ────────────────────────────
 
     #[test]
     fn error_source_is_io_for_io_variant() {
@@ -264,11 +399,23 @@ mod tests {
     }
 
     #[test]
-    fn error_source_is_none_for_non_io_variants() {
+    fn error_source_is_grow_for_grow_variant() {
+        let err = FasterError::Grow(GrowError::AlreadyInProgress);
+        let source = std::error::Error::source(&err);
+        assert!(source.is_some(), "Grow variant should expose source");
+        assert!(
+            source.unwrap().to_string().contains("already in progress"),
+            "source should be the inner GrowError"
+        );
+    }
+
+    #[test]
+    fn error_source_is_none_for_string_variants() {
         let variants: Vec<FasterError> = vec![
             FasterError::CheckpointError("x".into()),
             FasterError::RecoveryError("x".into()),
             FasterError::InvalidOperation("x".into()),
+            FasterError::Config("x".into()),
             FasterError::InternalError("x".into()),
             FasterError::SessionError("x".into()),
         ];
@@ -290,6 +437,72 @@ mod tests {
         assert!(err.to_string().contains("no such file"));
     }
 
+    // ── From<CheckpointError> ───────────────────────────────────────
+
+    #[test]
+    fn from_checkpoint_error_already_in_progress() {
+        let ckpt = CheckpointError::AlreadyInProgress;
+        let err: FasterError = ckpt.into();
+        assert!(matches!(err, FasterError::CheckpointError(_)));
+        assert!(
+            err.to_string().contains("already in progress"),
+            "got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn from_checkpoint_error_io() {
+        let io = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "pipe broken");
+        let ckpt = CheckpointError::IoError(io);
+        let err: FasterError = ckpt.into();
+        assert!(matches!(err, FasterError::CheckpointError(_)));
+        assert!(err.to_string().contains("pipe broken"), "got: {}", err);
+    }
+
+    // ── From<RecoveryError> ─────────────────────────────────────────
+
+    #[test]
+    fn from_recovery_error_no_checkpoints() {
+        let rec = RecoveryError::NoCheckpointsFound;
+        let err: FasterError = rec.into();
+        assert!(matches!(err, FasterError::RecoveryError(_)));
+        assert!(
+            err.to_string().contains("no completed checkpoints"),
+            "got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn from_recovery_error_corrupt_metadata() {
+        let rec = RecoveryError::CorruptMetadata("bad CRC".into());
+        let err: FasterError = rec.into();
+        assert!(matches!(err, FasterError::RecoveryError(_)));
+        assert!(err.to_string().contains("bad CRC"), "got: {}", err);
+    }
+
+    // ── From<GrowError> ─────────────────────────────────────────────
+
+    #[test]
+    fn from_grow_error_already_in_progress() {
+        let grow = GrowError::AlreadyInProgress;
+        let err: FasterError = grow.into();
+        assert!(matches!(err, FasterError::Grow(_)));
+        assert!(
+            err.to_string().contains("already in progress"),
+            "got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn from_grow_error_invalid_size() {
+        let grow = GrowError::InvalidSize("must be power of two".into());
+        let err: FasterError = grow.into();
+        assert!(matches!(err, FasterError::Grow(GrowError::InvalidSize(_))));
+    }
+
     // ── ? operator propagation ──────────────────────────────────────
 
     #[test]
@@ -303,6 +516,20 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, FasterError::Io(_)));
+    }
+
+    #[test]
+    fn question_mark_propagation_from_grow() {
+        fn try_grow() -> Result<()> {
+            let grow_err: std::result::Result<(), GrowError> =
+                Err(GrowError::AlreadyInProgress);
+            grow_err?;
+            Ok(())
+        }
+
+        let result = try_grow();
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), FasterError::Grow(_)));
     }
 
     // ── Result type alias ───────────────────────────────────────────
@@ -339,5 +566,13 @@ mod tests {
         let dbg = format!("{err:?}");
         assert!(dbg.contains("InternalError"));
         assert!(dbg.contains("oops"));
+    }
+
+    #[test]
+    fn error_debug_grow_variant() {
+        let err = FasterError::Grow(GrowError::AlreadyInProgress);
+        let dbg = format!("{err:?}");
+        assert!(dbg.contains("Grow"));
+        assert!(dbg.contains("AlreadyInProgress"));
     }
 }
