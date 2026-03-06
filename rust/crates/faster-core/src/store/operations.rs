@@ -269,7 +269,7 @@ pub(crate) fn internal_upsert<F: Functions>(
         let mut output = F::Output::default();
         functions.upsert(key, &mut value, input, None, &mut output);
 
-        let (new_addr, accessor) = match allocate_at_tail(ctx.allocator, key, &value) {
+        let (new_addr, mut accessor) = match allocate_at_tail(ctx.allocator, key, &value) {
             Some(pair) => pair,
             None => {
                 // Abort: CAS the tentative entry back to EMPTY.
@@ -336,7 +336,7 @@ pub(crate) fn internal_upsert<F: Functions>(
                         let record_size = layout.total_size() as u32;
                         // SAFETY: record is in the mutable region and we hold
                         // epoch protection, so the page frame won't be evicted.
-                        let accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
+                        let mut accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
 
                         if F::SUPPORTS_RAW_IN_PLACE {
                             let value_ptr = accessor.value_mut_ptr(&layout);
@@ -441,7 +441,7 @@ fn upsert_copy_to_tail<F: Functions>(
     let mut output = F::Output::default();
     functions.upsert(key, &mut new_val, input, None, &mut output);
 
-    let (new_addr, accessor) = match allocate_at_tail(ctx.allocator, key, &new_val) {
+    let (new_addr, mut accessor) = match allocate_at_tail(ctx.allocator, key, &new_val) {
         Some(pair) => pair,
         None => return OperationStatus::Aborted,
     };
@@ -501,7 +501,7 @@ pub(crate) fn internal_rmw<F: Functions>(
         let mut value = F::Value::default();
         functions.rmw_initial(key, input, &mut value, output);
 
-        let (new_addr, accessor) = match allocate_at_tail(ctx.allocator, key, &value) {
+        let (new_addr, mut accessor) = match allocate_at_tail(ctx.allocator, key, &value) {
             Some(pair) => pair,
             None => {
                 let _ = ctx
@@ -564,7 +564,7 @@ pub(crate) fn internal_rmw<F: Functions>(
                     );
                     let record_size = layout.total_size() as u32;
                     // SAFETY: record is in mutable region, epoch guard held.
-                    let accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
+                    let mut accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
 
                     if F::SUPPORTS_RAW_IN_PLACE {
                         let value_ptr = accessor.value_mut_ptr(&layout);
@@ -714,7 +714,7 @@ fn rmw_copy_to_tail<F: Functions>(
     let mut new_value = old_value.clone();
     functions.rmw_copy_update(key, input, old_value, &mut new_value, output);
 
-    let (new_addr, accessor) = match allocate_at_tail(ctx.allocator, key, &new_value) {
+    let (new_addr, mut accessor) = match allocate_at_tail(ctx.allocator, key, &new_value) {
         Some(pair) => pair,
         None => return OperationStatus::Aborted,
     };
@@ -749,7 +749,7 @@ fn rmw_create_at_tail<F: Functions>(
     let mut value = F::Value::default();
     functions.rmw_initial(key, input, &mut value, output);
 
-    let (new_addr, accessor) = match allocate_at_tail(ctx.allocator, key, &value) {
+    let (new_addr, mut accessor) = match allocate_at_tail(ctx.allocator, key, &value) {
         Some(pair) => pair,
         None => return OperationStatus::Aborted,
     };
@@ -814,7 +814,7 @@ pub(crate) fn internal_delete<F: Functions>(
 
                     let record_size = layout.total_size() as u32;
                     // SAFETY: record is in mutable region, epoch guard held.
-                    let accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
+                    let mut accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
 
                     // Invoke user callback for cleanup.
                     let mut value: F::Value = accessor.value(&layout);
@@ -842,7 +842,7 @@ pub(crate) fn internal_delete<F: Functions>(
                     let dummy_value: F::Value = reader
                         .read_value(_found_addr, &layout)
                         .expect("readable in-memory record");
-                    let (new_addr, accessor) =
+                    let (new_addr, mut accessor) =
                         match allocate_at_tail(ctx.allocator, key, &dummy_value) {
                             Some(pair) => pair,
                             None => return OperationStatus::Aborted,
