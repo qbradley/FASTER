@@ -7,7 +7,13 @@
 //! validate that the required on-disk artefacts are present, and produce a
 //! [`RecoveryPlan`] describing the ordered steps needed to restore state.
 //!
+//! The [`index_recovery`] submodule provides [`IndexRecoveryEngine`] for
+//! restoring the hash index from a binary checkpoint file.
+//!
 //! [`CheckpointMetadataStore`]: crate::checkpoint::CheckpointMetadataStore
+//! [`IndexRecoveryEngine`]: index_recovery::IndexRecoveryEngine
+
+pub mod index_recovery;
 
 use std::fmt;
 use std::path::PathBuf;
