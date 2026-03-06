@@ -33,7 +33,7 @@
 //! support (where the record size is not known at compile time) is a
 //! future optimisation.
 
-use crate::address::LogicalAddress;
+use crate::address::{LogicalAddress, OFFSET_BITS};
 use crate::hash::Hashable;
 use crate::hash::bucket::HashBucketEntry;
 use crate::hash::index::HashIndex;
@@ -68,10 +68,31 @@ pub(crate) struct InternalContext<'a> {
 /// approach: `std::mem::size_of::<V>()` for the value size.
 ///
 /// For fixed-size types (`u64`, `i64`, etc.) this matches `Value::serialized_size`.
-/// Variable-length types will need a different path in the future.
+///
+/// **Important:** For variable-length types (e.g. `Vec<u8>`), only
+/// `key_offset()` and `value_offset()` are reliable — the `total_size()`
+/// will be incorrect. Use [`RecordLayout::for_kv`] with the actual value
+/// instance when computing allocation sizes or verifying write bounds.
 #[inline]
 fn layout_for_fixed<K: Key, V: Value>(key: &K) -> RecordLayout {
     RecordLayout::compute(key.serialized_size(), std::mem::size_of::<V>())
+}
+
+/// Compute a safe record_size for reading a record at the given address.
+///
+/// Records never span page boundaries, so the remaining space within the
+/// current page is a safe upper bound. This is necessary for variable-length
+/// records where [`layout_for_fixed`] may underestimate the value size.
+///
+/// Falls back to `min_size` if the computed page remainder is somehow
+/// smaller (e.g., the address is very close to the page end, but records
+/// near the end would have been sized by the allocator to fit).
+#[inline]
+fn safe_read_record_size(addr: LogicalAddress, min_size: u32) -> u32 {
+    let page_size = 1u32 << OFFSET_BITS;
+    let offset = addr.offset().0;
+    let remaining = page_size.saturating_sub(offset);
+    remaining.max(min_size)
 }
 
 /// Walk the version chain starting from `start_addr` looking for the
@@ -207,8 +228,10 @@ pub(crate) fn internal_read<F: Functions>(
                     }
 
                     // Read the value and invoke the user callback.
+                    let safe_size = safe_read_record_size(_found_addr, layout.total_size() as u32);
                     let value: F::Value = reader
-                        .read_value(_found_addr, &layout)
+                        .get_record(_found_addr, safe_size)
+                        .map(|acc| acc.value::<F::Value>(&layout))
                         .expect("value must be readable for in-memory record");
                     functions.read(key, &value, input, output);
                     OperationStatus::Ok
@@ -282,7 +305,8 @@ pub(crate) fn internal_upsert<F: Functions>(
 
         // Write the full record.
         let ri = RecordInfo::new(LogicalAddress::ZERO, 0, false, false, false);
-        accessor.write_full_record(&ri, key, &value, &layout);
+        let write_layout = RecordLayout::for_kv(key, &value);
+        accessor.write_full_record(&ri, key, &value, &write_layout);
 
         // Phase 2: Commit — CAS the tentative entry to a committed one
         // pointing at the new record address.
@@ -333,7 +357,8 @@ pub(crate) fn internal_upsert<F: Functions>(
                             ctx.allocator.is_in_memory(found_addr),
                             "SF-15: address evicted between classify and access"
                         );
-                        let record_size = layout.total_size() as u32;
+                        let record_size =
+                            safe_read_record_size(found_addr, layout.total_size() as u32);
                         // SAFETY: record is in the mutable region and we hold
                         // epoch protection, so the page frame won't be evicted.
                         let mut accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
@@ -364,7 +389,22 @@ pub(crate) fn internal_upsert<F: Functions>(
                                 Some(&old_value),
                                 &mut output,
                             );
-                            accessor.write_value(&new_val, &layout);
+                            // For variable-length values, check if the new
+                            // value fits in the existing record's allocation.
+                            if new_val.serialized_size() > old_value.serialized_size() {
+                                return upsert_copy_to_tail(
+                                    ctx,
+                                    functions,
+                                    key,
+                                    input,
+                                    &layout,
+                                    result.entry,
+                                    result.slot,
+                                    found_addr,
+                                );
+                            }
+                            let write_layout = RecordLayout::for_kv(key, &new_val);
+                            accessor.write_value(&new_val, &write_layout);
                         }
 
                         OperationStatus::InPlaceUpdated
@@ -430,7 +470,7 @@ fn upsert_copy_to_tail<F: Functions>(
     functions: &F,
     key: &F::Key,
     input: &F::Input,
-    layout: &RecordLayout,
+    _layout: &RecordLayout,
     old_entry: HashBucketEntry,
     slot: &crate::hash::bucket::AtomicHashBucketEntry,
     previous_addr: LogicalAddress,
@@ -447,7 +487,8 @@ fn upsert_copy_to_tail<F: Functions>(
 
     // Write the record — link back to the previous address for chain.
     let ri = RecordInfo::new(previous_addr, 0, false, false, false);
-    accessor.write_full_record(&ri, key, &new_val, layout);
+    let write_layout = RecordLayout::for_kv(key, &new_val);
+    accessor.write_full_record(&ri, key, &new_val, &write_layout);
 
     // CAS the hash entry to point to the new record.
     let committed = HashBucketEntry::new(old_entry.tag(), new_addr, false);
@@ -511,7 +552,8 @@ pub(crate) fn internal_rmw<F: Functions>(
         };
 
         let ri = RecordInfo::new(LogicalAddress::ZERO, 0, false, false, false);
-        accessor.write_full_record(&ri, key, &value, &layout);
+        let write_layout = RecordLayout::for_kv(key, &value);
+        accessor.write_full_record(&ri, key, &value, &write_layout);
 
         let committed = HashBucketEntry::new(result.entry.tag(), new_addr, false);
         if !ctx.hash_index.update(result.slot, result.entry, committed) {
@@ -561,7 +603,7 @@ pub(crate) fn internal_rmw<F: Functions>(
                         ctx.allocator.is_in_memory(found_addr),
                         "SF-15: address evicted between classify and access"
                     );
-                    let record_size = layout.total_size() as u32;
+                    let record_size = safe_read_record_size(found_addr, layout.total_size() as u32);
                     // SAFETY: record is in mutable region, epoch guard held.
                     let mut accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
 
@@ -595,7 +637,8 @@ pub(crate) fn internal_rmw<F: Functions>(
                         let rmw_result = functions.rmw_in_place(key, input, &mut value, output);
                         match rmw_result {
                             RmwInPlaceResult::InPlaceOk => {
-                                accessor.write_value(&value, &layout);
+                                let write_layout = RecordLayout::for_kv(key, &value);
+                                accessor.write_value(&value, &write_layout);
                                 OperationStatus::InPlaceUpdated
                             }
                             RmwInPlaceResult::NeedsNewRecord => rmw_copy_to_tail(
@@ -647,8 +690,10 @@ pub(crate) fn internal_rmw<F: Functions>(
                         );
                     }
 
+                    let safe_size = safe_read_record_size(found_addr, layout.total_size() as u32);
                     let old_value: F::Value = reader
-                        .read_value(found_addr, &layout)
+                        .get_record(found_addr, safe_size)
+                        .map(|acc| acc.value::<F::Value>(&layout))
                         .expect("readable in-memory record");
 
                     if !functions.rmw_need_copy_update(key, input, &old_value) {
@@ -705,7 +750,7 @@ fn rmw_copy_to_tail<F: Functions>(
     input: &F::Input,
     old_value: &F::Value,
     output: &mut F::Output,
-    layout: &RecordLayout,
+    _layout: &RecordLayout,
     old_entry: HashBucketEntry,
     slot: &crate::hash::bucket::AtomicHashBucketEntry,
     previous_addr: LogicalAddress,
@@ -719,7 +764,8 @@ fn rmw_copy_to_tail<F: Functions>(
     };
 
     let ri = RecordInfo::new(previous_addr, 0, false, false, false);
-    accessor.write_full_record(&ri, key, &new_value, layout);
+    let write_layout = RecordLayout::for_kv(key, &new_value);
+    accessor.write_full_record(&ri, key, &new_value, &write_layout);
 
     let committed = HashBucketEntry::new(old_entry.tag(), new_addr, false);
     if ctx.hash_index.update(slot, old_entry, committed) {
@@ -736,7 +782,7 @@ fn rmw_create_at_tail<F: Functions>(
     key: &F::Key,
     input: &F::Input,
     output: &mut F::Output,
-    layout: &RecordLayout,
+    _layout: &RecordLayout,
     old_entry: HashBucketEntry,
     slot: &crate::hash::bucket::AtomicHashBucketEntry,
     previous_addr: LogicalAddress,
@@ -754,7 +800,8 @@ fn rmw_create_at_tail<F: Functions>(
     };
 
     let ri = RecordInfo::new(previous_addr, 0, false, false, false);
-    accessor.write_full_record(&ri, key, &value, layout);
+    let write_layout = RecordLayout::for_kv(key, &value);
+    accessor.write_full_record(&ri, key, &value, &write_layout);
 
     let committed = HashBucketEntry::new(old_entry.tag(), new_addr, false);
     if ctx.hash_index.update(slot, old_entry, committed) {
@@ -811,7 +858,7 @@ pub(crate) fn internal_delete<F: Functions>(
                         None => return OperationStatus::Aborted,
                     };
 
-                    let record_size = layout.total_size() as u32;
+                    let record_size = safe_read_record_size(found_addr, layout.total_size() as u32);
                     // SAFETY: record is in mutable region, epoch guard held.
                     let mut accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
 
@@ -838,8 +885,10 @@ pub(crate) fn internal_delete<F: Functions>(
                     }
 
                     // Allocate a tombstone record at tail.
+                    let safe_size = safe_read_record_size(_found_addr, layout.total_size() as u32);
                     let dummy_value: F::Value = reader
-                        .read_value(_found_addr, &layout)
+                        .get_record(_found_addr, safe_size)
+                        .map(|acc| acc.value::<F::Value>(&layout))
                         .expect("readable in-memory record");
                     let (new_addr, mut accessor) =
                         match allocate_at_tail(ctx.allocator, key, &dummy_value) {
@@ -848,7 +897,8 @@ pub(crate) fn internal_delete<F: Functions>(
                         };
 
                     let tombstone_ri = RecordInfo::new(addr, 0, false, true, false);
-                    accessor.write_full_record(&tombstone_ri, key, &dummy_value, &layout);
+                    let write_layout = RecordLayout::for_kv(key, &dummy_value);
+                    accessor.write_full_record(&tombstone_ri, key, &dummy_value, &write_layout);
 
                     // CAS the hash entry to point to the tombstone.
                     let committed = HashBucketEntry::new(entry.tag(), new_addr, false);

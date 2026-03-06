@@ -60,8 +60,17 @@ use crate::session::SessionCell;
 /// The concrete store type used by the FFI layer.
 type FfiStore = FasterKv<ByteSliceFunctions>;
 
-/// Global handle table shared by all FFI functions.
-fn global_handles() -> &'static HandleTable {
+/// Global handle table for **store** handles.
+///
+/// Separate from the session table to avoid nested `RwLock` acquisitions
+/// (which can deadlock with writer-preferring pthread rwlocks on Linux).
+fn store_handles() -> &'static HandleTable {
+    static HANDLES: OnceLock<HandleTable> = OnceLock::new();
+    HANDLES.get_or_init(HandleTable::new)
+}
+
+/// Global handle table for **session** handles.
+fn session_handles() -> &'static HandleTable {
     static HANDLES: OnceLock<HandleTable> = OnceLock::new();
     HANDLES.get_or_init(HandleTable::new)
 }
@@ -100,7 +109,7 @@ pub extern "C" fn faster_open() -> FasterHandle {
         ByteSliceFunctions,
         NullDevice::new(),
     );
-    global_handles().insert(store)
+    store_handles().insert(store)
 }
 
 /// Destroy a FASTER store and release all resources.
@@ -114,7 +123,7 @@ pub extern "C" fn faster_open() -> FasterHandle {
 /// session handle after its store has been closed is undefined behavior.
 #[unsafe(no_mangle)]
 pub extern "C" fn faster_close(store: FasterHandle) -> FasterStatus {
-    match global_handles().remove::<FfiStore>(store) {
+    match store_handles().remove::<FfiStore>(store) {
         Some(_) => FasterStatus::Ok,
         None => FasterStatus::InvalidHandle,
     }
@@ -133,10 +142,10 @@ pub extern "C" fn faster_close(store: FasterHandle) -> FasterStatus {
 /// Passing it to another thread is undefined behavior.
 #[unsafe(no_mangle)]
 pub extern "C" fn faster_session_start(store: FasterHandle) -> FasterHandle {
-    let result = global_handles().with::<FfiStore, _>(store, |kv| {
+    let result = store_handles().with::<FfiStore, _>(store, |kv| {
         let session = kv.new_session();
         let cell = SessionCell(UnsafeCell::new(session));
-        global_handles().insert(cell)
+        session_handles().insert(cell)
     });
     result.unwrap_or(INVALID_HANDLE)
 }
@@ -156,14 +165,14 @@ pub extern "C" fn faster_session_end(
     session_handle: FasterHandle,
 ) -> FasterStatus {
     // Remove the session from the handle table first.
-    let cell = match global_handles().remove::<SessionCell>(session_handle) {
+    let cell = match session_handles().remove::<SessionCell>(session_handle) {
         Some(c) => c,
         None => return FasterStatus::InvalidHandle,
     };
 
     // Dispose via the store (releases epoch thread resources).
     let session = cell.0.into_inner();
-    let disposed = global_handles().with::<FfiStore, _>(store, |kv| {
+    let disposed = store_handles().with::<FfiStore, _>(store, |kv| {
         kv.dispose_session(session);
     });
     match disposed {
@@ -186,9 +195,9 @@ fn with_store_session<R>(
     session_handle: FasterHandle,
     f: impl FnOnce(&FfiStore, &mut crate::session::FfiSession) -> R,
 ) -> Result<R, FasterStatus> {
-    global_handles()
+    store_handles()
         .with::<FfiStore, _>(store, |kv| {
-            global_handles()
+            session_handles()
                 .with::<SessionCell, _>(session_handle, |cell| {
                     // SAFETY: FFI contract requires single-threaded access per session.
                     // No other call can be using this session concurrently.
@@ -240,11 +249,13 @@ pub unsafe extern "C" fn faster_upsert(
 
     // SAFETY: Caller guarantees pointer validity per doc contract.
     let key = if key_len > 0 {
+        // SAFETY: key_ptr is valid for key_len bytes per FFI caller contract.
         unsafe { std::slice::from_raw_parts(key_ptr, key_len as usize) }.to_vec()
     } else {
         Vec::new()
     };
     let val = if val_len > 0 {
+        // SAFETY: Caller guarantees pointer validity per doc contract.
         unsafe { std::slice::from_raw_parts(val_ptr, val_len as usize) }.to_vec()
     } else {
         Vec::new()
@@ -304,6 +315,7 @@ pub unsafe extern "C" fn faster_read(
 
     // SAFETY: Caller guarantees pointer validity per doc contract.
     let key = if key_len > 0 {
+        // SAFETY: key_ptr is valid for key_len bytes per FFI caller contract.
         unsafe { std::slice::from_raw_parts(key_ptr, key_len as usize) }.to_vec()
     } else {
         Vec::new()
@@ -394,6 +406,7 @@ pub unsafe extern "C" fn faster_delete(
 
     // SAFETY: Caller guarantees pointer validity per doc contract.
     let key = if key_len > 0 {
+        // SAFETY: key_ptr is valid for key_len bytes per FFI caller contract.
         unsafe { std::slice::from_raw_parts(key_ptr, key_len as usize) }.to_vec()
     } else {
         Vec::new()
@@ -444,11 +457,13 @@ pub unsafe extern "C" fn faster_rmw(
 
     // SAFETY: Caller guarantees pointer validity per doc contract.
     let key = if key_len > 0 {
+        // SAFETY: key_ptr is valid for key_len bytes per FFI caller contract.
         unsafe { std::slice::from_raw_parts(key_ptr, key_len as usize) }.to_vec()
     } else {
         Vec::new()
     };
     let input = if input_len > 0 {
+        // SAFETY: Caller guarantees pointer validity per doc contract.
         unsafe { std::slice::from_raw_parts(input_ptr, input_len as usize) }.to_vec()
     } else {
         Vec::new()
@@ -549,10 +564,7 @@ mod tests {
             faster_session_end(store, INVALID_HANDLE),
             FasterStatus::InvalidHandle
         );
-        assert_eq!(
-            faster_session_end(store, 9999),
-            FasterStatus::InvalidHandle
-        );
+        assert_eq!(faster_session_end(store, 9999), FasterStatus::InvalidHandle);
         faster_close(store);
     }
 
@@ -561,10 +573,7 @@ mod tests {
         let store = faster_open();
         let sess = faster_session_start(store);
         assert_eq!(faster_session_end(store, sess), FasterStatus::Ok);
-        assert_eq!(
-            faster_session_end(store, sess),
-            FasterStatus::InvalidHandle
-        );
+        assert_eq!(faster_session_end(store, sess), FasterStatus::InvalidHandle);
         faster_close(store);
     }
 
@@ -577,6 +586,7 @@ mod tests {
 
         let key = b"key1";
         let val = b"value1";
+        // SAFETY: Test passes valid stack-allocated pointers with matching lengths.
         let status = unsafe {
             faster_upsert(
                 store,
@@ -598,6 +608,7 @@ mod tests {
         let store = faster_open();
         let sess = faster_session_start(store);
 
+        // SAFETY: Testing null-key error path; function validates before dereferencing.
         let status = unsafe {
             faster_upsert(
                 store,
@@ -619,6 +630,7 @@ mod tests {
         let store = faster_open();
         let sess = faster_session_start(store);
 
+        // SAFETY: Testing null-value error path; function validates before dereferencing.
         let status = unsafe {
             faster_upsert(
                 store,
@@ -640,8 +652,8 @@ mod tests {
         let store = faster_open();
         let sess = faster_session_start(store);
 
-        let status =
-            unsafe { faster_upsert(9999, sess, b"k".as_ptr(), 1, b"v".as_ptr(), 1) };
+        // SAFETY: Testing invalid-store error path; function validates handle before use.
+        let status = unsafe { faster_upsert(9999, sess, b"k".as_ptr(), 1, b"v".as_ptr(), 1) };
         assert_eq!(status, FasterStatus::InvalidHandle);
 
         faster_session_end(store, sess);
@@ -652,8 +664,8 @@ mod tests {
     fn upsert_invalid_session() {
         let store = faster_open();
 
-        let status =
-            unsafe { faster_upsert(store, 9999, b"k".as_ptr(), 1, b"v".as_ptr(), 1) };
+        // SAFETY: Testing invalid-session error path; function validates handle before use.
+        let status = unsafe { faster_upsert(store, 9999, b"k".as_ptr(), 1, b"v".as_ptr(), 1) };
         assert_eq!(status, FasterStatus::InvalidHandle);
 
         faster_close(store);
@@ -665,9 +677,9 @@ mod tests {
         let sess = faster_session_start(store);
 
         // Zero-length key and value with null pointers should work.
-        let status = unsafe {
-            faster_upsert(store, sess, std::ptr::null(), 0, std::ptr::null(), 0)
-        };
+        // SAFETY: Zero-length slices with null pointers are valid; function skips dereferencing.
+        let status =
+            unsafe { faster_upsert(store, sess, std::ptr::null(), 0, std::ptr::null(), 0) };
         assert!(status.is_success(), "empty upsert returned {status:?}");
 
         faster_session_end(store, sess);
@@ -683,6 +695,7 @@ mod tests {
 
         let key = b"hello";
         let val = b"world";
+        // SAFETY: Test passes valid stack-allocated pointers with matching lengths.
         unsafe {
             faster_upsert(
                 store,
@@ -696,6 +709,7 @@ mod tests {
 
         let mut buf = [0u8; 64];
         let mut out_len: u32 = 0;
+        // SAFETY: All pointers are valid stack references; buf is large enough for val_buf_len.
         let status = unsafe {
             faster_read(
                 store,
@@ -723,6 +737,7 @@ mod tests {
         let key = b"nonexistent";
         let mut buf = [0u8; 64];
         let mut out_len: u32 = 0;
+        // SAFETY: All pointers are valid stack references; buf is large enough for val_buf_len.
         let status = unsafe {
             faster_read(
                 store,
@@ -748,6 +763,7 @@ mod tests {
 
         let key = b"key";
         let val = b"a long value that won't fit";
+        // SAFETY: Test passes valid stack-allocated pointers with matching lengths.
         unsafe {
             faster_upsert(
                 store,
@@ -762,6 +778,7 @@ mod tests {
         // Provide a buffer that's too small.
         let mut buf = [0u8; 4];
         let mut out_len: u32 = 0;
+        // SAFETY: All pointers are valid stack references; buf is intentionally small to test error path.
         let status = unsafe {
             faster_read(
                 store,
@@ -780,6 +797,7 @@ mod tests {
         // Now retry with a sufficiently large buffer.
         let mut big_buf = vec![0u8; out_len as usize];
         let mut out_len2: u32 = 0;
+        // SAFETY: big_buf is heap-allocated with sufficient capacity; all pointers valid.
         let status2 = unsafe {
             faster_read(
                 store,
@@ -805,6 +823,7 @@ mod tests {
         let sess = faster_session_start(store);
 
         let mut buf = [0u8; 64];
+        // SAFETY: Testing null val_out_len error path; function validates before dereferencing.
         let status = unsafe {
             faster_read(
                 store,
@@ -831,6 +850,7 @@ mod tests {
         let mut out_len: u32 = 0;
 
         // Invalid store.
+        // SAFETY: Testing invalid-store error path; function validates handle before use.
         let s1 = unsafe {
             faster_read(
                 9999,
@@ -845,6 +865,7 @@ mod tests {
         assert_eq!(s1, FasterStatus::InvalidHandle);
 
         // Invalid session.
+        // SAFETY: Testing invalid-session error path; function validates handle before use.
         let s2 = unsafe {
             faster_read(
                 store,
@@ -871,6 +892,7 @@ mod tests {
 
         let key = b"to_delete";
         let val = b"temporary";
+        // SAFETY: Test passes valid stack-allocated pointers with matching lengths.
         unsafe {
             faster_upsert(
                 store,
@@ -882,14 +904,14 @@ mod tests {
             );
         }
 
-        let status = unsafe {
-            faster_delete(store, sess, key.as_ptr(), key.len() as u32)
-        };
+        // SAFETY: Test passes valid stack-allocated pointer with matching length.
+        let status = unsafe { faster_delete(store, sess, key.as_ptr(), key.len() as u32) };
         assert!(status.is_success(), "delete returned {status:?}");
 
         // Verify key is gone.
         let mut buf = [0u8; 64];
         let mut out_len: u32 = 0;
+        // SAFETY: All pointers are valid stack references; buf is large enough for val_buf_len.
         let read_status = unsafe {
             faster_read(
                 store,
@@ -913,9 +935,8 @@ mod tests {
         let sess = faster_session_start(store);
 
         let key = b"never_inserted";
-        let status = unsafe {
-            faster_delete(store, sess, key.as_ptr(), key.len() as u32)
-        };
+        // SAFETY: Test passes valid stack-allocated pointer with matching length.
+        let status = unsafe { faster_delete(store, sess, key.as_ptr(), key.len() as u32) };
         // Deleting a non-existent key returns NotFound.
         assert_eq!(status, FasterStatus::NotFound);
 
@@ -929,8 +950,8 @@ mod tests {
         let sess = faster_session_start(store);
 
         // Null key with nonzero length.
-        let status =
-            unsafe { faster_delete(store, sess, std::ptr::null(), 10) };
+        // SAFETY: Testing null-key error path; function validates before dereferencing.
+        let status = unsafe { faster_delete(store, sess, std::ptr::null(), 10) };
         assert_eq!(status, FasterStatus::InvalidArgument);
 
         faster_session_end(store, sess);
@@ -948,6 +969,7 @@ mod tests {
 
         // RMW on non-existent key should create it.
         let val1 = b"first";
+        // SAFETY: Test passes valid stack-allocated pointers with matching lengths.
         let status = unsafe {
             faster_rmw(
                 store,
@@ -962,6 +984,7 @@ mod tests {
 
         // RMW again should replace.
         let val2 = b"second";
+        // SAFETY: Test passes valid stack-allocated pointers with matching lengths.
         let status2 = unsafe {
             faster_rmw(
                 store,
@@ -977,6 +1000,7 @@ mod tests {
         // Read should return latest.
         let mut buf = [0u8; 64];
         let mut out_len: u32 = 0;
+        // SAFETY: All pointers are valid stack references; buf is large enough for val_buf_len.
         let rs = unsafe {
             faster_read(
                 store,
@@ -1001,15 +1025,13 @@ mod tests {
         let sess = faster_session_start(store);
 
         // Null key with nonzero length.
-        let s1 = unsafe {
-            faster_rmw(store, sess, std::ptr::null(), 10, b"v".as_ptr(), 1)
-        };
+        // SAFETY: Testing null-key error path; function validates before dereferencing.
+        let s1 = unsafe { faster_rmw(store, sess, std::ptr::null(), 10, b"v".as_ptr(), 1) };
         assert_eq!(s1, FasterStatus::InvalidArgument);
 
         // Null input with nonzero length.
-        let s2 = unsafe {
-            faster_rmw(store, sess, b"k".as_ptr(), 1, std::ptr::null(), 10)
-        };
+        // SAFETY: Testing null-input error path; function validates before dereferencing.
+        let s2 = unsafe { faster_rmw(store, sess, b"k".as_ptr(), 1, std::ptr::null(), 10) };
         assert_eq!(s2, FasterStatus::InvalidArgument);
 
         faster_session_end(store, sess);
@@ -1024,9 +1046,8 @@ mod tests {
         let sess = faster_session_start(store);
 
         let mut completed: u32 = 0;
-        let status = unsafe {
-            faster_complete_pending(store, sess, &mut completed)
-        };
+        // SAFETY: All pointers are valid stack references; store and session are valid handles.
+        let status = unsafe { faster_complete_pending(store, sess, &mut completed) };
         assert_eq!(status, FasterStatus::Ok);
         assert_eq!(completed, 0);
 
@@ -1039,9 +1060,8 @@ mod tests {
         let store = faster_open();
         let sess = faster_session_start(store);
 
-        let status = unsafe {
-            faster_complete_pending(store, sess, std::ptr::null_mut())
-        };
+        // SAFETY: Testing null completed_out error path; function validates before dereferencing.
+        let status = unsafe { faster_complete_pending(store, sess, std::ptr::null_mut()) };
         assert_eq!(status, FasterStatus::InvalidArgument);
 
         faster_session_end(store, sess);
@@ -1059,6 +1079,7 @@ mod tests {
         for i in 0u32..10 {
             let key = format!("key-{i}");
             let val = format!("val-{i}");
+            // SAFETY: key and val are valid heap-allocated Strings; pointers and lengths match.
             let status = unsafe {
                 faster_upsert(
                     store,
@@ -1078,6 +1099,7 @@ mod tests {
             let expected = format!("val-{i}");
             let mut buf = [0u8; 64];
             let mut out_len: u32 = 0;
+            // SAFETY: key is a valid String; buf and out_len are valid stack references.
             let status = unsafe {
                 faster_read(
                     store,
@@ -1101,6 +1123,7 @@ mod tests {
         for i in (0u32..10).step_by(2) {
             let key = format!("key-{i}");
             let new_val = format!("updated-{i}");
+            // SAFETY: key and new_val are valid heap-allocated Strings; pointers and lengths match.
             let status = unsafe {
                 faster_rmw(
                     store,
@@ -1124,6 +1147,7 @@ mod tests {
             };
             let mut buf = [0u8; 64];
             let mut out_len: u32 = 0;
+            // SAFETY: key is a valid String; buf and out_len are valid stack references.
             unsafe {
                 faster_read(
                     store,
@@ -1145,9 +1169,8 @@ mod tests {
         // 5. Delete odd keys.
         for i in (1u32..10).step_by(2) {
             let key = format!("key-{i}");
-            let status = unsafe {
-                faster_delete(store, sess, key.as_ptr(), key.len() as u32)
-            };
+            // SAFETY: key is a valid String; pointer and length match.
+            let status = unsafe { faster_delete(store, sess, key.as_ptr(), key.len() as u32) };
             assert!(status.is_success(), "delete {i} returned {status:?}");
         }
 
@@ -1156,6 +1179,7 @@ mod tests {
             let key = format!("key-{i}");
             let mut buf = [0u8; 64];
             let mut out_len: u32 = 0;
+            // SAFETY: key is a valid String; buf and out_len are valid stack references.
             let status = unsafe {
                 faster_read(
                     store,
@@ -1180,6 +1204,7 @@ mod tests {
 
         // 7. Complete pending (should be 0 for in-memory store).
         let mut completed: u32 = 0;
+        // SAFETY: All pointers are valid stack references; store and session are valid handles.
         unsafe {
             faster_complete_pending(store, sess, &mut completed);
         }
@@ -1202,6 +1227,7 @@ mod tests {
         // Write via session 1.
         let key = b"shared_key";
         let val = b"from_s1";
+        // SAFETY: Test passes valid stack-allocated pointers with matching lengths.
         unsafe {
             faster_upsert(
                 store,
@@ -1216,6 +1242,7 @@ mod tests {
         // Read via session 2.
         let mut buf = [0u8; 64];
         let mut out_len: u32 = 0;
+        // SAFETY: All pointers are valid stack references; buf is large enough for val_buf_len.
         let status = unsafe {
             faster_read(
                 store,
@@ -1246,6 +1273,7 @@ mod tests {
         let val1 = b"first";
         let val2 = b"second_longer";
 
+        // SAFETY: Test passes valid stack-allocated pointers with matching lengths.
         unsafe {
             faster_upsert(
                 store,
@@ -1267,6 +1295,7 @@ mod tests {
 
         let mut buf = [0u8; 64];
         let mut out_len: u32 = 0;
+        // SAFETY: All pointers are valid stack references; buf is large enough for val_buf_len.
         let status = unsafe {
             faster_read(
                 store,
@@ -1292,6 +1321,7 @@ mod tests {
 
         let key = b"empty_val";
         // Upsert with empty value.
+        // SAFETY: Key pointer is valid; null value pointer is safe with zero length.
         unsafe {
             faster_upsert(
                 store,
@@ -1305,6 +1335,7 @@ mod tests {
 
         let mut buf = [0u8; 64];
         let mut out_len: u32 = 0;
+        // SAFETY: All pointers are valid stack references; buf is large enough for val_buf_len.
         let status = unsafe {
             faster_read(
                 store,
