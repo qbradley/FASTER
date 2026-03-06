@@ -74,23 +74,23 @@ impl DrainList {
         }
     }
 
-    /// Enqueues a deferred action to execute when `safe_epoch >= epoch`.
-    ///
-    /// Lock-free: uses a CAS loop on the head pointer. Each push
-    /// allocates a fresh heap node, so there is no ABA concern.
-    pub(crate) fn push(&self, epoch: u64, action: Box<dyn FnOnce() + Send>) {
-        let node = Box::into_raw(Box::new(DrainNode {
-            epoch,
-            action: Some(action),
-            next: ptr::null_mut(),
-        }));
+    // -------------------------------------------------------------------
+    // Private unsafe helpers — all raw-pointer manipulation is here
+    // -------------------------------------------------------------------
 
+    /// CAS-loop to push a node onto the head of the Treiber stack.
+    ///
+    /// # Safety
+    ///
+    /// - `node` must be a valid, uniquely-owned heap pointer allocated via
+    ///   `Box::into_raw(Box::new(DrainNode { .. }))`.
+    /// - The caller must not access `node` after this call (ownership is
+    ///   transferred to the list).
+    unsafe fn link_and_cas_push(&self, node: *mut DrainNode) {
         loop {
             let head = self.head.load(Ordering::Acquire);
-
-            // SAFETY: `node` is a valid, uniquely-owned heap pointer that
-            // we just allocated. No other thread can access it because it
-            // has not yet been published to the list.
+            // SAFETY: Caller guarantees `node` is valid and uniquely owned.
+            // No other thread can see it until the CAS publishes it.
             unsafe { (*node).next = head };
 
             match self
@@ -103,6 +103,55 @@ impl DrainList {
         }
     }
 
+    /// Walk a raw chain starting from `head`, reconstitute each node as a
+    /// `Box<DrainNode>`, and return them in FIFO (insertion) order.
+    ///
+    /// The Treiber stack is LIFO, so this reverses the chain.
+    ///
+    /// # Safety
+    ///
+    /// - `head` must be non-null and point to a valid chain of `DrainNode`s
+    ///   that were allocated via `Box::into_raw`.
+    /// - The caller must have exclusive access to the entire chain (e.g.,
+    ///   via an atomic swap of the head pointer).
+    #[allow(clippy::vec_box)] // Intentional: reconstituting Box ownership from raw pointers
+    unsafe fn claim_chain(head: *mut DrainNode) -> Vec<Box<DrainNode>> {
+        let mut nodes = Vec::new();
+        let mut current = head;
+        while !current.is_null() {
+            // SAFETY: Caller guarantees each node in the chain is a valid
+            // heap allocation from Box::into_raw. We read `next` before
+            // reconstituting the Box (which would invalidate the pointer).
+            let next = unsafe { (*current).next };
+            // SAFETY: `current` is a valid node allocated via Box::into_raw
+            // in push(). Exclusive access guaranteed by the caller.
+            nodes.push(unsafe { Box::from_raw(current) });
+            current = next;
+        }
+        nodes.reverse();
+        nodes
+    }
+
+    // -------------------------------------------------------------------
+    // Public API — safe wrappers over the private unsafe helpers
+    // -------------------------------------------------------------------
+
+    /// Enqueues a deferred action to execute when `safe_epoch >= epoch`.
+    ///
+    /// Lock-free: uses a CAS loop on the head pointer. Each push
+    /// allocates a fresh heap node, so there is no ABA concern.
+    pub(crate) fn push(&self, epoch: u64, action: Box<dyn FnOnce() + Send>) {
+        let node = Box::into_raw(Box::new(DrainNode {
+            epoch,
+            action: Some(action),
+            next: ptr::null_mut(),
+        }));
+
+        // SAFETY: `node` was just allocated via Box::into_raw above.
+        // It is valid, uniquely owned, and not yet published.
+        unsafe { self.link_and_cas_push(node) };
+    }
+
     /// Executes and removes all actions whose epoch is ≤ `safe_epoch`.
     ///
     /// Atomically swaps the head to null (claiming the entire chain),
@@ -113,11 +162,12 @@ impl DrainList {
     /// Callbacks are executed after the chain is fully claimed, so a
     /// callback that calls `push()` will not deadlock — it simply pushes
     /// to the (now-empty or partially-repopulated) head.
+    ///
     /// # TODO (C-4)
     ///
-    /// The two `Vec` allocations (`nodes` and `unready`) are per-drain overhead.
+    /// The `Vec` allocation in `claim_chain` is per-drain overhead.
     /// At 10M ops/sec this is estimated at ~6% wall-clock. Replace with
-    /// `SmallVec<[*mut DrainNode; 16]>` or in-place chain relinking.
+    /// `SmallVec<[Box<DrainNode>; 16]>` or in-place chain relinking.
     pub(crate) fn drain_up_to(&self, safe_epoch: u64) {
         trace_span!("epoch_drain");
         let head = self.head.swap(ptr::null_mut(), Ordering::AcqRel);
@@ -126,63 +176,23 @@ impl DrainList {
             return;
         }
 
-        // Walk the claimed LIFO chain, collecting node pointers.
-        let mut nodes = Vec::new();
-        let mut current = head;
-        while !current.is_null() {
-            // SAFETY: `current` was reached by following `next` pointers
-            // starting from the head we atomically swapped out. Each node
-            // was allocated via `Box::into_raw` in `push` and has not been
-            // freed. We have exclusive access to the entire claimed chain
-            // because the swap replaced head with null.
-            let next = unsafe { (*current).next };
-            nodes.push(current);
-            current = next;
-        }
+        // SAFETY: We atomically claimed the entire chain via swap (head
+        // replaced with null). Each node was allocated via Box::into_raw
+        // in push(). We have exclusive ownership of the claimed chain.
+        let nodes = unsafe { Self::claim_chain(head) };
 
-        // Reverse to restore FIFO insertion order (Treiber stack is LIFO).
-        nodes.reverse();
-
-        // Partition: execute ready actions, collect unready node pointers.
-        let mut unready: Vec<*mut DrainNode> = Vec::new();
-        for node_ptr in nodes {
-            // SAFETY: exclusive access to claimed nodes (see above).
-            let epoch = unsafe { (*node_ptr).epoch };
-
-            if epoch <= safe_epoch {
-                // SAFETY: reconstruct the `Box` to take ownership.
-                // The node was allocated via `Box::into_raw` in `push`
-                // and has not been freed. This is the single point of
-                // ownership transfer back to a `Box` for deallocation.
-                let mut node = unsafe { Box::from_raw(node_ptr) };
+        for mut node in nodes {
+            if node.epoch <= safe_epoch {
                 if let Some(action) = node.action.take() {
                     action();
                 }
                 // `node` dropped here → memory freed
             } else {
-                unready.push(node_ptr);
-            }
-        }
-
-        // Re-push unready nodes so they survive until a future drain.
-        for node_ptr in unready {
-            loop {
-                let head = self.head.load(Ordering::Acquire);
-
-                // SAFETY: `node_ptr` is a valid node from the claimed
-                // chain that was not freed (epoch > safe_epoch). We have
-                // exclusive access until the CAS publishes it.
-                unsafe { (*node_ptr).next = head };
-
-                match self.head.compare_exchange_weak(
-                    head,
-                    node_ptr,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                ) {
-                    Ok(_) => break,
-                    Err(_) => continue,
-                }
+                // Re-push unready nodes so they survive until a future drain.
+                let raw = Box::into_raw(node);
+                // SAFETY: `raw` was just obtained from Box::into_raw.
+                // The node is valid and we have exclusive ownership.
+                unsafe { self.link_and_cas_push(raw) };
             }
         }
     }
@@ -212,15 +222,15 @@ impl DrainList {
 impl Drop for DrainList {
     fn drop(&mut self) {
         // `get_mut`: exclusive access guaranteed by `&mut self`.
-        let mut current = *self.head.get_mut();
-        while !current.is_null() {
-            // SAFETY: exclusive access via `&mut self` in `drop`. Each
-            // node was allocated via `Box::into_raw` in `push` and has
-            // not been freed. We reconstruct the `Box` to free it.
-            let node = unsafe { Box::from_raw(current) };
-            current = node.next;
-            // `node` dropped here → memory freed
+        let head = *self.head.get_mut();
+        if head.is_null() {
+            return;
         }
+        // SAFETY: exclusive access via `&mut self` in drop. Each node
+        // was allocated via `Box::into_raw` in `push` and has not been
+        // freed. `claim_chain` reconstitutes them as `Box<DrainNode>`.
+        let nodes = unsafe { Self::claim_chain(head) };
+        drop(nodes);
     }
 }
 
