@@ -113,14 +113,9 @@ fn main() {
     if do_evict {
         println!("\n--- Flushing and evicting (--evict) ---");
         let evict_start = Instant::now();
-        store.flush();
-        store.evict();
-        // Call maintenance a few times to ensure pages are fully evicted.
-        for _ in 0..10 {
-            store.maintenance();
-        }
+        let (flushed, evicted) = store.flush_and_evict();
         println!(
-            "Flush + evict completed in {:.2}s — reads will hit disk",
+            "Flush + evict completed in {:.2}s — {flushed} pages flushed, {evicted} evicted — reads will hit disk",
             evict_start.elapsed().as_secs_f64()
         );
     } else {
