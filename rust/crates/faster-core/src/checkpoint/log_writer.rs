@@ -19,6 +19,7 @@ use std::time::Instant;
 use crate::address::LogicalAddress;
 use crate::hybrid_log::HybridLogAllocator;
 
+use super::snapshot_writer::SnapshotCheckpointContext;
 use super::{CheckpointError, CheckpointToken, CheckpointType, LogRecoveryInfo};
 
 // ---------------------------------------------------------------------------
@@ -100,7 +101,9 @@ impl LogCheckpointWriter {
     /// # Errors
     ///
     /// Returns [`CheckpointError::InvalidState`] if the checkpoint type is
-    /// not [`CheckpointType::FoldOver`] (snapshot mode is not yet supported).
+    /// not [`CheckpointType::FoldOver`]. Use
+    /// [`begin_snapshot_checkpoint`](Self::begin_snapshot_checkpoint) for
+    /// snapshot mode.
     pub fn begin_checkpoint(
         &self,
         log: &HybridLogAllocator,
@@ -108,7 +111,7 @@ impl LogCheckpointWriter {
     ) -> Result<LogCheckpointContext, CheckpointError> {
         if self.checkpoint_type != CheckpointType::FoldOver {
             return Err(CheckpointError::InvalidState(
-                "only FoldOver checkpoints are currently supported".into(),
+                "use begin_snapshot_checkpoint() for Snapshot mode".into(),
             ));
         }
 
@@ -123,6 +126,31 @@ impl LogCheckpointWriter {
             flushed_until: snap.tail_address,
             started_at: Instant::now(),
         })
+    }
+
+    /// Begin a snapshot checkpoint by capturing the current log boundaries.
+    ///
+    /// Unlike fold-over, the log may continue accepting writes after this
+    /// call. The `snapshot_tail` in the returned context records the tail at
+    /// this instant — any records appended later are **not** part of the
+    /// checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CheckpointError::InvalidState`] if this writer is not
+    /// configured for [`CheckpointType::Snapshot`].
+    pub fn begin_snapshot_checkpoint(
+        &self,
+        log: &HybridLogAllocator,
+        token: &CheckpointToken,
+    ) -> Result<SnapshotCheckpointContext, CheckpointError> {
+        if self.checkpoint_type != CheckpointType::Snapshot {
+            return Err(CheckpointError::InvalidState(
+                "begin_snapshot_checkpoint requires Snapshot mode".into(),
+            ));
+        }
+
+        SnapshotCheckpointContext::begin(log, token)
     }
 
     /// Check whether the log has been flushed up to the checkpoint tail.
@@ -153,7 +181,7 @@ impl LogCheckpointWriter {
         }
     }
 
-    /// Finalize the checkpoint and produce recovery metadata.
+    /// Finalize a fold-over checkpoint and produce recovery metadata.
     ///
     /// Consumes the [`LogCheckpointContext`] and returns a
     /// [`LogRecoveryInfo`] capturing the exact address boundaries needed to
@@ -187,6 +215,29 @@ impl LogCheckpointWriter {
             use_snapshot_file: false,
             object_log_segment_count: 0,
         })
+    }
+
+    /// Finalize a snapshot checkpoint and produce recovery metadata.
+    ///
+    /// Consumes the [`SnapshotCheckpointContext`] and produces a
+    /// [`LogRecoveryInfo`] with `use_snapshot_file = true`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CheckpointError::InvalidState`] if this writer is not
+    /// configured for [`CheckpointType::Snapshot`].
+    pub fn complete_snapshot(
+        &self,
+        ctx: SnapshotCheckpointContext,
+    ) -> Result<LogRecoveryInfo, CheckpointError> {
+        if self.checkpoint_type != CheckpointType::Snapshot {
+            return Err(CheckpointError::InvalidState(format!(
+                "complete_snapshot requires Snapshot writer, got {:?}",
+                self.checkpoint_type,
+            )));
+        }
+
+        Ok(ctx.into_recovery_info())
     }
 }
 
@@ -597,5 +648,129 @@ mod tests {
         let result = log.try_advance_flushed_until(addr2);
         assert_eq!(result, addr2);
         assert_eq!(log.flushed_until_address(), addr2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Snapshot checkpoint via LogCheckpointWriter
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn begin_snapshot_checkpoint_empty_log() {
+        let log = make_allocator();
+        let writer = LogCheckpointWriter::new(CheckpointType::Snapshot);
+        let token = make_token(1);
+
+        let ctx = writer.begin_snapshot_checkpoint(&log, &token).unwrap();
+
+        assert_eq!(ctx.token, token);
+        assert_eq!(ctx.snapshot_tail, LogicalAddress::ZERO);
+        assert_eq!(ctx.snapshot_head, LogicalAddress::ZERO);
+        assert_eq!(ctx.begin_address, LogicalAddress::ZERO);
+    }
+
+    #[test]
+    fn begin_snapshot_checkpoint_with_data() {
+        let log = make_allocator();
+        log.try_allocate(64).unwrap();
+        log.try_allocate(128).unwrap();
+
+        let writer = LogCheckpointWriter::new(CheckpointType::Snapshot);
+        let token = make_token(42);
+        let ctx = writer.begin_snapshot_checkpoint(&log, &token).unwrap();
+
+        assert_eq!(ctx.snapshot_tail, LogicalAddress::new(Page(0), Offset(192)));
+        assert_eq!(ctx.snapshot_head, LogicalAddress::ZERO);
+    }
+
+    #[test]
+    fn begin_snapshot_rejects_fold_over_writer() {
+        let log = make_allocator();
+        let writer = LogCheckpointWriter::new(CheckpointType::FoldOver);
+        let token = make_token(1);
+
+        let err = writer.begin_snapshot_checkpoint(&log, &token).unwrap_err();
+        assert!(matches!(err, CheckpointError::InvalidState(_)));
+    }
+
+    #[test]
+    fn complete_snapshot_empty_log() {
+        let log = make_allocator();
+        let writer = LogCheckpointWriter::new(CheckpointType::Snapshot);
+        let token = make_token(99);
+        let ctx = writer.begin_snapshot_checkpoint(&log, &token).unwrap();
+
+        let info = writer.complete_snapshot(ctx).unwrap();
+
+        assert_eq!(info.version, 1);
+        assert_eq!(info.checkpoint_type, CheckpointType::Snapshot);
+        assert!(info.use_snapshot_file);
+        assert_eq!(info.final_address, LogicalAddress::ZERO);
+    }
+
+    #[test]
+    fn complete_snapshot_with_data() {
+        let log = make_allocator();
+        log.try_allocate(64).unwrap();
+
+        let writer = LogCheckpointWriter::new(CheckpointType::Snapshot);
+        let token = make_token(42);
+        let ctx = writer.begin_snapshot_checkpoint(&log, &token).unwrap();
+        let info = writer.complete_snapshot(ctx).unwrap();
+
+        let expected_tail = LogicalAddress::new(Page(0), Offset(64));
+        assert_eq!(info.final_address, expected_tail);
+        assert_eq!(info.snapshot_final_address, expected_tail);
+        assert!(info.use_snapshot_file);
+    }
+
+    #[test]
+    fn complete_snapshot_rejects_fold_over_writer() {
+        let log = make_allocator();
+        let fold_writer = LogCheckpointWriter::new(CheckpointType::FoldOver);
+        let snap_writer = LogCheckpointWriter::new(CheckpointType::Snapshot);
+        let token = make_token(1);
+
+        let ctx = snap_writer.begin_snapshot_checkpoint(&log, &token).unwrap();
+        let err = fold_writer.complete_snapshot(ctx).unwrap_err();
+        assert!(matches!(err, CheckpointError::InvalidState(_)));
+    }
+
+    #[test]
+    fn snapshot_recovery_info_serializable() {
+        let log = make_allocator();
+        log.try_allocate(64).unwrap();
+
+        let writer = LogCheckpointWriter::new(CheckpointType::Snapshot);
+        let token = make_token(1);
+        let ctx = writer.begin_snapshot_checkpoint(&log, &token).unwrap();
+        let info = writer.complete_snapshot(ctx).unwrap();
+
+        let json = serde_json::to_string(&info).unwrap();
+        let back: LogRecoveryInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(info, back);
+    }
+
+    #[test]
+    fn full_snapshot_via_writer_lifecycle() {
+        let log = make_allocator();
+        log.try_allocate(64).unwrap();
+        log.try_allocate(128).unwrap();
+
+        let writer = LogCheckpointWriter::new(CheckpointType::Snapshot);
+        let token = make_token(0xCAFE);
+
+        // Begin snapshot.
+        let ctx = writer.begin_snapshot_checkpoint(&log, &token).unwrap();
+        let snapshot_tail = ctx.snapshot_tail;
+
+        // Simulate continued writes after snapshot.
+        log.try_allocate(256).unwrap();
+        assert!(log.tail_address() > snapshot_tail);
+
+        // Complete — snapshot_tail is preserved.
+        let info = writer.complete_snapshot(ctx).unwrap();
+        assert_eq!(info.final_address, snapshot_tail);
+        assert_eq!(info.checkpoint_type, CheckpointType::Snapshot);
+        assert!(info.use_snapshot_file);
     }
 }
