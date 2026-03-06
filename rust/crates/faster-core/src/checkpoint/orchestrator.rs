@@ -108,6 +108,7 @@ impl CheckpointOrchestrator {
         sessions: &[SessionCheckpointState],
         base_dir: &Path,
     ) -> Result<CheckpointToken, CheckpointError> {
+        trace_span!("take_checkpoint", checkpoint_type = ?checkpoint_type);
         // 1. Prepare — generate token, Rest → Prepare
         let token = CheckpointToken::new(random_token_value());
 
