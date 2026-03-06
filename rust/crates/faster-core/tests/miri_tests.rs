@@ -405,6 +405,51 @@ mod miri_hash_bucket {
 }
 
 // -----------------------------------------------------------------------
+// Buffer pool tests — exercises AlignedBuffer allocation, write, read-back
+// and full acquire/release lifecycle.
+// -----------------------------------------------------------------------
+
+#[cfg(miri)]
+mod miri_buffer_pool {
+    use faster_core::buffer_pool::{AlignedBuffer, BufferPool};
+
+    #[test]
+    fn buffer_pool_alloc_write_read() {
+        let mut buf = AlignedBuffer::new(4096, 512);
+        assert_eq!(buf.len(), 4096);
+        assert_eq!(buf.as_ptr() as usize % 512, 0);
+
+        // Write a repeating pattern.
+        let slice = buf.as_mut_slice();
+        for (i, byte) in slice.iter_mut().enumerate() {
+            *byte = (i & 0xFF) as u8;
+        }
+
+        // Read back and verify.
+        let slice = buf.as_slice();
+        for (i, &byte) in slice.iter().enumerate() {
+            assert_eq!(byte, (i & 0xFF) as u8, "mismatch at offset {i}");
+        }
+    }
+
+    #[test]
+    fn buffer_pool_release_reacquire() {
+        let pool = BufferPool::new(512, 4);
+
+        // Acquire, write, release.
+        let mut buf = pool.acquire(1024);
+        buf.as_mut_slice().fill(0xAB);
+        let ptr = buf.as_ptr();
+        pool.release(buf);
+
+        // Re-acquire — should reuse the same allocation.
+        let buf2 = pool.acquire(1024);
+        assert_eq!(buf2.as_ptr(), ptr, "should reuse released buffer");
+        assert_eq!(buf2.len(), 1024);
+    }
+}
+
+// -----------------------------------------------------------------------
 // Epoch-gated allocator tests — exercises the deferred free path through
 // the epoch drain callback and the push_free_list_raw unsafe function.
 // -----------------------------------------------------------------------
@@ -518,5 +563,75 @@ mod miri_epoch_gated_allocator {
         }
         // If Drop didn't flush, deferred callbacks would hold dangling pointers.
         // Miri would catch any use-after-free.
+    }
+}
+
+// -----------------------------------------------------------------------
+// Device tests — exercises the raw-pointer callback path in NullDevice
+// and InMemoryDevice under Miri to verify no UB.
+// -----------------------------------------------------------------------
+
+#[cfg(miri)]
+mod miri_device {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    use faster_core::device::{
+        Device, InMemoryDevice, IoCompletionCallback, IoRequestResult, IoStatus, NullDevice,
+    };
+
+    /// Callback that asserts success and sets an atomic flag.
+    unsafe fn success_callback(ctx: *mut u8, status: IoStatus, _bytes: u32) {
+        assert_eq!(status, IoStatus::Success);
+        // SAFETY: `ctx` points to a valid `AtomicU32` — see each call site.
+        unsafe {
+            let flag = &*(ctx as *const AtomicU32);
+            flag.store(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn device_null_async_callback_safety() {
+        let dev = NullDevice::new();
+        let flag = AtomicU32::new(0);
+        let ctx = &flag as *const AtomicU32 as *mut u8;
+
+        // Async read
+        let mut buf = vec![0xFFu8; 512];
+        // SAFETY: `buf` is valid for 512 bytes, `ctx` points to `flag`.
+        let result = unsafe { dev.read_async(0, buf.as_mut_ptr(), 512, success_callback, ctx) };
+        assert!(matches!(result, IoRequestResult::CompletedSync));
+        assert_eq!(flag.load(Ordering::SeqCst), 1);
+        assert!(buf.iter().all(|&b| b == 0));
+
+        // Async write
+        flag.store(0, Ordering::SeqCst);
+        let data = vec![42u8; 512];
+        // SAFETY: `data` is valid for 512 bytes, `ctx` points to `flag`.
+        let result = unsafe { dev.write_async(data.as_ptr(), 0, 512, success_callback, ctx) };
+        assert!(matches!(result, IoRequestResult::CompletedSync));
+        assert_eq!(flag.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn device_in_memory_write_read() {
+        let dev = InMemoryDevice::new();
+        let flag = AtomicU32::new(0);
+        let ctx = &flag as *const AtomicU32 as *mut u8;
+
+        // Write 256 bytes of pattern data
+        let write_data: Vec<u8> = (0..=255).collect();
+        // SAFETY: valid buffer, `ctx` points to `flag`.
+        let result = unsafe { dev.write_async(write_data.as_ptr(), 0, 256, success_callback, ctx) };
+        assert!(matches!(result, IoRequestResult::CompletedSync));
+        assert_eq!(flag.load(Ordering::SeqCst), 1);
+
+        // Read it back
+        flag.store(0, Ordering::SeqCst);
+        let mut read_buf = vec![0u8; 256];
+        // SAFETY: valid buffer, `ctx` points to `flag`.
+        let result =
+            unsafe { dev.read_async(0, read_buf.as_mut_ptr(), 256, success_callback, ctx) };
+        assert!(matches!(result, IoRequestResult::CompletedSync));
+        assert_eq!(flag.load(Ordering::SeqCst), 1);
+        assert_eq!(read_buf, write_data);
     }
 }
