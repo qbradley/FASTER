@@ -408,6 +408,10 @@ impl Device for SyncFileDevice {
         self.max_outstanding
     }
 
+    // TODO (C-1): These alignment checks are `debug_assert` only — they are
+    // stripped in release builds. Consider promoting to runtime checks (return
+    // `IoRequestResult::Error`) for defense-in-depth, especially when using
+    // O_DIRECT where misalignment causes EINVAL.
     unsafe fn read_async(
         &self,
         offset: u64,

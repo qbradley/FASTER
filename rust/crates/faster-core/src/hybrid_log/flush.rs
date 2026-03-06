@@ -115,6 +115,12 @@ struct FlushCallbackContext {
     /// The `PageTable` outlives any in-flight flush — the allocator cannot be
     /// dropped while flushes are pending, so this pointer is always valid when
     /// the callback fires.
+    ///
+    /// # TODO (SF-10)
+    ///
+    /// Replace with `Arc<PageTable>` for self-enforcing lifetime, or add an
+    /// explicit `FasterKv::Drop` that drains pending flushes before releasing
+    /// resources. The current approach relies on an undocumented invariant.
     page_table: *const PageTable,
     /// Number of bytes that were flushed.
     bytes_flushed: u32,
@@ -146,6 +152,9 @@ unsafe fn flush_completion_callback(context: *mut u8, status: IoStatus, bytes_tr
 
     if status == IoStatus::Success {
         if let Some(frame) = page_table.get_frame(ctx.page) {
+            // TODO (C-5): Validate that `bytes_transferred >= valid_bytes`
+            // to detect short writes. A short write on real hardware should
+            // NOT transition to Flushed — leave in Flushing for retry.
             frame
                 .flushed_until()
                 .fetch_max(bytes_transferred, Ordering::Release);

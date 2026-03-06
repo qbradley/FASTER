@@ -35,8 +35,8 @@
 
 use crate::address::LogicalAddress;
 use crate::hash::Hashable;
-use crate::hash_bucket::HashBucketEntry;
-use crate::hash_index::HashIndex;
+use crate::hash::bucket::HashBucketEntry;
+use crate::hash::index::HashIndex;
 use crate::hybrid_log::log_allocator::HybridLogAllocator;
 use crate::hybrid_log::record_ops::{LogRecordReader, LogRecordWriter, MutableRecordAccessor};
 use crate::hybrid_log::regions::AddressRegion;
@@ -44,6 +44,13 @@ use crate::record::{Key, RecordInfo, RecordLayout, Value};
 use crate::status::OperationStatus;
 use crate::store::functions::{Functions, RmwInPlaceResult};
 use crate::store::session::{FasterSession, PendingOpType, PendingOperation};
+
+/// Maximum number of version chain hops before giving up.
+///
+/// Prevents infinite traversal on corrupted data (e.g., a 2-node cycle
+/// A→B→A that the self-loop guard doesn't catch). At 32 MB per page,
+/// 4096 records per chain is well beyond any realistic workload.
+const MAX_CHAIN_DEPTH: usize = 4096;
 
 // ── InternalContext ─────────────────────────────────────────────────
 
@@ -72,6 +79,12 @@ fn layout_for_fixed<K: Key, V: Value>(key: &K) -> RecordLayout {
 ///
 /// Returns `(address, RecordInfo)` of the first matching record, or
 /// `None` if no match is found in the in-memory portion of the chain.
+///
+/// # TODO (SF-5)
+///
+/// Each chain hop issues 4-6 redundant atomic loads via `is_in_memory()`.
+/// Pass the `AddressInfo` snapshot into this function and use
+/// `info.classify(addr)` instead for a significant hot-path speedup.
 fn find_record_for_key<K: Key>(
     reader: &LogRecordReader<'_>,
     start_addr: LogicalAddress,
@@ -80,8 +93,16 @@ fn find_record_for_key<K: Key>(
     allocator: &HybridLogAllocator,
 ) -> Option<(LogicalAddress, RecordInfo)> {
     let mut addr = start_addr;
+    let mut depth = 0usize;
 
     while addr.is_valid() {
+        // SF-1: Guard against cycles and pathologically long chains.
+        if depth >= MAX_CHAIN_DEPTH {
+            debug_assert!(false, "version chain exceeded MAX_CHAIN_DEPTH ({MAX_CHAIN_DEPTH}) — possible cycle or corruption");
+            return None;
+        }
+        depth += 1;
+
         // If the record is not in memory we cannot check the key.
         if !allocator.is_in_memory(addr) {
             return None;
@@ -299,11 +320,22 @@ pub(crate) fn internal_upsert<F: Functions>(
                     // Read old value, write new value in-place.
                     let ptr = ctx.allocator.get_physical_address(found_addr);
                     if let Some(ptr) = ptr {
+                        // SF-15: Verify the address is still in memory after
+                        // obtaining the physical pointer. Epoch protection
+                        // should prevent eviction, but this catches bugs.
+                        debug_assert!(
+                            ctx.allocator.is_in_memory(found_addr),
+                            "SF-15: address evicted between classify and access"
+                        );
                         let record_size = layout.total_size() as u32;
                         // SAFETY: record is in the mutable region and we hold
                         // epoch protection, so the page frame won't be evicted.
                         let accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
 
+                        // TODO (SF-6): This does deserialize → clone → serialize
+                        // (3 copies). For Copy types like u64, a single 8-byte
+                        // write suffices. Add `Functions::upsert_in_place_raw()`
+                        // or specialize for Copy types.
                         let old_value: F::Value = accessor.value(&layout);
                         let mut output = F::Output::default();
 
@@ -364,6 +396,13 @@ pub(crate) fn internal_upsert<F: Functions>(
 
 /// Upsert helper: allocate a new record at the tail and CAS the hash
 /// entry to point to it (RCU path for read-only / new-key-from-chain).
+///
+/// # TODO (SF-3)
+///
+/// The RCU path does not read the old value from `previous_addr`, passing
+/// `None` to `Functions::upsert`. For `SimpleFunctions` (blind overwrite)
+/// this is correct. For merge-on-upsert semantics, the old value must be
+/// read from the previous record before invoking the callback.
 fn upsert_copy_to_tail<F: Functions>(
     ctx: &InternalContext<'_>,
     functions: &F,
@@ -371,7 +410,7 @@ fn upsert_copy_to_tail<F: Functions>(
     input: &F::Input,
     layout: &RecordLayout,
     old_entry: HashBucketEntry,
-    slot: &crate::hash_bucket::AtomicHashBucketEntry,
+    slot: &crate::hash::bucket::AtomicHashBucketEntry,
     previous_addr: LogicalAddress,
 ) -> OperationStatus {
     // Let the callback produce the final value.
@@ -495,6 +534,11 @@ pub(crate) fn internal_rmw<F: Functions>(
                         None => return OperationStatus::Aborted,
                     };
 
+                    // SF-15: Verify the address is still in memory.
+                    debug_assert!(
+                        ctx.allocator.is_in_memory(found_addr),
+                        "SF-15: address evicted between classify and access"
+                    );
                     let record_size = layout.total_size() as u32;
                     // SAFETY: record is in mutable region, epoch guard held.
                     let accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
@@ -618,7 +662,7 @@ fn rmw_copy_to_tail<F: Functions>(
     output: &mut F::Output,
     layout: &RecordLayout,
     old_entry: HashBucketEntry,
-    slot: &crate::hash_bucket::AtomicHashBucketEntry,
+    slot: &crate::hash::bucket::AtomicHashBucketEntry,
     previous_addr: LogicalAddress,
 ) -> OperationStatus {
     let mut new_value = old_value.clone();
@@ -649,7 +693,7 @@ fn rmw_create_at_tail<F: Functions>(
     output: &mut F::Output,
     layout: &RecordLayout,
     old_entry: HashBucketEntry,
-    slot: &crate::hash_bucket::AtomicHashBucketEntry,
+    slot: &crate::hash::bucket::AtomicHashBucketEntry,
     previous_addr: LogicalAddress,
 ) -> OperationStatus {
     if !functions.rmw_need_initial_update(key, input) {
@@ -793,7 +837,7 @@ pub(crate) fn internal_delete<F: Functions>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hash_index::HashIndex;
+    use crate::hash::index::HashIndex;
     use crate::hybrid_log::log_allocator::HybridLogAllocator;
     use crate::store::functions::SimpleFunctions;
 

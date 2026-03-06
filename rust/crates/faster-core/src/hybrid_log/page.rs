@@ -378,6 +378,13 @@ impl PageTable {
     /// Load the frame pointer for `page`, returning a reference if allocated.
     ///
     /// Returns `None` if the slot is null (no frame allocated for this page).
+    ///
+    /// # TODO (SF-9)
+    ///
+    /// The circular buffer index (`page % buffer_size`) means different pages
+    /// can alias to the same slot. This method does not verify that the frame
+    /// actually belongs to the requested page. Add a debug-mode page-number
+    /// field to `PageFrame` and assert it matches here.
     pub fn get_frame(&self, page: Page) -> Option<&PageFrame> {
         let idx = self.frame_index(page);
         let ptr = self.frames[idx].load(Ordering::Acquire);
@@ -410,12 +417,15 @@ impl PageTable {
             let frame = unsafe { &*existing };
             let state = frame.state().load(Ordering::Acquire);
             if state == PageState::Evicted || state == PageState::Free {
-                // Recycle: zero the frame and transition to Open.
-                // SAFETY: The frame is in Evicted/Free state — no concurrent
-                // readers or writers access its data.
-                unsafe { frame.zero() };
-                frame.reset_flush_progress();
-                frame.state().store(PageState::Open, Ordering::Release);
+                // SF-8: Use CAS to prevent concurrent recycling races.
+                // Only one thread wins the transition; losers skip zeroing
+                // and return the already-recycled frame.
+                if frame.state().try_transition(state, PageState::Open) {
+                    // SAFETY: We won the CAS — no concurrent recycler will
+                    // also zero this frame.
+                    unsafe { frame.zero() };
+                    frame.reset_flush_progress();
+                }
             }
             return frame;
         }

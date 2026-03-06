@@ -113,6 +113,11 @@ impl DrainList {
     /// Callbacks are executed after the chain is fully claimed, so a
     /// callback that calls `push()` will not deadlock — it simply pushes
     /// to the (now-empty or partially-repopulated) head.
+    /// # TODO (C-4)
+    ///
+    /// The two `Vec` allocations (`nodes` and `unready`) are per-drain overhead.
+    /// At 10M ops/sec this is estimated at ~6% wall-clock. Replace with
+    /// `SmallVec<[*mut DrainNode; 16]>` or in-place chain relinking.
     pub(crate) fn drain_up_to(&self, safe_epoch: u64) {
         trace_span!("epoch_drain");
         let head = self.head.swap(ptr::null_mut(), Ordering::AcqRel);

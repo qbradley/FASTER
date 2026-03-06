@@ -20,7 +20,9 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::address::{AtomicLogicalAddress, LogicalAddress, OFFSET_BITS, Offset, Page};
+use crate::address::{
+    AtomicLogicalAddress, LogicalAddress, MAX_PAGE, OFFSET_BITS, Offset, Page,
+};
 
 use super::page::{PageState, PageTable};
 
@@ -97,6 +99,10 @@ impl HybridLogAllocator {
     ///
     /// This is a lock-free CAS loop on `tail_address`.
     pub fn try_allocate(&self, size: u32) -> Option<LogicalAddress> {
+        // C-9: Reject zero-size allocations — they would create overlapping
+        // addresses where new_tail == current.
+        debug_assert!(size > 0, "try_allocate: size must be > 0");
+
         if self.sealed.load(Ordering::Acquire) {
             return None;
         }
@@ -115,6 +121,10 @@ impl HybridLogAllocator {
             // exactly (new_offset == page_size), the offset would exceed
             // MAX_OFFSET, so we wrap to the start of the next page.
             let new_tail = if new_offset == self.page_size {
+                // SF-7: Guard against page number overflow at MAX_PAGE.
+                if current.page().0 >= MAX_PAGE {
+                    return None;
+                }
                 LogicalAddress::new(Page(current.page().0 + 1), Offset(0))
             } else {
                 LogicalAddress::new(current.page(), Offset(new_offset))
@@ -252,6 +262,10 @@ impl HybridLogAllocator {
         loop {
             let current = self.tail_address.load(Ordering::SeqCst);
             let current_page = current.page();
+            // SF-7: Guard against page number overflow at MAX_PAGE.
+            if current_page.0 >= MAX_PAGE {
+                return None;
+            }
             let next_page = Page(current_page.0 + 1);
             let new_tail = LogicalAddress::new(next_page, Offset(0));
 
@@ -313,6 +327,16 @@ impl HybridLogAllocator {
     /// Note: this is NOT fully atomic across all 5 fields, but reading
     /// them in begin→tail order with SeqCst loads is sufficient because
     /// boundaries only move forward.
+    ///
+    /// # TODO (SF-4, C-2)
+    ///
+    /// SF-4: These SeqCst loads can be downgraded to Acquire on x86-64
+    /// (saves ~150 cycles/op at 10M ops/sec). Benchmark before/after,
+    /// especially on ARM where Acquire loads may reorder. Consider a
+    /// seqlock or packed AtomicU128 for true snapshot atomicity.
+    ///
+    /// C-2: Read `tail` first, then head, to ensure `head <= tail` in
+    /// the snapshot even under concurrent eviction.
     pub fn snapshot(&self) -> super::regions::AddressInfo {
         super::regions::AddressInfo {
             begin_address: self.begin_address.load(Ordering::SeqCst),
