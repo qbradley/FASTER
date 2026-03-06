@@ -495,6 +495,16 @@ impl HashTable {
         self.overflow_pool.allocated_count()
     }
 
+    /// Returns a shared reference to the primary bucket array.
+    ///
+    /// This provides direct read-only access to the contiguous bucket
+    /// storage for checkpoint serialization and diagnostics. Overflow
+    /// buckets are **not** included — only the main hash table array.
+    #[inline]
+    pub fn bucket_slice(&self) -> &[HashBucket] {
+        &self.buckets
+    }
+
     /// Counts the number of non-empty entries across all buckets
     /// (primary + overflow).
     ///
