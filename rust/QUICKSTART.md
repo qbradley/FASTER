@@ -6,7 +6,7 @@ Get up and running with FASTER in under five minutes.
 
 ```toml
 [dependencies]
-faster-core = { path = "crates/faster-core" }
+faster-core = { git = "https://github.com/qbradley/FASTER", branch = "squad" }
 ```
 
 ## 1. Hello, FASTER
@@ -51,16 +51,18 @@ That's it — a fully functional hash map backed by FASTER's hybrid log.
 ## 2. Persistent storage
 
 The real power of FASTER is that your data survives process restarts.
-Swap `NullDevice` for `SyncFileDevice` and your log is written to disk:
+Swap `NullDevice` for `SyncFileDevice`, checkpoint before closing, and
+recover after reopening:
 
 ```rust
+use faster_core::checkpoint::CheckpointType;
 use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
 use faster_core::SyncFileDevice;
 use std::path::Path;
 
 type Store = FasterKv<SimpleFunctions<u64, u64>>;
 
-/// Open (or create) a FASTER store at the given directory.
+/// Open (or create) a FASTER store backed by disk files in `dir`.
 fn open_store(dir: &Path) -> Store {
     let device = SyncFileDevice::new(
         dir,
@@ -76,8 +78,9 @@ fn open_store(dir: &Path) -> Store {
 
 fn main() {
     let dir = Path::new("/tmp/faster-quickstart");
+    let checkpoint_dir = dir.join("checkpoints");
 
-    // ── Phase 1: Write some data ────────────────────────────────────
+    // ── Phase 1: Write some data and take a checkpoint ──────────────
     {
         let store = open_store(dir);
         let mut session = store.new_session();
@@ -86,21 +89,33 @@ fn main() {
             store.upsert_simple(&mut session, &i, &(i * i));
         }
 
-        // Flush in-memory pages to disk.
-        store.maintenance();
-
         store.dispose_session(session);
+
+        // Checkpoint persists the hash index + log metadata to disk.
+        store.checkpoint(&checkpoint_dir, CheckpointType::FoldOver)
+            .expect("checkpoint failed");
+
         // `store` is dropped here — the device is closed cleanly.
     }
 
-    // ── Phase 2: Reopen and read it back ────────────────────────────
+    // ── Phase 2: Reopen and recover ─────────────────────────────────
     {
-        let store = open_store(dir);
+        let mut store = open_store(dir);
+
+        // Recover restores the hash index and loads pages into memory.
+        let info = store.recover(&checkpoint_dir, None)
+            .expect("recovery failed");
+        println!("Recovered {} index entries", info.num_index_entries);
+
         let mut session = store.new_session();
 
         // Data written in Phase 1 is still here.
         assert_eq!(store.read_simple(&mut session, &42), Some(42 * 42));
         assert_eq!(store.read_simple(&mut session, &999), Some(999 * 999));
+
+        // Can continue writing after recovery.
+        store.upsert_simple(&mut session, &2000, &7);
+        assert_eq!(store.read_simple(&mut session, &2000), Some(7));
 
         store.dispose_session(session);
     }
@@ -172,6 +187,8 @@ fn main() {
 | **Functions** | The `Functions` trait defines how reads, upserts, and RMWs behave. `SimpleFunctions` covers the common case. |
 | **Device** | Where the log lives: `NullDevice` (discard), `InMemoryDevice` (RAM-only), or `SyncFileDevice` (disk). |
 | **Hybrid Log** | FASTER's core data structure: recent records live in memory, older records spill to the device. Operations on spilled records return `Pending` and complete asynchronously. |
+| **Checkpoint** | Call `store.checkpoint(dir, CheckpointType::FoldOver)` to persist the hash index and log state. |
+| **Recovery** | Call `store.recover(dir, None)` after reopening to restore from the latest checkpoint. |
 | **Maintenance** | Call `store.maintenance()` periodically to flush pages and reclaim memory. |
 
 ## Next steps

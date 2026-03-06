@@ -32,9 +32,13 @@
 //! store.dispose_session(session);
 //! ```
 
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::address::{LogicalAddress, Page};
+use crate::checkpoint::{
+    CheckpointConfig, CheckpointError, CheckpointOrchestrator, CheckpointToken, CheckpointType,
+};
 use crate::device::Device;
 use crate::epoch::EpochTable;
 use crate::grow::{GrowConfig, GrowError, GrowManager};
@@ -45,6 +49,9 @@ use crate::hybrid_log::flush::PageFlusher;
 use crate::hybrid_log::log_allocator::HybridLogAllocator;
 use crate::hybrid_log::page::PageState;
 use crate::record::{RecordInfo, read_record_info, read_value};
+use crate::recovery::index_recovery::IndexRecoveryEngine;
+use crate::recovery::log_recovery::LogRecoveryEngine;
+use crate::recovery::{RecoveryError, RecoveryManager};
 use crate::status::OperationStatus;
 use crate::store::functions::Functions;
 use crate::store::operations::{
@@ -53,6 +60,28 @@ use crate::store::operations::{
 };
 use crate::store::pending_io::PendingIoManager;
 use crate::store::session::{CompletePendingResult, FasterSession, PendingOpType, SessionPool};
+
+// ── RecoveryInfo ────────────────────────────────────────────────────
+
+/// Information returned after a successful store recovery.
+///
+/// Contains the checkpoint identity, restored address boundaries, and
+/// statistics about how much data was loaded back into memory.
+#[derive(Debug, Clone)]
+pub struct RecoveryInfo {
+    /// The checkpoint token that was recovered.
+    pub token: CheckpointToken,
+    /// Strategy used for the recovered checkpoint.
+    pub checkpoint_type: CheckpointType,
+    /// Number of live entries in the recovered hash index.
+    pub num_index_entries: u64,
+    /// Earliest valid address in the recovered log.
+    pub begin_address: LogicalAddress,
+    /// Tail (exclusive upper-bound) of the recovered log.
+    pub tail_address: LogicalAddress,
+    /// Number of pages loaded from the device into memory.
+    pub pages_loaded: u32,
+}
 
 // ── FasterKvConfig ──────────────────────────────────────────────────
 
@@ -486,6 +515,151 @@ impl<F: Functions> FasterKv<F> {
         F::Context: Default,
     {
         self.delete(session, key, F::Context::default())
+    }
+
+    // ── Checkpoint / Recovery ───────────────────────────────────────
+
+    /// Take a checkpoint of the current store state.
+    ///
+    /// Persists the hash index and hybrid log metadata to `checkpoint_dir`.
+    /// All in-memory pages are flushed to the device before the checkpoint
+    /// completes.
+    ///
+    /// Returns the checkpoint token that identifies this checkpoint for
+    /// later recovery via [`recover`](Self::recover).
+    pub fn checkpoint(
+        &self,
+        checkpoint_dir: &Path,
+        checkpoint_type: CheckpointType,
+    ) -> Result<CheckpointToken, CheckpointError> {
+        // Ensure all mutable pages become read-only so they can be flushed.
+        self.allocator.shift_read_only_to_tail();
+
+        // Flush all in-memory pages to the device synchronously so that
+        // flushed_until_address advances to the tail before the orchestrator
+        // checks it.
+        let page_table = self.allocator.page_table();
+        let head_page = self.allocator.head_address().page().0;
+        let tail = self.allocator.tail_address();
+        let tail_page = tail.page().0;
+        let page_size = self.allocator.page_size();
+
+        for p in head_page..=tail_page {
+            let page = Page(p);
+            if let Some(frame) = page_table.get_frame(page) {
+                let state = frame.state().load(std::sync::atomic::Ordering::Acquire);
+                // Seal Open pages so flush_page_sync can process them.
+                if state == PageState::Open {
+                    let _ = frame
+                        .state()
+                        .try_transition(PageState::Open, PageState::Sealed);
+                }
+                // Now flush any Sealed pages.
+                if frame.state().load(std::sync::atomic::Ordering::Acquire) == PageState::Sealed {
+                    let _ = self.flusher.flush_page_sync(
+                        page,
+                        page_table,
+                        self.device.as_ref(),
+                        page_size,
+                    );
+                }
+            }
+        }
+
+        // Advance flushed_until to the tail so the orchestrator sees all
+        // pages as flushed.
+        self.allocator.try_advance_flushed_until(tail);
+
+        let config = CheckpointConfig::new(checkpoint_dir.to_path_buf());
+        let orchestrator = CheckpointOrchestrator::new(config);
+        let token = orchestrator.take_checkpoint(
+            checkpoint_type,
+            &self.hash_index,
+            &self.allocator,
+            &[],
+            checkpoint_dir,
+        )?;
+
+        // The orchestrator writes the index file to `{dir}/{token}.index`,
+        // but recovery expects it at `{dir}/checkpoints/{token}/{token}.index`.
+        // Move it to the canonical location.
+        let src = checkpoint_dir.join(format!("{token}.index"));
+        let dst = checkpoint_dir
+            .join("checkpoints")
+            .join(token.to_string())
+            .join(format!("{token}.index"));
+        if src.exists() && !dst.exists() {
+            std::fs::rename(&src, &dst).map_err(CheckpointError::IoError)?;
+        }
+
+        Ok(token)
+    }
+
+    /// Recover the store from a checkpoint.
+    ///
+    /// Restores the hash index and log address boundaries from the
+    /// checkpoint. If `token` is `None`, the most recent checkpoint is
+    /// recovered.
+    ///
+    /// Pages are loaded from the device into memory, so reads work
+    /// immediately after recovery without going through the pending I/O
+    /// path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecoveryError`] if the checkpoint is not found, corrupt,
+    /// or if I/O fails during page loading.
+    ///
+    /// # Panics
+    ///
+    /// Must be called before creating any sessions.
+    pub fn recover(
+        &mut self,
+        checkpoint_dir: &Path,
+        token: Option<CheckpointToken>,
+    ) -> Result<RecoveryInfo, RecoveryError> {
+        // Step 1: Select a checkpoint and produce a recovery plan.
+        let recovery_mgr = RecoveryManager::new(checkpoint_dir.to_path_buf());
+        let plan = recovery_mgr.select_checkpoint(token)?;
+
+        // Step 2: Recover the hash index.
+        let index_engine = IndexRecoveryEngine::new();
+        let recovered_index = index_engine.recover_index_with_epoch(
+            &plan,
+            checkpoint_dir,
+            Arc::clone(&self.epoch_table),
+        )?;
+        let num_index_entries = recovered_index.scan_entry_count();
+        self.hash_index = recovered_index;
+
+        // Step 3: Recover log address boundaries.
+        let log_engine = LogRecoveryEngine::new();
+        let log_result = match plan.checkpoint_type {
+            CheckpointType::FoldOver => log_engine.recover_fold_over(&plan, checkpoint_dir)?,
+            CheckpointType::Snapshot => log_engine.recover_snapshot(&plan, checkpoint_dir)?,
+        };
+
+        // Step 4: Restore allocator addresses.
+        self.allocator.restore_from_recovery(&log_result);
+
+        // Step 5: Load pages from device into memory.
+        let pages_loaded = self
+            .allocator
+            .load_pages_from_device(
+                &*self.device,
+                log_result.head_address,
+                log_result.tail_address,
+            )
+            .map_err(RecoveryError::IoError)?;
+
+        Ok(RecoveryInfo {
+            token: plan.token,
+            checkpoint_type: plan.checkpoint_type,
+            num_index_entries,
+            begin_address: log_result.begin_address,
+            tail_address: log_result.tail_address,
+            pages_loaded,
+        })
     }
 
     // ── CRUD Operations ─────────────────────────────────────────────
