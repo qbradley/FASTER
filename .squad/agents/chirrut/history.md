@@ -235,3 +235,26 @@
 
 **Quality:** All 1161 tests pass, 3 skipped. Clippy clean. Zero performance regression — lock-free operations and atomic orderings unchanged.
 
+---
+
+## 2026-07-25: Wave 3, F1 — FFI Opaque Handle System (Chirrut)
+
+**What:** Built the foundation for the C FFI layer: a type-safe, thread-safe opaque handle table (`HandleTable`) and C-compatible status codes (`FasterStatus`). The `faster-ffi` crate stub already existed; added `handle.rs`, `error.rs`, and updated `lib.rs`.
+
+**Key design decisions:**
+- **Monotonic handles via `AtomicU64::fetch_add(1, Relaxed)`**: Handles are never reused, preventing ABA-style bugs from C callers that cache stale handles. Handle 0 is reserved as invalid sentinel. Relaxed ordering is sufficient because the RwLock write-lock provides the happens-before for the HashMap insertion.
+- **`RwLock<HashMap>` over lock-free**: FFI calls are not on the hot path (they're session-setup/teardown level). Simplicity wins over lock-free complexity. Concurrent reads allowed; writes serialize.
+- **Callback-based access (`with`/`with_mut`)**: The RwLock read-guard must live while the reference is used. A closure-based API scopes the guard lifetime without leaking lock internals. This is the standard pattern for RwLock-guarded data.
+- **Type-safe downcasting via `Any`**: Type mismatches on `remove` preserve the entry (don't destroy it). The type-check + remove is atomic under the write lock (no TOCTOU).
+- **Poisoned-lock recovery (`into_inner`)**: At the FFI boundary, panicking is UB. We recover poisoned locks instead of unwrapping.
+- **`#[repr(C)]` FasterStatus**: Success codes 0-99, error codes 100+. `is_success()`/`is_error()` helpers. Size is exactly 4 bytes (C int). Display impl for debugging.
+
+**Quality:** 27 tests (handle lifecycle, invalid handles, type safety, 8-thread concurrency, double-remove, with_mut, heterogeneous types, len/is_empty) + 6 error tests. All 27 pass under Miri (zero UB). All 1167 faster-core tests still pass. Clippy clean, fmt clean.
+
+**Also fixed:** Pre-existing compile error in `store/kv.rs` (`crate::record::MutableRecordAccessor` → `crate::hybrid_log::MutableRecordAccessor`) and pre-existing formatting issues.
+
+**Artifacts:**
+- `rust/crates/faster-ffi/src/handle.rs` — HandleTable implementation + 21 tests
+- `rust/crates/faster-ffi/src/error.rs` — FasterStatus enum + 6 tests
+- `rust/crates/faster-ffi/src/lib.rs` — Module structure
+
