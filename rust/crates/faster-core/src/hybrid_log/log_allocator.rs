@@ -301,6 +301,27 @@ impl HybridLogAllocator {
     pub fn page_size(&self) -> u32 {
         self.page_size
     }
+
+    /// Get the current safe read-only address.
+    #[inline]
+    pub fn safe_read_only_address(&self) -> LogicalAddress {
+        self.safe_read_only_address.load(Ordering::SeqCst)
+    }
+
+    /// Take a consistent snapshot of the current address boundaries.
+    ///
+    /// Note: this is NOT fully atomic across all 5 fields, but reading
+    /// them in begin→tail order with SeqCst loads is sufficient because
+    /// boundaries only move forward.
+    pub fn snapshot(&self) -> super::regions::AddressInfo {
+        super::regions::AddressInfo {
+            begin_address: self.begin_address.load(Ordering::SeqCst),
+            head_address: self.head_address.load(Ordering::SeqCst),
+            read_only_address: self.read_only_address.load(Ordering::SeqCst),
+            safe_read_only_address: self.safe_read_only_address.load(Ordering::SeqCst),
+            tail_address: self.tail_address.load(Ordering::SeqCst),
+        }
+    }
 }
 
 // ===========================================================================
