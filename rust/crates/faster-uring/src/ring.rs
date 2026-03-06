@@ -59,8 +59,10 @@ impl Default for UringConfig {
 ///   kernel-side use-after-free of submitted buffers.
 pub struct Ring {
     ring: IoUring,
-    /// Count of submitted-but-not-yet-completed operations.
+    /// Count of operations pushed to the SQ but not yet reaped from the CQ.
     inflight: u32,
+    /// Count of SQEs pushed but not yet submitted to the kernel via `submit()`.
+    unsubmitted: u32,
     /// Saved configuration for reference.
     #[allow(dead_code)]
     config: UringConfig,
@@ -86,6 +88,7 @@ impl Ring {
         Ok(Self {
             ring,
             inflight: 0,
+            unsubmitted: 0,
             config,
         })
     }
@@ -127,6 +130,7 @@ impl Ring {
                 .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "submission queue full"))?;
         }
         self.inflight += 1;
+        self.unsubmitted += 1;
         Ok(())
     }
 
@@ -165,6 +169,7 @@ impl Ring {
                 .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "submission queue full"))?;
         }
         self.inflight += 1;
+        self.unsubmitted += 1;
         Ok(())
     }
 
@@ -185,6 +190,7 @@ impl Ring {
                 .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "submission queue full"))?;
         }
         self.inflight += 1;
+        self.unsubmitted += 1;
         Ok(())
     }
 
@@ -194,6 +200,7 @@ impl Ring {
     /// operations are not visible to the kernel.
     pub fn submit(&mut self) -> io::Result<u32> {
         let n = self.ring.submit()?;
+        self.unsubmitted = 0;
         Ok(n as u32)
     }
 
@@ -203,9 +210,12 @@ impl Ring {
     /// Returns completed operations as `(user_data, result)` pairs where
     /// `result` is the kernel return value (bytes transferred on success,
     /// negative errno on failure).
+    ///
+    /// Also flushes any unsubmitted SQEs to the kernel.
     pub fn reap_completions(&mut self) -> io::Result<Vec<(u64, i32)>> {
         // Submit any pending entries and wait for at least 1 completion.
         self.ring.submit_and_wait(1)?;
+        self.unsubmitted = 0;
 
         let mut results = Vec::new();
         let cq = self.ring.completion();
@@ -216,6 +226,21 @@ impl Ring {
         Ok(results)
     }
 
+    /// Non-blocking drain of the completion queue.
+    ///
+    /// Returns all currently available CQEs without submitting or waiting.
+    /// Use this when accumulating a batch of SQEs — it prevents the CQ from
+    /// overflowing while new SQEs are being collected.
+    pub fn try_reap_completions(&mut self) -> Vec<(u64, i32)> {
+        let mut results = Vec::new();
+        let cq = self.ring.completion();
+        for cqe in cq {
+            results.push((cqe.user_data(), cqe.result()));
+            self.inflight = self.inflight.saturating_sub(1);
+        }
+        results
+    }
+
     /// Wait for all in-flight operations to complete.
     ///
     /// This is called automatically by [`Drop`]. After this returns,
@@ -223,6 +248,7 @@ impl Ring {
     pub fn drain(&mut self) -> io::Result<()> {
         while self.inflight > 0 {
             self.ring.submit_and_wait(1)?;
+            self.unsubmitted = 0;
             let cq = self.ring.completion();
             for _cqe in cq {
                 self.inflight = self.inflight.saturating_sub(1);
@@ -231,9 +257,15 @@ impl Ring {
         Ok(())
     }
 
-    /// Returns the number of operations currently in flight.
+    /// Returns the number of operations currently in the pipeline
+    /// (pushed to SQ or submitted to kernel but not yet reaped).
     pub fn inflight(&self) -> u32 {
         self.inflight
+    }
+
+    /// Returns the number of SQEs pushed but not yet submitted to the kernel.
+    pub fn unsubmitted(&self) -> u32 {
+        self.unsubmitted
     }
 
     // ── Buffer registration ───────────────────────────────────────────

@@ -35,6 +35,6 @@ mod ring;
 #[cfg(target_os = "linux")]
 pub use buffer::{BufferPool, RegisteredBuffer, SECTOR_ALIGNMENT};
 #[cfg(target_os = "linux")]
-pub use device::{UringDevice, UringDeviceConfig};
+pub use device::{BatchPolicy, UringDevice, UringDeviceConfig};
 #[cfg(target_os = "linux")]
 pub use ring::{Ring, UringConfig};
