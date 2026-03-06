@@ -347,6 +347,158 @@ impl<F: Functions> FasterKv<F> {
         self.session_pool.dispose_session(session);
     }
 
+    // ── Scoped Session ──────────────────────────────────────────────
+
+    /// Execute a closure within an automatically-managed session.
+    ///
+    /// Opens a new session, passes it to the closure, and disposes of the
+    /// session when the closure returns — even if the closure panics.
+    /// This is the recommended way to use sessions for short-lived
+    /// operation batches.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
+    /// # use faster_core::NullDevice;
+    /// # let store: FasterKv<SimpleFunctions<u64, u64>> = FasterKv::new(
+    /// #     FasterKvConfig::default(), SimpleFunctions::default(), NullDevice::new());
+    /// let value = store.session_scope(|session, store| {
+    ///     store.upsert(session, &1u64, &42u64, ());
+    ///     let mut out = None;
+    ///     store.read(session, &1u64, &0u64, &mut out, ());
+    ///     out
+    /// });
+    /// assert_eq!(value, Some(42));
+    /// ```
+    pub fn session_scope<R>(
+        &self,
+        f: impl FnOnce(&mut FasterSession<F>, &Self) -> R,
+    ) -> R {
+        let session = self.new_session();
+        // Use a guard struct to ensure dispose even on panic.
+        struct ScopeGuard<'a, F: Functions> {
+            store: &'a FasterKv<F>,
+            session: Option<FasterSession<F>>,
+        }
+        impl<F: Functions> Drop for ScopeGuard<'_, F> {
+            fn drop(&mut self) {
+                if let Some(session) = self.session.take() {
+                    self.store.dispose_session(session);
+                }
+            }
+        }
+        let mut guard = ScopeGuard {
+            store: self,
+            session: Some(session),
+        };
+        let session = guard.session.as_mut().expect("session was just created");
+        let result = f(session, self);
+        // Explicit dispose (guard's Drop handles the panic path).
+        if let Some(session) = guard.session.take() {
+            self.dispose_session(session);
+        }
+        result
+    }
+
+    // ── Convenience Methods ─────────────────────────────────────────
+
+    /// Simplified upsert that uses default context (`Default::default()`).
+    ///
+    /// This is a convenience wrapper around [`upsert`](Self::upsert) for
+    /// [`Functions`] implementations whose `Context` type is `Default`
+    /// (e.g., [`SimpleFunctions`](super::SimpleFunctions) where `Context = ()`).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
+    /// # use faster_core::NullDevice;
+    /// # let store: FasterKv<SimpleFunctions<u64, u64>> = FasterKv::new(
+    /// #     FasterKvConfig::default(), SimpleFunctions::default(), NullDevice::new());
+    /// let mut session = store.new_session();
+    /// let status = store.upsert_simple(&mut session, &1u64, &100u64);
+    /// store.dispose_session(session);
+    /// ```
+    pub fn upsert_simple(
+        &self,
+        session: &mut FasterSession<F>,
+        key: &F::Key,
+        input: &F::Input,
+    ) -> OperationStatus
+    where
+        F::Context: Default,
+    {
+        self.upsert(session, key, input, F::Context::default())
+    }
+
+    /// Simplified read that returns the value directly.
+    ///
+    /// Returns `Some(output)` on success or `None` if the key was not found
+    /// or the record is on disk (pending). This wrapper uses `Default` for
+    /// both `Input` and `Context`, making it ideal for
+    /// [`SimpleFunctions`](super::SimpleFunctions).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
+    /// # use faster_core::NullDevice;
+    /// # let store: FasterKv<SimpleFunctions<u64, u64>> = FasterKv::new(
+    /// #     FasterKvConfig::default(), SimpleFunctions::default(), NullDevice::new());
+    /// let mut session = store.new_session();
+    /// store.upsert_simple(&mut session, &1u64, &42u64);
+    /// let value = store.read_simple(&mut session, &1u64);
+    /// assert_eq!(value, Some(42));
+    /// store.dispose_session(session);
+    /// ```
+    pub fn read_simple(
+        &self,
+        session: &mut FasterSession<F>,
+        key: &F::Key,
+    ) -> F::Output
+    where
+        F::Input: Default,
+        F::Context: Default,
+    {
+        let mut output = F::Output::default();
+        let input = F::Input::default();
+        let status = self.read(session, key, &input, &mut output, F::Context::default());
+        if status == OperationStatus::Ok {
+            output
+        } else {
+            F::Output::default()
+        }
+    }
+
+    /// Simplified delete that uses default context (`Default::default()`).
+    ///
+    /// This is a convenience wrapper around [`delete`](Self::delete) for
+    /// [`Functions`] implementations whose `Context` type is `Default`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
+    /// # use faster_core::NullDevice;
+    /// # let store: FasterKv<SimpleFunctions<u64, u64>> = FasterKv::new(
+    /// #     FasterKvConfig::default(), SimpleFunctions::default(), NullDevice::new());
+    /// let mut session = store.new_session();
+    /// store.upsert_simple(&mut session, &1u64, &42u64);
+    /// let status = store.delete_simple(&mut session, &1u64);
+    /// store.dispose_session(session);
+    /// ```
+    pub fn delete_simple(
+        &self,
+        session: &mut FasterSession<F>,
+        key: &F::Key,
+    ) -> OperationStatus
+    where
+        F::Context: Default,
+    {
+        self.delete(session, key, F::Context::default())
+    }
+
     // ── CRUD Operations ─────────────────────────────────────────────
 
     /// Read a key's value.
@@ -1654,5 +1806,128 @@ mod tests {
 
         h1.join().expect("thread 1 panicked");
         h2.join().expect("thread 2 panicked");
+    }
+
+    // ── A2: Ergonomic Session API ───────────────────────────────────
+
+    #[test]
+    fn session_scope_basic_usage() {
+        let store = test_store();
+
+        let result = store.session_scope(|session, store| {
+            let _ = store.upsert_simple(session, &1u64, &42u64);
+            let out = store.read_simple(session, &1u64);
+            out
+        });
+        assert_eq!(result, Some(42));
+    }
+
+    #[test]
+    fn session_scope_with_panic_cleans_up() {
+        let store = test_store();
+
+        // Insert a value in a scope that panics after the upsert.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            store.session_scope(|session, store| {
+                let _ = store.upsert_simple(session, &99u64, &999u64);
+                panic!("intentional panic inside session_scope");
+            });
+        }));
+        assert!(result.is_err(), "closure should have panicked");
+
+        // The session was cleaned up. We can open a new one and the
+        // store is still usable.
+        let mut session = store.new_session();
+        let mut output: Option<u64> = None;
+        let _ = store.read(&mut session, &99u64, &0u64, &mut output, ());
+        // The upsert may or may not have persisted (it completed before
+        // the panic), but the store must not be in a broken state.
+        store.dispose_session(session);
+    }
+
+    #[test]
+    fn session_scope_multiple_sequential() {
+        let store = test_store();
+
+        for i in 0u64..5 {
+            store.session_scope(|session, store| {
+                let _ = store.upsert_simple(session, &i, &(i * 100));
+            });
+        }
+
+        // Verify all values were written across scopes.
+        store.session_scope(|session, store| {
+            for i in 0u64..5 {
+                let out = store.read_simple(session, &i);
+                assert_eq!(out, Some(i * 100), "key {} mismatch", i);
+            }
+        });
+    }
+
+    #[test]
+    fn convenience_upsert_simple() {
+        let store = test_store();
+        let mut session = store.new_session();
+
+        let status = store.upsert_simple(&mut session, &10u64, &200u64);
+        assert!(
+            status == OperationStatus::Created || status == OperationStatus::InPlaceUpdated,
+            "upsert_simple should succeed, got: {:?}",
+            status,
+        );
+
+        let mut output: Option<u64> = None;
+        let status = store.read(&mut session, &10u64, &0u64, &mut output, ());
+        assert_eq!(status, OperationStatus::Ok);
+        assert_eq!(output, Some(200));
+
+        store.dispose_session(session);
+    }
+
+    #[test]
+    fn convenience_read_simple() {
+        let store = test_store();
+        let mut session = store.new_session();
+
+        let _ = store.upsert_simple(&mut session, &5u64, &55u64);
+
+        let out = store.read_simple(&mut session, &5u64);
+        assert_eq!(out, Some(55));
+
+        // Non-existent key returns default.
+        let out = store.read_simple(&mut session, &9999u64);
+        assert_eq!(out, None);
+
+        store.dispose_session(session);
+    }
+
+    #[test]
+    fn convenience_delete_simple() {
+        let store = test_store();
+        let mut session = store.new_session();
+
+        let _ = store.upsert_simple(&mut session, &7u64, &77u64);
+        let status = store.delete_simple(&mut session, &7u64);
+        assert_eq!(status, OperationStatus::Deleted);
+
+        let out = store.read_simple(&mut session, &7u64);
+        assert_eq!(out, None);
+
+        store.dispose_session(session);
+    }
+
+    #[test]
+    fn session_scope_return_value() {
+        let store = test_store();
+
+        let count = store.session_scope(|session, store| {
+            let mut n = 0u64;
+            for i in 0u64..10 {
+                let _ = store.upsert_simple(session, &i, &i);
+                n += 1;
+            }
+            n
+        });
+        assert_eq!(count, 10);
     }
 }

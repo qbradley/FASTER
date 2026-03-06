@@ -48,6 +48,35 @@ use crate::record::RecordLayout;
 use super::Functions;
 use super::pending_io::{CompletedIo, PendingIoContext, PendingIoError};
 
+// ── SessionStats ────────────────────────────────────────────────────
+
+/// Snapshot of session-level statistics.
+///
+/// Returned by [`FasterSession::stats()`] to give callers an overview of
+/// the session's activity without exposing internal bookkeeping.
+///
+/// # Example
+///
+/// ```
+/// use faster_core::store::SessionStats;
+///
+/// let stats = SessionStats {
+///     operations_completed: 42,
+///     pending_count: 0,
+///     current_serial: 42,
+/// };
+/// assert_eq!(stats.operations_completed, 42);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionStats {
+    /// Total number of operations the session has issued (serial number).
+    pub operations_completed: u64,
+    /// Number of outstanding pending operations (dispatched + in-flight).
+    pub pending_count: usize,
+    /// The next serial number that will be assigned.
+    pub current_serial: u64,
+}
+
 // ── CompletePendingResult ───────────────────────────────────────────
 
 /// Result returned by [`FasterKv::try_complete_pending`](super::FasterKv::try_complete_pending)
@@ -424,6 +453,32 @@ impl<F: Functions> FasterSession<F> {
     #[inline]
     pub fn epoch_thread(&self) -> &crate::epoch::EpochThread {
         &self.epoch_thread
+    }
+
+    /// Returns a snapshot of session-level statistics.
+    ///
+    /// This is a cheap, non-blocking call that reads local counters.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use std::sync::Arc;
+    /// # use faster_core::epoch::EpochTable;
+    /// # use faster_core::store::{SimpleFunctions, SessionPool};
+    /// let epoch_table = Arc::new(EpochTable::new());
+    /// let pool = SessionPool::<SimpleFunctions<u64, u64>>::new(epoch_table);
+    /// let mut session = pool.create_session();
+    /// let stats = session.stats();
+    /// assert_eq!(stats.operations_completed, 0);
+    /// assert_eq!(stats.pending_count, 0);
+    /// ```
+    #[inline]
+    pub fn stats(&self) -> SessionStats {
+        SessionStats {
+            operations_completed: self.serial_number,
+            pending_count: self.pending_count(),
+            current_serial: self.serial_number,
+        }
     }
 }
 
@@ -1090,5 +1145,63 @@ mod tests {
         assert_eq!(expired.len(), 1);
         assert_eq!(session.io_pending_count(), 1);
         assert_eq!(session.expired_pending_count(), 0);
+    }
+
+    // ── A2: SessionStats ────────────────────────────────────────────
+
+    #[test]
+    fn stats_initial_values() {
+        let (_, pool) = make_pool();
+        let session = pool.create_session();
+        let stats = session.stats();
+        assert_eq!(stats.operations_completed, 0);
+        assert_eq!(stats.pending_count, 0);
+        assert_eq!(stats.current_serial, 0);
+    }
+
+    #[test]
+    fn stats_after_serial_increments() {
+        let (_, pool) = make_pool();
+        let mut session = pool.create_session();
+
+        for _ in 0..5 {
+            session.next_serial();
+        }
+
+        let stats = session.stats();
+        assert_eq!(stats.operations_completed, 5);
+        assert_eq!(stats.current_serial, 5);
+        assert_eq!(stats.pending_count, 0);
+    }
+
+    #[test]
+    fn stats_reflects_pending_count() {
+        let (_, pool) = make_pool();
+        let mut session = pool.create_session();
+
+        session.enqueue_pending(make_pending_op(1));
+        session.enqueue_pending(make_pending_op(2));
+
+        let stats = session.stats();
+        assert_eq!(stats.pending_count, 2);
+        assert_eq!(stats.operations_completed, 0);
+
+        session.clear_pending();
+        let stats = session.stats();
+        assert_eq!(stats.pending_count, 0);
+    }
+
+    #[test]
+    fn session_stats_debug_and_clone() {
+        let stats = super::SessionStats {
+            operations_completed: 10,
+            pending_count: 2,
+            current_serial: 10,
+        };
+        let debug = format!("{:?}", stats);
+        assert!(debug.contains("SessionStats"));
+
+        let cloned = stats;
+        assert_eq!(cloned, stats);
     }
 }
