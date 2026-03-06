@@ -37,7 +37,7 @@ use std::sync::Arc;
 use crate::address::LogicalAddress;
 use crate::device::Device;
 use crate::epoch::EpochTable;
-use crate::hash_index::HashIndex;
+use crate::hash::index::HashIndex;
 use crate::hybrid_log::eviction::{EvictionPolicy, PageEvictor};
 use crate::hybrid_log::flush::PageFlusher;
 use crate::hybrid_log::log_allocator::HybridLogAllocator;

@@ -42,7 +42,7 @@ use std::sync::Arc;
 
 use crate::address::LogicalAddress;
 use crate::epoch::EpochTable;
-use crate::hash::hash::KeyHash;
+use crate::hash::KeyHash;
 use crate::record::RecordLayout;
 
 use super::Functions;

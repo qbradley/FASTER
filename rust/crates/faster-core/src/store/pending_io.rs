@@ -1,5 +1,10 @@
 //! Pending I/O completion manager for FASTER sessions.
 //!
+//! **⚠ Pre-alpha scaffolding (SF-13):** This subsystem is structurally
+//! complete but not yet integrated into `FasterKv`. The types are exported
+//! to support incremental development. Do not rely on the public API —
+//! it will change when full async I/O integration lands (see O-2).
+//!
 //! When a CRUD operation finds a record in the on-disk region, it cannot
 //! complete synchronously. The operation is captured as a [`PendingOperation`]
 //! and handed to the [`PendingIoManager`], which issues a disk read and tracks
@@ -197,6 +202,12 @@ impl<F: Functions> std::fmt::Debug for PendingIoContext<F> {
 
 impl<F: Functions> PendingIoContext<F> {
     /// Check whether the I/O has completed.
+    ///
+    /// # TODO (SF-14)
+    ///
+    /// Add a configurable timeout and `cancel()` method. If the underlying
+    /// device hangs, `is_completed` will return `false` forever, causing the
+    /// session's pending queue to grow without bound.
     pub fn is_completed(&self) -> bool {
         self.completed.load(Ordering::Acquire)
     }
@@ -412,7 +423,7 @@ mod tests {
     use super::*;
     use crate::address::{LogicalAddress, Offset, Page};
     use crate::device::InMemoryDevice;
-    use crate::hash::hash::KeyHash;
+    use crate::hash::KeyHash;
     use crate::record::{RecordInfo, RecordLayout, write_record};
     use crate::store::SimpleFunctions;
     use crate::store::session::{PendingOpType, PendingOperation};

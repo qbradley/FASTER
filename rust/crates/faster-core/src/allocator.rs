@@ -588,8 +588,11 @@ impl<T> MallocFixedPageSize<T> {
     ///
     /// # Safety contract (caller must uphold)
     ///
-    /// Same as [`free()`](Self::free).
-    pub fn free_immediate(&self, addr: LogicalAddress) {
+    /// Same as [`free()`](Self::free). Additionally, the caller must ensure
+    /// no other thread holds a reference to the freed item (SF-11: bypassing
+    /// epoch protection means concurrent readers could observe recycled data).
+    #[allow(dead_code)] // Retained for Drop/cleanup paths and tested below.
+    pub(crate) fn free_immediate(&self, addr: LogicalAddress) {
         self.push_free_list(addr);
     }
 

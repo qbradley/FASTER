@@ -285,6 +285,14 @@ impl MutableRecordAccessor {
     /// underlying page memory (guaranteed exclusive by the caller at
     /// construction time). The `*mut u8` already carries the mutability
     /// permission.
+    ///
+    /// # TODO (SF-2)
+    ///
+    /// This creates `&mut [u8]` from `&self`, which violates Stacked Borrows.
+    /// Multiple calls produce overlapping `&mut` references. Refactor to use
+    /// raw pointer operations (`ptr::copy_nonoverlapping`) internally, or
+    /// change write methods to take `&mut self`. Validate with `cargo +nightly
+    /// miri test`.
     #[inline]
     #[allow(clippy::mut_from_ref)]
     pub fn as_mut_slice(&self) -> &mut [u8] {
