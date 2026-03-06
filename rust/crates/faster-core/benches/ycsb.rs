@@ -9,10 +9,10 @@ use criterion::{
     BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
     measurement::WallTime,
 };
+use faster_core::NullDevice;
 use faster_core::hybrid_log::eviction::EvictionPolicy;
 use faster_core::status::OperationStatus;
 use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
-use faster_core::NullDevice;
 
 // ---------------------------------------------------------------------------
 // Helpers

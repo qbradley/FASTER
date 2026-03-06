@@ -98,7 +98,10 @@ fn find_record_for_key<K: Key>(
     while addr.is_valid() {
         // SF-1: Guard against cycles and pathologically long chains.
         if depth >= MAX_CHAIN_DEPTH {
-            debug_assert!(false, "version chain exceeded MAX_CHAIN_DEPTH ({MAX_CHAIN_DEPTH}) — possible cycle or corruption");
+            debug_assert!(
+                false,
+                "version chain exceeded MAX_CHAIN_DEPTH ({MAX_CHAIN_DEPTH}) — possible cycle or corruption"
+            );
             return None;
         }
         depth += 1;

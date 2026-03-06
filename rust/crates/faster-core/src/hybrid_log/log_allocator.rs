@@ -20,9 +20,7 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::address::{
-    AtomicLogicalAddress, LogicalAddress, MAX_PAGE, OFFSET_BITS, Offset, Page,
-};
+use crate::address::{AtomicLogicalAddress, LogicalAddress, MAX_PAGE, OFFSET_BITS, Offset, Page};
 
 use super::page::{PageState, PageTable};
 
