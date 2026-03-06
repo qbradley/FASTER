@@ -1,0 +1,79 @@
+{
+  "meta": {
+    "description": "YCSB benchmark baseline for FASTER Rust - Iteration 2",
+    "criterion_flags": "--quick",
+    "generated_by": "cargo bench -p faster-core --bench ycsb -- --quick"
+  },
+  "benchmarks": [
+    {
+      "name": "ycsb/sequential_upsert/100K_ops",
+      "time_median": 28.954,
+      "time_unit": "ms",
+      "throughput_median": 3.4538,
+      "throughput_unit": "Melem/s"
+    },
+    {
+      "name": "ycsb/sequential_read/100K_ops",
+      "time_median": 21.802,
+      "time_unit": "ms",
+      "throughput_median": 4.5868,
+      "throughput_unit": "Melem/s"
+    },
+    {
+      "name": "ycsb/mixed_50_50/workload_a",
+      "time_median": 80.421,
+      "time_unit": "ms",
+      "throughput_median": 3.1086,
+      "throughput_unit": "Melem/s"
+    },
+    {
+      "name": "ycsb/read_heavy_95_5/workload_b",
+      "time_median": 74.145,
+      "time_unit": "ms",
+      "throughput_median": 3.3718,
+      "throughput_unit": "Melem/s"
+    },
+    {
+      "name": "ycsb/rmw/100K_ops",
+      "time_median": 20.54,
+      "time_unit": "ms",
+      "throughput_median": 4.8686,
+      "throughput_unit": "Melem/s"
+    },
+    {
+      "name": "ycsb/multithread_upsert/threads/1",
+      "time_median": 29.425,
+      "time_unit": "ms",
+      "throughput_median": 3.3985,
+      "throughput_unit": "Melem/s"
+    },
+    {
+      "name": "ycsb/multithread_upsert/threads/2",
+      "time_median": 41.341,
+      "time_unit": "ms",
+      "throughput_median": 4.8379,
+      "throughput_unit": "Melem/s"
+    },
+    {
+      "name": "ycsb/multithread_upsert/threads/4",
+      "time_median": 54.504,
+      "time_unit": "ms",
+      "throughput_median": 7.3389,
+      "throughput_unit": "Melem/s"
+    },
+    {
+      "name": "ycsb/multithread_upsert/threads/8",
+      "time_median": 97.378,
+      "time_unit": "ms",
+      "throughput_median": 8.2154,
+      "throughput_unit": "Melem/s"
+    },
+    {
+      "name": "ycsb/read_latency/point_read",
+      "time_median": 272.72,
+      "time_unit": "ns",
+      "throughput_median": 3.6667,
+      "throughput_unit": "Melem/s"
+    }
+  ]
+}
