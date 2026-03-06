@@ -18,7 +18,10 @@
 //! (e.g., concurrent modifications, out-of-memory chain), the scanner
 //! conservatively classifies records as live.
 
+pub mod address_update;
+pub mod begin_address;
 pub mod copier;
+pub mod policy;
 pub mod scanner;
 
 use crate::address::LogicalAddress;
