@@ -268,6 +268,26 @@ impl EpochTable {
         self.try_drain();
     }
 
+    /// Queues a callback to execute when the current epoch becomes safe to
+    /// reclaim, **without** advancing the global epoch.
+    ///
+    /// The callback fires when all currently-protected threads have exited
+    /// their protected regions and the epoch has been bumped at least once
+    /// (by another call to [`bump_current_epoch`](Self::bump_current_epoch)
+    /// or the normal operation cycle).
+    ///
+    /// # When to Use
+    ///
+    /// Use this to defer work (e.g., free-list pushes) until it is safe,
+    /// without paying the cost of an epoch bump per deferral. The epoch
+    /// will be bumped by the normal FASTER operation cycle.
+    pub fn defer<F: FnOnce() + Send + 'static>(&self, callback: F) {
+        // SeqCst: must read the latest epoch to ensure the callback is not
+        // tagged at an already-safe epoch (which would fire too early).
+        let current = self.current_epoch.load(Ordering::SeqCst);
+        self.drain_list.push(current, Box::new(callback));
+    }
+
     /// Computes the safe-to-reclaim epoch and executes ready drain callbacks.
     ///
     /// Called automatically by `unprotect` and `bump_current_epoch`. Can
