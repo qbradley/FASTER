@@ -141,6 +141,20 @@ impl HybridLogAllocator {
                 Ok(_) => {
                     // Ensure the page frame exists.
                     self.page_table.get_or_allocate_frame(current.page());
+
+                    // If this allocation filled the page exactly, the tail
+                    // moved to the next page. Seal the old page (Open →
+                    // Sealed) and ensure the new page frame is ready.
+                    if new_offset == self.page_size {
+                        if let Some(frame) = self.page_table.get_frame(current.page()) {
+                            let _ = frame
+                                .state()
+                                .try_transition(PageState::Open, PageState::Sealed);
+                        }
+                        self.page_table
+                            .get_or_allocate_frame(Page(current.page().0 + 1));
+                    }
+
                     return Some(current);
                 }
                 Err(_) => {
@@ -169,6 +183,12 @@ impl HybridLogAllocator {
     ///
     /// Called when the mutable region grows too large. This seals the
     /// currently-mutable pages so they become read-only.
+    ///
+    /// Also advances `safe_read_only_address` to match. In a future
+    /// multi-threaded implementation this should happen via an epoch
+    /// callback (so all threads have observed the new boundary before
+    /// it becomes "safe"). For now the immediate advance is correct for
+    /// single-threaded callers.
     pub fn shift_read_only_to_tail(&self) {
         let tail = self.tail_address.load(Ordering::Acquire);
         // Monotonically advance — never move backward.
@@ -178,6 +198,23 @@ impl HybridLogAllocator {
                 break;
             }
             match self.read_only_address.compare_exchange(
+                current,
+                tail,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(_) => continue,
+            }
+        }
+
+        // Advance safe_read_only to match. See doc comment above.
+        loop {
+            let current = self.safe_read_only_address.load(Ordering::Acquire);
+            if current >= tail {
+                break;
+            }
+            match self.safe_read_only_address.compare_exchange(
                 current,
                 tail,
                 Ordering::AcqRel,
@@ -586,28 +623,9 @@ mod tests {
         alloc.shift_read_only_to_tail();
         assert_eq!(alloc.read_only_address(), tail_before);
 
-        // a0 is no longer mutable (read_only has advanced past it), but
-        // safe_read_only hasn't moved yet so a0 is still considered mutable
-        // from the safe_read_only perspective.
-        assert!(alloc.is_mutable(a0));
-        assert!(alloc.is_in_memory(a0));
-
-        // Manually advance safe_read_only to match read_only for testing
-        loop {
-            let current = alloc.safe_read_only_address.load(Ordering::Acquire);
-            let target = alloc.read_only_address.load(Ordering::Acquire);
-            if current >= target {
-                break;
-            }
-            let _ = alloc.safe_read_only_address.compare_exchange(
-                current,
-                target,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            );
-        }
-
-        // Now a0 should be safe_read_only, not mutable
+        // After shift_read_only_to_tail, both read_only and safe_read_only
+        // have advanced past a0 (safe_read_only is now advanced immediately
+        // rather than waiting for an epoch callback).
         assert!(alloc.is_safe_read_only(a0));
         assert!(!alloc.is_mutable(a0));
         assert!(alloc.is_in_memory(a0));
