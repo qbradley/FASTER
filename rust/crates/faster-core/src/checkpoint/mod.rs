@@ -5,9 +5,18 @@
 //! `LogMetadata` and C# `IndexRecoveryInfo` / `HybridLogRecoveryInfo` types.
 //!
 //! All types serialize to JSON via [`serde`] for human-readable checkpoint files.
+//!
+//! The [`CheckpointManager`] trait abstracts checkpoint coordination,
+//! and [`CheckpointManagerImpl`] provides a thread-safe in-memory default.
 
+mod manager;
 mod metadata;
+mod state_machine;
 
+pub use manager::{
+    CheckpointError, CheckpointManager, CheckpointManagerImpl, CheckpointStatus,
+};
 pub use metadata::{
     CheckpointToken, CheckpointType, IndexRecoveryInfo, LogRecoveryInfo, SessionRecoveryInfo,
 };
+pub use state_machine::{CheckpointPhase, CheckpointStateMachine};
