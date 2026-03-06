@@ -24,8 +24,10 @@
 //! [`IndexRecoveryEngine`]: index_recovery::IndexRecoveryEngine
 //! [`LogRecoveryEngine`]: log_recovery::LogRecoveryEngine
 
-pub mod index_recovery;
+pub mod index_recovery; // contains unsafe: raw pointer slice for index deserialization
+#[deny(unsafe_code)]
 pub mod log_recovery;
+#[deny(unsafe_code)]
 pub mod session_recovery;
 
 use std::fmt;

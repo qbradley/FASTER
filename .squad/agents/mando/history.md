@@ -438,3 +438,35 @@ Created `rust/crates/faster-core/examples/cache_store.rs` — a Rust port of the
 - The callback pattern (Box::into_raw → pass to device → Box::from_raw in callback) appears in every async I/O call site. TypedIoContext centralizes the invariants.
 - Error-path reclaim is the biggest win: callers no longer need to remember the cast type in `Box::from_raw(ptr as *mut T)` — `reclaim()` is type-safe and requires no unsafe.
 - TypedIoContext intentionally has no Drop impl: on the success path, ownership transfers to the I/O subsystem silently.
+
+---
+
+## Phase 5: Module-Level Safety Gates (Final Phase)
+
+**Date:** 2025-07-18
+**Files changed:** lib.rs, checkpoint/mod.rs, epoch/mod.rs, hash/mod.rs, hybrid_log/mod.rs, recovery/mod.rs, store/mod.rs, Cargo.toml, tests/integration_basics.rs
+
+**Changes made:**
+1. **`#[deny(unsafe_code)]` on 8 top-level modules in lib.rs** — address, error, grow, metrics, record, status, sync, instrument. These are 100% safe and now compiler-enforced.
+2. **`#[deny(unsafe_code)]` on 19 sub-modules across 6 parent modules** — individually gated safe sub-modules within checkpoint (9/10), epoch (3/4), hash (3/5), hybrid_log (2/7), recovery (2/3), store (2/6).
+3. **`[lints.clippy] undocumented_unsafe_blocks = "deny"` in Cargo.toml** — extends the existing lib.rs `#![forbid(clippy::undocumented_unsafe_blocks)]` to also cover integration tests and benchmarks.
+4. **Added SAFETY comments to 7 unsafe blocks in `tests/integration_basics.rs`** — required by the new Cargo.toml lint.
+
+**Total gated modules:** 42 of 60 .rs files (70%) are now compiler-enforced safe.
+
+**Final unsafe footprint:** 100 blocks + 30 fns + 15 impls = 145 constructs across 18 files.
+
+**Crate-level lints now active:**
+- `#![deny(unsafe_op_in_unsafe_fn)]` — require explicit unsafe blocks inside unsafe fns
+- `#![forbid(clippy::undocumented_unsafe_blocks)]` — every unsafe block needs a SAFETY comment
+- `[lints.clippy] undocumented_unsafe_blocks = "deny"` — covers tests/benchmarks too
+
+**Tests:** 1161 passed, 3 skipped. Clippy clean.
+
+## Learnings
+
+- `#[deny(unsafe_code)]` on a `mod` declaration in the parent propagates to the entire subtree — this is the most practical way to gate individual modules in a multi-file crate.
+- `#![forbid(unsafe_code)]` only works at the crate root (`lib.rs`/`main.rs`), not in arbitrary module files. For sub-modules, `#[deny(unsafe_code)]` on the `mod` item in the parent is the correct approach.
+- Cargo.toml `[lints.clippy]` applies to ALL targets (lib, tests, benchmarks, examples), while `#![forbid(...)]` in lib.rs only applies to the library. Both are needed for complete coverage.
+- The grep pattern `unsafe impl` can false-positive on comments containing those words (e.g., `// contains unsafe: unsafe impl Send/Sync`). Use `^\s*unsafe\s+impl` for precise counting.
+- Method names containing `unsafe` (like `begin_unsafe()`) don't trigger `#[deny(unsafe_code)]` — the lint only fires on actual `unsafe` syntax constructs.

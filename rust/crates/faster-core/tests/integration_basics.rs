@@ -99,6 +99,7 @@ fn allocator_store_and_read_record() {
     // Write a record into the allocated slot.
     {
         let slot = alloc.get(addr);
+        // SAFETY: `alloc.get(addr)` returns a valid pointer to a 128-byte slot we just allocated.
         let buf = unsafe { std::slice::from_raw_parts_mut(slot as *const _ as *mut u8, 128) };
         let info = RecordInfo::new(LogicalAddress::ZERO, 7, false, false, false);
         write_record(buf, &info, &key, &value, &layout);
@@ -107,6 +108,7 @@ fn allocator_store_and_read_record() {
     // Read back from a fresh reference.
     {
         let slot = alloc.get(addr);
+        // SAFETY: `alloc.get(addr)` returns a valid pointer to the 128-byte slot allocated above.
         let buf = unsafe { std::slice::from_raw_parts(slot as *const _ as *const u8, 128) };
         let info = read_record_info(buf);
         assert_eq!(info.checkpoint_version(), 7);
@@ -132,6 +134,7 @@ fn allocator_multiple_records_independent() {
         addrs.push(addr);
 
         let slot = alloc.get(addr);
+        // SAFETY: `alloc.get(addr)` returns a valid pointer to the freshly-allocated 128-byte slot.
         let buf = unsafe { std::slice::from_raw_parts_mut(slot as *const _ as *mut u8, 128) };
         let info = RecordInfo::new(LogicalAddress::ZERO, 0, false, false, false);
         write_record(buf, &info, &k, &v, &layout);
@@ -148,6 +151,7 @@ fn allocator_multiple_records_independent() {
         let (k, v) = pairs[i];
         let layout = RecordLayout::for_kv(&k, &v);
         let slot = alloc.get(addr);
+        // SAFETY: `alloc.get(addr)` returns a valid pointer to the previously-allocated 128-byte slot.
         let buf = unsafe { std::slice::from_raw_parts(slot as *const _ as *const u8, 128) };
         assert_eq!(read_key::<u64>(buf, &layout), k);
         assert_eq!(read_value::<u64>(buf, &layout), v);
@@ -253,8 +257,8 @@ fn epoch_protects_during_allocation() {
     // After dropping the guard, the address is still valid to access
     // (we haven't freed it).
     let slot = alloc.get(addr);
+    // SAFETY: `alloc.get(addr)` returns a valid pointer to the 128-byte slot allocated earlier.
     let buf = unsafe { std::slice::from_raw_parts(slot as *const _ as *const u8, 128) };
-    // First 8 bytes should be 0 (zero-initialized page, no record written).
     assert_eq!(&buf[..8], &[0u8; 8]);
 }
 
@@ -386,6 +390,7 @@ fn full_pipeline_hash_bucket_alloc_record() {
     let layout = RecordLayout::for_kv(&key, &value);
     {
         let slot = alloc.get(record_addr);
+        // SAFETY: `alloc.get(record_addr)` returns a valid pointer to a 128-byte slot we allocated.
         let buf = unsafe { std::slice::from_raw_parts_mut(slot as *const _ as *mut u8, 128) };
         let info = RecordInfo::new(LogicalAddress::ZERO, 0, false, false, false);
         write_record(buf, &info, &key, &value, &layout);
@@ -400,6 +405,7 @@ fn full_pipeline_hash_bucket_alloc_record() {
     assert_eq!(found_entry.address(), record_addr);
 
     let slot = alloc.get(found_entry.address());
+    // SAFETY: `alloc.get()` returns a valid pointer to the 128-byte slot written above.
     let buf = unsafe { std::slice::from_raw_parts(slot as *const _ as *const u8, 128) };
     let k: u64 = read_key(buf, &layout);
     let v: u64 = read_value(buf, &layout);
