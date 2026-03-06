@@ -66,7 +66,7 @@ type Store = FasterKv<SimpleFunctions<u64, u64>>;
 fn open_store(dir: &Path) -> Store {
     let device = SyncFileDevice::new(
         dir,
-        "hlog",                  // log file prefix ("hlog.0", "hlog.1", …)
+        "log.",                  // log file prefix ("log.0", "log.1", …)
         512,                     // sector size
         1024 * 1024 * 1024,     // 1 GiB segment size
         4,                       // background I/O threads
@@ -78,7 +78,6 @@ fn open_store(dir: &Path) -> Store {
 
 fn main() {
     let dir = Path::new("/tmp/faster-quickstart");
-    let checkpoint_dir = dir.join("checkpoints");
 
     // ── Phase 1: Write some data and take a checkpoint ──────────────
     {
@@ -92,7 +91,7 @@ fn main() {
         store.dispose_session(session);
 
         // Checkpoint persists the hash index + log metadata to disk.
-        store.checkpoint(&checkpoint_dir, CheckpointType::FoldOver)
+        store.checkpoint(dir, CheckpointType::FoldOver)
             .expect("checkpoint failed");
 
         // `store` is dropped here — the device is closed cleanly.
@@ -103,7 +102,7 @@ fn main() {
         let mut store = open_store(dir);
 
         // Recover restores the hash index and loads pages into memory.
-        let info = store.recover(&checkpoint_dir, None)
+        let info = store.recover(dir, None)
             .expect("recovery failed");
         println!("Recovered {} index entries", info.num_index_entries);
 
