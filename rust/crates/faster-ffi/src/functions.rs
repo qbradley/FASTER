@@ -131,7 +131,7 @@ mod tests {
         let key = b"hello".to_vec();
         let val = b"world".to_vec();
 
-        store.upsert(&mut session, &key, &val, ());
+        let _status = store.upsert(&mut session, &key, &val, ());
 
         let mut output: Option<Vec<u8>> = None;
         let status = store.read(&mut session, &key, &Vec::new(), &mut output, ());
@@ -149,8 +149,8 @@ mod tests {
         let key = b"key".to_vec();
         let val = b"val".to_vec();
 
-        store.upsert(&mut session, &key, &val, ());
-        store.delete(&mut session, &key, ());
+        let _status = store.upsert(&mut session, &key, &val, ());
+        let _status = store.delete(&mut session, &key, ());
 
         let mut output: Option<Vec<u8>> = None;
         let status = store.read(&mut session, &key, &Vec::new(), &mut output, ());
@@ -179,7 +179,7 @@ mod tests {
 
         // Read should return latest value.
         let mut read_out: Option<Vec<u8>> = None;
-        store.read(&mut session, &key, &Vec::new(), &mut read_out, ());
+        let _status = store.read(&mut session, &key, &Vec::new(), &mut read_out, ());
         assert_eq!(read_out, Some(b"second".to_vec()));
 
         store.dispose_session(session);
