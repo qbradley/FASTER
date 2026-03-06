@@ -179,3 +179,21 @@
 - `rust/crates/faster-core/src/lib.rs` — `pub mod overflow;` added
 - `rust/crates/faster-core/benches/core_benchmarks.rs` — 6 new overflow chain benchmarks
 
+---
+
+## 2026-07-24: Phase 1B — AtomicPtr Encapsulation + NonNull Safe Construction (Chirrut)
+
+**What:** Reduced unsafe surface area in `allocator.rs` by encapsulating repeated `AtomicPtr` dereference patterns into a safe `current_dir()` helper and replacing `NonNull::new_unchecked` with `NonNull::new().expect()`.
+
+**Changes made:**
+1. **`current_dir()` helper** — `#[inline(always)]` private method on `MallocFixedPageSize<T>` that centralizes `unsafe { &*self.dir.load(Ordering::Acquire) }`. Replaced 3 call sites in `resolve()`, `bump_allocate()`, and `expand_directory()`, consolidating 3 identical unsafe blocks into 1 documented one.
+2. **`NonNull::new().expect()` replacement** — Changed `NonNull::new_unchecked(old_dir)` in `expand_directory()` to `NonNull::new(old_dir).expect("retired directory pointer must be non-null")`. Zero-cost in release (optimized away), adds debug assertion.
+3. **`epoch/drain.rs` audit** — Examined all 7 unsafe blocks. No encapsulatable `AtomicPtr` load patterns found (uses raw `*mut DrainNode` linked-list traversal, not directory pointer pattern). All blocks already have `// SAFETY:` comments.
+4. **`Drop` impl audit** — All `Box::from_raw` calls in the Drop impl already have correct `// SAFETY:` comments.
+
+**Unsafe block count (allocator.rs, non-test):** 21 before → 18 after (net −3: 3 dir loads consolidated into 1, plus 1 NonNull eliminated).
+
+**drain.rs:** 7 unsafe blocks, all necessary, all with SAFETY comments. No changes.
+
+**Quality:** All 1161 tests pass, 3 skipped. Clippy clean (zero warnings). Zero performance regression — `current_dir()` is `#[inline(always)]` producing identical codegen to the inlined unsafe pattern.
+

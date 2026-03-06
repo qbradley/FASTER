@@ -611,6 +611,22 @@ impl<T> MallocFixedPageSize<T> {
     }
 
     // -----------------------------------------------------------------------
+    // Internal: directory access
+    // -----------------------------------------------------------------------
+
+    /// Returns a reference to the current page directory.
+    ///
+    /// Centralizes the `AtomicPtr` load + dereference of `self.dir`,
+    /// eliminating repeated `unsafe` blocks at every call site.
+    #[inline(always)]
+    fn current_dir(&self) -> &PageDir<T> {
+        // SAFETY: self.dir is always a valid pointer to a PageDir that was
+        // created by new() or expand_directory(). Acquire ordering synchronizes
+        // with the Release store in expand_directory().
+        unsafe { &*self.dir.load(Ordering::Acquire) }
+    }
+
+    // -----------------------------------------------------------------------
     // Internal: address resolution
     // -----------------------------------------------------------------------
 
@@ -624,10 +640,7 @@ impl<T> MallocFixedPageSize<T> {
             "item index {item_idx} exceeds ITEMS_PER_PAGE {ITEMS_PER_PAGE}",
         );
 
-        // SAFETY: `self.dir` is always a valid pointer to a `PageDir` that was
-        // created by `new()` or `expand_directory()`. We load with Acquire to
-        // synchronize with the Release store in `expand_directory`.
-        let dir = unsafe { &*self.dir.load(Ordering::Acquire) };
+        let dir = self.current_dir();
         debug_assert!(
             page_idx < dir.capacity(),
             "page index {} exceeds directory capacity {}",
@@ -662,8 +675,7 @@ impl<T> MallocFixedPageSize<T> {
             "item index {item_idx} exceeds MAX_OFFSET {MAX_OFFSET}",
         );
 
-        // SAFETY: `self.dir` is valid (invariant).
-        let dir = unsafe { &*self.dir.load(Ordering::Acquire) };
+        let dir = self.current_dir();
 
         // Grow directory if needed.
         let dir = if (page_idx as usize) >= dir.capacity() {
@@ -690,8 +702,7 @@ impl<T> MallocFixedPageSize<T> {
         let _guard = self.grow_lock.lock().unwrap_or_else(|e| e.into_inner());
 
         // Re-check under lock — another thread may have already grown.
-        // SAFETY: `self.dir` is valid.
-        let current = unsafe { &*self.dir.load(Ordering::Acquire) };
+        let current = self.current_dir();
         if current.capacity() >= min_pages {
             return current;
         }
@@ -704,8 +715,7 @@ impl<T> MallocFixedPageSize<T> {
         let old_dir = self.dir.swap(new_dir, Ordering::AcqRel);
 
         // Retire the old directory. It will be freed on Drop.
-        // SAFETY: `old_dir` is non-null (was the valid current directory).
-        let old_nn = unsafe { NonNull::new_unchecked(old_dir) };
+        let old_nn = NonNull::new(old_dir).expect("retired directory pointer must be non-null");
         self.retired_dirs
             .lock()
             .unwrap_or_else(|e| e.into_inner())
