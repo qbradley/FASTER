@@ -217,8 +217,7 @@ impl CheckpointStateMachine {
         match current {
             CheckpointPhase::Rest => Ok(()),
             CheckpointPhase::Completed => {
-                let won =
-                    self.try_advance(CheckpointPhase::Completed, CheckpointPhase::Rest)?;
+                let won = self.try_advance(CheckpointPhase::Completed, CheckpointPhase::Rest)?;
                 if !won {
                     // Another thread beat us — that's fine, the machine is
                     // presumably already back at Rest.
@@ -298,7 +297,10 @@ mod tests {
         assert_eq!(CheckpointPhase::Prepare.to_string(), "Prepare");
         assert_eq!(CheckpointPhase::InProgress.to_string(), "InProgress");
         assert_eq!(CheckpointPhase::WaitFlush.to_string(), "WaitFlush");
-        assert_eq!(CheckpointPhase::WaitCompletion.to_string(), "WaitCompletion");
+        assert_eq!(
+            CheckpointPhase::WaitCompletion.to_string(),
+            "WaitCompletion"
+        );
         assert_eq!(CheckpointPhase::Completed.to_string(), "Completed");
     }
 
@@ -317,10 +319,7 @@ mod tests {
             (CheckpointPhase::Completed, CheckpointPhase::Rest),
         ];
         for (from, to) in valid {
-            assert!(
-                from.can_advance_to(to),
-                "{from} → {to} should be valid"
-            );
+            assert!(from.can_advance_to(to), "{from} → {to} should be valid");
         }
     }
 
@@ -337,10 +336,7 @@ mod tests {
             (CheckpointPhase::Completed, CheckpointPhase::Prepare),
         ];
         for (from, to) in invalid {
-            assert!(
-                !from.can_advance_to(to),
-                "{from} → {to} should be invalid"
-            );
+            assert!(!from.can_advance_to(to), "{from} → {to} should be invalid");
         }
     }
 
@@ -376,28 +372,32 @@ mod tests {
         assert_eq!(sm.active_token(), Some(token));
 
         // Prepare → InProgress
-        assert!(sm
-            .try_advance(CheckpointPhase::Prepare, CheckpointPhase::InProgress)
-            .unwrap());
+        assert!(
+            sm.try_advance(CheckpointPhase::Prepare, CheckpointPhase::InProgress)
+                .unwrap()
+        );
         assert_eq!(sm.phase(), CheckpointPhase::InProgress);
         assert_eq!(sm.active_token(), Some(token));
 
         // InProgress → WaitFlush
-        assert!(sm
-            .try_advance(CheckpointPhase::InProgress, CheckpointPhase::WaitFlush)
-            .unwrap());
+        assert!(
+            sm.try_advance(CheckpointPhase::InProgress, CheckpointPhase::WaitFlush)
+                .unwrap()
+        );
         assert_eq!(sm.phase(), CheckpointPhase::WaitFlush);
 
         // WaitFlush → WaitCompletion
-        assert!(sm
-            .try_advance(CheckpointPhase::WaitFlush, CheckpointPhase::WaitCompletion)
-            .unwrap());
+        assert!(
+            sm.try_advance(CheckpointPhase::WaitFlush, CheckpointPhase::WaitCompletion)
+                .unwrap()
+        );
         assert_eq!(sm.phase(), CheckpointPhase::WaitCompletion);
 
         // WaitCompletion → Completed
-        assert!(sm
-            .try_advance(CheckpointPhase::WaitCompletion, CheckpointPhase::Completed)
-            .unwrap());
+        assert!(
+            sm.try_advance(CheckpointPhase::WaitCompletion, CheckpointPhase::Completed)
+                .unwrap()
+        );
         assert_eq!(sm.phase(), CheckpointPhase::Completed);
         assert_eq!(sm.active_token(), Some(token));
 

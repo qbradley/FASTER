@@ -298,10 +298,7 @@ impl RecoveryManager {
             .read_checkpoint_metadata(token)
             .map_err(|e| map_checkpoint_error(e, Some(token.as_u128())))?;
 
-        let ckpt_dir = self
-            .base_dir
-            .join("checkpoints")
-            .join(token.to_string());
+        let ckpt_dir = self.base_dir.join("checkpoints").join(token.to_string());
 
         let mut issues = Vec::new();
 
@@ -373,9 +370,7 @@ fn checkpoint_info_from_meta(meta: &CheckpointMetadata) -> CheckpointInfo {
 /// Builds the ordered list of [`RecoveryStep`]s and wraps them into a
 /// [`RecoveryPlan`].
 fn build_recovery_plan(base_dir: &std::path::Path, meta: &CheckpointMetadata) -> RecoveryPlan {
-    let ckpt_dir = base_dir
-        .join("checkpoints")
-        .join(meta.token.to_string());
+    let ckpt_dir = base_dir.join("checkpoints").join(meta.token.to_string());
 
     let mut steps = Vec::new();
 
@@ -803,10 +798,12 @@ mod tests {
         assert_eq!(plan.steps.len(), 2);
         assert!(plan.session_infos.is_empty());
         // No RecoverSessions step.
-        assert!(!plan
-            .steps
-            .iter()
-            .any(|s| matches!(s, RecoveryStep::RecoverSessions { .. })));
+        assert!(
+            !plan
+                .steps
+                .iter()
+                .any(|s| matches!(s, RecoveryStep::RecoverSessions { .. }))
+        );
     }
 
     // -- validate_checkpoint ------------------------------------------------
@@ -1021,7 +1018,7 @@ mod tests {
     #[test]
     fn recovery_error_source_io() {
         use std::error::Error;
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "boom");
+        let io_err = std::io::Error::other("boom");
         let err = RecoveryError::IoError(io_err);
         assert!(err.source().is_some());
 

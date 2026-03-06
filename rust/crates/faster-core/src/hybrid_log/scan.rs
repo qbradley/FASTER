@@ -289,10 +289,7 @@ impl Iterator for LogScanIterator<'_> {
             if new_offset >= self.page_size {
                 // Record ends exactly at (or would exceed) page boundary →
                 // next record is on the next page.
-                self.current = LogicalAddress::new(
-                    Page(addr.page().0 + 1),
-                    Offset(0),
-                );
+                self.current = LogicalAddress::new(Page(addr.page().0 + 1), Offset(0));
             } else {
                 self.current = LogicalAddress::new(addr.page(), Offset(new_offset));
             }
@@ -651,9 +648,15 @@ mod tests {
             ..ScanOptions::default()
         };
 
-        let records: Vec<_> =
-            LogScanIterator::new(&alloc, LogicalAddress::ZERO, alloc.tail_address(), 8, 8, opts)
-                .collect();
+        let records: Vec<_> = LogScanIterator::new(
+            &alloc,
+            LogicalAddress::ZERO,
+            alloc.tail_address(),
+            8,
+            8,
+            opts,
+        )
+        .collect();
 
         // Head is at 0, so all 5 records should be visible.
         assert_eq!(records.len(), 5);
@@ -670,15 +673,9 @@ mod tests {
         }
 
         // Scan only from addr[3] to addr[7] (exclusive).
-        let records: Vec<_> = LogScanIterator::new(
-            &alloc,
-            addrs[3],
-            addrs[7],
-            8,
-            8,
-            ScanOptions::default(),
-        )
-        .collect();
+        let records: Vec<_> =
+            LogScanIterator::new(&alloc, addrs[3], addrs[7], 8, 8, ScanOptions::default())
+                .collect();
 
         assert_eq!(records.len(), 4); // addrs[3], [4], [5], [6]
         assert_eq!(records[0].address, addrs[3]);

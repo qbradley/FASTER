@@ -128,7 +128,7 @@ pub trait Functions: Send + Sync + 'static {
         output: &mut Self::Output,
     ) {
         let _ = (key, value_ptr, value_len, input, output);
-        unimplemented!("upsert_in_place_raw requires SUPPORTS_RAW_IN_PLACE = true")
+        unreachable!("called upsert_in_place_raw but SUPPORTS_RAW_IN_PLACE is false; this is a bug")
     }
 
     /// Raw in-place RMW: directly modify the value bytes in the page.
@@ -145,7 +145,7 @@ pub trait Functions: Send + Sync + 'static {
         output: &mut Self::Output,
     ) -> RmwInPlaceResult {
         let _ = (key, value_ptr, value_len, input, output);
-        unimplemented!("rmw_in_place_raw requires SUPPORTS_RAW_IN_PLACE = true")
+        unreachable!("called rmw_in_place_raw but SUPPORTS_RAW_IN_PLACE is false; this is a bug")
     }
 
     // ── RMW ─────────────────────────────────────────────────────────
@@ -642,17 +642,16 @@ mod tests {
         assert_eq!(value, 99);
     }
 
-
     // ── Raw in-place tests ─────────────────────────────────────────────
 
     #[test]
     fn simple_functions_supports_raw_in_place() {
-        assert!(SimpleFunctions::<u64, u64>::SUPPORTS_RAW_IN_PLACE);
+        const { assert!(SimpleFunctions::<u64, u64>::SUPPORTS_RAW_IN_PLACE) };
     }
 
     #[test]
     fn counter_functions_does_not_support_raw_in_place() {
-        assert!(!CounterFunctions::<u64>::SUPPORTS_RAW_IN_PLACE);
+        const { assert!(!CounterFunctions::<u64>::SUPPORTS_RAW_IN_PLACE) };
     }
 
     #[test]
@@ -662,6 +661,7 @@ mod tests {
         let value_ptr = buf.as_mut_ptr();
         let value_len = core::mem::size_of::<u64>();
         let mut output: Option<u64> = None;
+        // SAFETY: `value_ptr` and `value_len` refer to a valid, aligned `u64` buffer on the stack.
         unsafe {
             f.upsert_in_place_raw(&1u64, value_ptr, value_len, &42u64, &mut output);
         }
@@ -675,9 +675,9 @@ mod tests {
         let value_ptr = buf.as_mut_ptr();
         let value_len = core::mem::size_of::<u64>();
         let mut output: Option<u64> = None;
-        let result = unsafe {
-            f.rmw_in_place_raw(&1u64, value_ptr, value_len, &99u64, &mut output)
-        };
+        // SAFETY: `value_ptr` and `value_len` refer to a valid, aligned `u64` buffer on the stack.
+        let result =
+            unsafe { f.rmw_in_place_raw(&1u64, value_ptr, value_len, &99u64, &mut output) };
         assert_eq!(result, RmwInPlaceResult::InPlaceOk);
         assert_eq!(u64::from_le_bytes(buf), 99);
     }
@@ -689,6 +689,7 @@ mod tests {
         let value_ptr = buf.as_mut_ptr();
         let value_len = core::mem::size_of::<u32>();
         let mut output: Option<u32> = None;
+        // SAFETY: `value_ptr` and `value_len` refer to a valid, aligned `u32` buffer on the stack.
         unsafe {
             f.upsert_in_place_raw(&1u64, value_ptr, value_len, &12345u32, &mut output);
         }
@@ -702,6 +703,7 @@ mod tests {
         let ptr = buf.as_mut_ptr();
         let mut output: Option<u64> = None;
         for expected in [1u64, 100, u64::MAX, 0, 42] {
+            // SAFETY: `ptr` points to an 8-byte stack buffer valid for the lifetime of this loop.
             unsafe {
                 f.upsert_in_place_raw(&0u64, ptr, 8, &expected, &mut output);
             }
@@ -712,7 +714,7 @@ mod tests {
     #[test]
     fn non_raw_functions_still_work() {
         let f = CounterFunctions::<u64>::new();
-        assert!(!CounterFunctions::<u64>::SUPPORTS_RAW_IN_PLACE);
+        const { assert!(!CounterFunctions::<u64>::SUPPORTS_RAW_IN_PLACE) };
         let mut value = 10i64;
         let mut output = 0i64;
         let result = f.rmw_in_place(&1u64, &5i64, &mut value, &mut output);

@@ -8,9 +8,9 @@
 //! the state can be converted to a [`SessionRecoveryInfo`] for
 //! serialisation.
 
+use super::CheckpointToken;
 use super::metadata::SessionRecoveryInfo;
 use super::state_machine::CheckpointPhase;
-use super::CheckpointToken;
 
 // ---------------------------------------------------------------------------
 // SessionCheckpointState

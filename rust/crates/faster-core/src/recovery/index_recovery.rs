@@ -19,8 +19,8 @@ use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::checkpoint::index_writer::IndexCheckpointReader;
 use crate::checkpoint::CheckpointError;
+use crate::checkpoint::index_writer::IndexCheckpointReader;
 use crate::epoch::EpochTable;
 use crate::hash_bucket::HashBucket;
 use crate::hash_index::HashIndex;
@@ -136,8 +136,7 @@ impl IndexRecoveryEngine {
         let index_path = self.resolve_index_path(plan, base_dir);
 
         // Step 1–2: Open the checkpoint file and validate header.
-        let reader = IndexCheckpointReader::open(&index_path)
-            .map_err(map_checkpoint_error)?;
+        let reader = IndexCheckpointReader::open(&index_path).map_err(map_checkpoint_error)?;
 
         let num_buckets = reader.num_buckets();
         let table_size_bits = reader.table_size_bits();
@@ -189,8 +188,7 @@ impl IndexRecoveryEngine {
     ) -> Result<HashIndex, RecoveryError> {
         let index_path = self.resolve_index_path(plan, base_dir);
 
-        let reader = IndexCheckpointReader::open(&index_path)
-            .map_err(map_checkpoint_error)?;
+        let reader = IndexCheckpointReader::open(&index_path).map_err(map_checkpoint_error)?;
 
         let num_buckets = reader.num_buckets();
         let table_size_bits = reader.table_size_bits();
@@ -323,9 +321,7 @@ mod tests {
     use super::*;
     use crate::address::LogicalAddress;
     use crate::checkpoint::index_writer::IndexCheckpointWriter;
-    use crate::checkpoint::{
-        CheckpointToken, CheckpointType, IndexRecoveryInfo, LogRecoveryInfo,
-    };
+    use crate::checkpoint::{CheckpointToken, CheckpointType, IndexRecoveryInfo, LogRecoveryInfo};
     use crate::hash::KeyHash;
     use crate::hash_bucket::HashBucketEntry;
     use crate::hash_index::HashIndex;
@@ -372,17 +368,13 @@ mod tests {
     ) -> (tempfile::TempDir, CheckpointToken, u64) {
         let base = tempfile::tempdir().expect("create temp dir");
         let token = CheckpointToken::new(42);
-        let ckpt_dir = base
-            .path()
-            .join("checkpoints")
-            .join(token.to_string());
+        let ckpt_dir = base.path().join("checkpoints").join(token.to_string());
         std::fs::create_dir_all(&ckpt_dir).unwrap();
 
         let table = HashTable::new(log2_size);
         let inserted = populate_table(&table, entry_count);
 
-        let mut writer =
-            IndexCheckpointWriter::new(&ckpt_dir, &token).expect("create writer");
+        let mut writer = IndexCheckpointWriter::new(&ckpt_dir, &token).expect("create writer");
         writer
             .write_index(
                 table.bucket_slice(),
@@ -484,10 +476,7 @@ mod tests {
         let log2 = 8;
         let base = tempfile::tempdir().unwrap();
         let token = CheckpointToken::new(99);
-        let ckpt_dir = base
-            .path()
-            .join("checkpoints")
-            .join(token.to_string());
+        let ckpt_dir = base.path().join("checkpoints").join(token.to_string());
         std::fs::create_dir_all(&ckpt_dir).unwrap();
 
         let original = HashIndex::new(log2);
@@ -501,11 +490,8 @@ mod tests {
         for (i, &hash) in hashes.iter().enumerate() {
             let r = original.find_or_create(hash, LogicalAddress::INVALID);
             assert!(r.created);
-            let committed = HashBucketEntry::new(
-                r.entry.tag(),
-                LogicalAddress::from_raw(i as u64 + 1),
-                false,
-            );
+            let committed =
+                HashBucketEntry::new(r.entry.tag(), LogicalAddress::from_raw(i as u64 + 1), false);
             original.update(r.slot, r.entry, committed);
         }
 
@@ -547,10 +533,7 @@ mod tests {
         let _guard2 = thread2.protect();
         for (i, &hash) in hashes.iter().enumerate() {
             let result = recovered.find(hash);
-            assert!(
-                result.is_some(),
-                "entry {i} not found after recovery"
-            );
+            assert!(result.is_some(), "entry {i} not found after recovery");
             let (entry, _) = result.unwrap();
             assert_eq!(
                 entry.address(),
@@ -629,13 +612,9 @@ mod tests {
 
         // Corrupt a byte in the body area.
         {
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .open(&path)
-                .unwrap();
+            let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
             // Seek to the middle of the body (after header).
-            file.seek(SeekFrom::Start(HEADER_SIZE as u64 + 32))
-                .unwrap();
+            file.seek(SeekFrom::Start(HEADER_SIZE as u64 + 32)).unwrap();
             file.write_all(&[0xFF]).unwrap();
         }
 
@@ -658,10 +637,7 @@ mod tests {
 
         match result.unwrap_err() {
             RecoveryError::CorruptMetadata(msg) => {
-                assert!(
-                    msg.contains("CRC"),
-                    "error should mention CRC: {msg}"
-                );
+                assert!(msg.contains("CRC"), "error should mention CRC: {msg}");
             }
             other => panic!("expected CorruptMetadata, got: {other}"),
         }
@@ -676,10 +652,7 @@ mod tests {
         let log2 = 4;
         let base = tempfile::tempdir().unwrap();
         let token = CheckpointToken::new(77);
-        let ckpt_dir = base
-            .path()
-            .join("checkpoints")
-            .join(token.to_string());
+        let ckpt_dir = base.path().join("checkpoints").join(token.to_string());
         std::fs::create_dir_all(&ckpt_dir).unwrap();
 
         let table = HashTable::new(log2);
@@ -734,10 +707,7 @@ mod tests {
     fn missing_checkpoint_file_detected() {
         let base = tempfile::tempdir().unwrap();
         let token = CheckpointToken::new(404);
-        let ckpt_dir = base
-            .path()
-            .join("checkpoints")
-            .join(token.to_string());
+        let ckpt_dir = base.path().join("checkpoints").join(token.to_string());
         std::fs::create_dir_all(&ckpt_dir).unwrap();
         // Don't write any checkpoint file.
 
@@ -834,10 +804,7 @@ mod tests {
 
         let base = tempfile::tempdir().unwrap();
         let token = CheckpointToken::new(55);
-        let ckpt_dir = base
-            .path()
-            .join("checkpoints")
-            .join(token.to_string());
+        let ckpt_dir = base.path().join("checkpoints").join(token.to_string());
         std::fs::create_dir_all(&ckpt_dir).unwrap();
 
         // Create and populate the original index.
@@ -874,8 +841,7 @@ mod tests {
             let mut count = 0u64;
             for bucket in buckets {
                 for i in 0..crate::hash_bucket::BUCKET_NUM_ENTRIES {
-                    let entry =
-                        bucket.entry(i).load(core::sync::atomic::Ordering::Relaxed);
+                    let entry = bucket.entry(i).load(core::sync::atomic::Ordering::Relaxed);
                     if !entry.is_empty() {
                         count += 1;
                     }

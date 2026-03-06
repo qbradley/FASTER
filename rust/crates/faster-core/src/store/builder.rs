@@ -267,8 +267,8 @@ impl FasterKvBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::functions::SimpleFunctions;
     use crate::NullDevice;
+    use crate::store::functions::SimpleFunctions;
 
     type TestFunctions = SimpleFunctions<u64, u64>;
 
@@ -327,7 +327,8 @@ mod tests {
         let err = FasterKv::<TestFunctions>::builder()
             .hash_index_size_log2(3)
             .build::<TestFunctions>(SimpleFunctions::default(), NullDevice::new())
-            .map(drop).unwrap_err();
+            .map(drop)
+            .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("hash_index_size_log2"), "got: {msg}");
         assert!(msg.contains("4..=30"), "got: {msg}");
@@ -338,7 +339,8 @@ mod tests {
         let err = FasterKv::<TestFunctions>::builder()
             .hash_index_size_log2(31)
             .build::<TestFunctions>(SimpleFunctions::default(), NullDevice::new())
-            .map(drop).unwrap_err();
+            .map(drop)
+            .unwrap_err();
         assert!(err.to_string().contains("hash_index_size_log2"));
     }
 
@@ -347,7 +349,8 @@ mod tests {
         let err = FasterKv::<TestFunctions>::builder()
             .buffer_size_pages(0)
             .build::<TestFunctions>(SimpleFunctions::default(), NullDevice::new())
-            .map(drop).unwrap_err();
+            .map(drop)
+            .unwrap_err();
         assert!(err.to_string().contains("buffer_size_pages"));
     }
 
@@ -356,7 +359,8 @@ mod tests {
         let err = FasterKv::<TestFunctions>::builder()
             .buffer_size_pages(3)
             .build::<TestFunctions>(SimpleFunctions::default(), NullDevice::new())
-            .map(drop).unwrap_err();
+            .map(drop)
+            .unwrap_err();
         assert!(err.to_string().contains("buffer_size_pages"));
     }
 
@@ -365,7 +369,8 @@ mod tests {
         let err = FasterKv::<TestFunctions>::builder()
             .mutable_fraction(0.0)
             .build::<TestFunctions>(SimpleFunctions::default(), NullDevice::new())
-            .map(drop).unwrap_err();
+            .map(drop)
+            .unwrap_err();
         assert!(err.to_string().contains("mutable_fraction"));
     }
 
@@ -374,7 +379,8 @@ mod tests {
         let err = FasterKv::<TestFunctions>::builder()
             .mutable_fraction(1.0)
             .build::<TestFunctions>(SimpleFunctions::default(), NullDevice::new())
-            .map(drop).unwrap_err();
+            .map(drop)
+            .unwrap_err();
         assert!(err.to_string().contains("mutable_fraction"));
     }
 
@@ -383,7 +389,8 @@ mod tests {
         let err = FasterKv::<TestFunctions>::builder()
             .mutable_fraction(-0.1)
             .build::<TestFunctions>(SimpleFunctions::default(), NullDevice::new())
-            .map(drop).unwrap_err();
+            .map(drop)
+            .unwrap_err();
         assert!(err.to_string().contains("mutable_fraction"));
     }
 
@@ -392,7 +399,8 @@ mod tests {
         let err = FasterKv::<TestFunctions>::builder()
             .sector_size(0)
             .build::<TestFunctions>(SimpleFunctions::default(), NullDevice::new())
-            .map(drop).unwrap_err();
+            .map(drop)
+            .unwrap_err();
         assert!(err.to_string().contains("sector_size"));
     }
 
@@ -401,7 +409,8 @@ mod tests {
         let err = FasterKv::<TestFunctions>::builder()
             .sector_size(100)
             .build::<TestFunctions>(SimpleFunctions::default(), NullDevice::new())
-            .map(drop).unwrap_err();
+            .map(drop)
+            .unwrap_err();
         assert!(err.to_string().contains("sector_size"));
     }
 
@@ -410,7 +419,8 @@ mod tests {
         let err = FasterKv::<TestFunctions>::builder()
             .grow_threshold(0.0)
             .build::<TestFunctions>(SimpleFunctions::default(), NullDevice::new())
-            .map(drop).unwrap_err();
+            .map(drop)
+            .unwrap_err();
         assert!(err.to_string().contains("grow_threshold"));
     }
 
@@ -419,7 +429,8 @@ mod tests {
         let err = FasterKv::<TestFunctions>::builder()
             .grow_threshold(1.0)
             .build::<TestFunctions>(SimpleFunctions::default(), NullDevice::new())
-            .map(drop).unwrap_err();
+            .map(drop)
+            .unwrap_err();
         assert!(err.to_string().contains("grow_threshold"));
     }
 
@@ -441,30 +452,38 @@ mod tests {
     #[test]
     fn accepts_boundary_hash_index_sizes() {
         // Minimum valid
-        assert!(FasterKvBuilder::default()
-            .hash_index_size_log2(4)
-            .validate()
-            .is_ok());
+        assert!(
+            FasterKvBuilder::default()
+                .hash_index_size_log2(4)
+                .validate()
+                .is_ok()
+        );
         // Maximum valid
-        assert!(FasterKvBuilder::default()
-            .hash_index_size_log2(30)
-            .validate()
-            .is_ok());
+        assert!(
+            FasterKvBuilder::default()
+                .hash_index_size_log2(30)
+                .validate()
+                .is_ok()
+        );
     }
 
     #[test]
     fn accepts_small_valid_mutable_fraction() {
-        assert!(FasterKvBuilder::default()
-            .mutable_fraction(0.01)
-            .validate()
-            .is_ok());
+        assert!(
+            FasterKvBuilder::default()
+                .mutable_fraction(0.01)
+                .validate()
+                .is_ok()
+        );
     }
 
     #[test]
     fn accepts_large_valid_mutable_fraction() {
-        assert!(FasterKvBuilder::default()
-            .mutable_fraction(0.99)
-            .validate()
-            .is_ok());
+        assert!(
+            FasterKvBuilder::default()
+                .mutable_fraction(0.99)
+                .validate()
+                .is_ok()
+        );
     }
 }

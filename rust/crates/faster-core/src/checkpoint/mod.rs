@@ -42,9 +42,7 @@ pub mod index_writer;
 pub mod log_writer;
 pub mod snapshot_writer;
 
-pub use manager::{
-    CheckpointError, CheckpointManager, CheckpointManagerImpl, CheckpointStatus,
-};
+pub use manager::{CheckpointError, CheckpointManager, CheckpointManagerImpl, CheckpointStatus};
 pub use metadata::{
     CheckpointToken, CheckpointType, IndexRecoveryInfo, LogRecoveryInfo, SessionRecoveryInfo,
 };

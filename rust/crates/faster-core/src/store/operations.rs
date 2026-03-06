@@ -346,7 +346,11 @@ pub(crate) fn internal_upsert<F: Functions>(
                             // page frame under epoch protection.
                             unsafe {
                                 functions.upsert_in_place_raw(
-                                    key, value_ptr, value_len, input, &mut output,
+                                    key,
+                                    value_ptr,
+                                    value_len,
+                                    input,
+                                    &mut output,
                                 );
                             }
                         } else {
@@ -354,7 +358,11 @@ pub(crate) fn internal_upsert<F: Functions>(
                             let mut output = F::Output::default();
                             let mut new_val = old_value.clone();
                             functions.upsert(
-                                key, &mut new_val, input, Some(&old_value), &mut output,
+                                key,
+                                &mut new_val,
+                                input,
+                                Some(&old_value),
+                                &mut output,
                             );
                             accessor.write_value(&new_val, &layout);
                         }
@@ -563,35 +571,46 @@ pub(crate) fn internal_rmw<F: Functions>(
                         let value_len = std::mem::size_of::<F::Value>();
                         // SAFETY: value_ptr in mutable-region page under epoch.
                         let rmw_result = unsafe {
-                            functions.rmw_in_place_raw(
-                                key, value_ptr, value_len, input, output,
-                            )
+                            functions.rmw_in_place_raw(key, value_ptr, value_len, input, output)
                         };
                         match rmw_result {
                             RmwInPlaceResult::InPlaceOk => OperationStatus::InPlaceUpdated,
                             RmwInPlaceResult::NeedsNewRecord => {
                                 let value: F::Value = accessor.value(&layout);
                                 rmw_copy_to_tail(
-                                    ctx, functions, key, input, &value, output,
-                                    &layout, result.entry, result.slot, found_addr,
+                                    ctx,
+                                    functions,
+                                    key,
+                                    input,
+                                    &value,
+                                    output,
+                                    &layout,
+                                    result.entry,
+                                    result.slot,
+                                    found_addr,
                                 )
                             }
                         }
                     } else {
                         let mut value: F::Value = accessor.value(&layout);
-                        let rmw_result =
-                            functions.rmw_in_place(key, input, &mut value, output);
+                        let rmw_result = functions.rmw_in_place(key, input, &mut value, output);
                         match rmw_result {
                             RmwInPlaceResult::InPlaceOk => {
                                 accessor.write_value(&value, &layout);
                                 OperationStatus::InPlaceUpdated
                             }
-                            RmwInPlaceResult::NeedsNewRecord => {
-                                rmw_copy_to_tail(
-                                    ctx, functions, key, input, &value, output,
-                                    &layout, result.entry, result.slot, found_addr,
-                                )
-                            }
+                            RmwInPlaceResult::NeedsNewRecord => rmw_copy_to_tail(
+                                ctx,
+                                functions,
+                                key,
+                                input,
+                                &value,
+                                output,
+                                &layout,
+                                result.entry,
+                                result.slot,
+                                found_addr,
+                            ),
                         }
                     }
                 }

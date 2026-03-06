@@ -5,9 +5,9 @@
 //! context ([`FasterKvSession`]), but the trait is kept generic so that
 //! other subsystems (e.g. background compaction) can participate too.
 
+use super::CheckpointToken;
 use super::session_state::SessionCheckpointState;
 use super::state_machine::CheckpointPhase;
-use super::CheckpointToken;
 
 // ---------------------------------------------------------------------------
 // CheckpointParticipant
@@ -83,9 +83,7 @@ mod tests {
         }
 
         fn is_checkpoint_complete(&self) -> bool {
-            self.state
-                .as_ref()
-                .map_or(false, |s| s.is_completed())
+            self.state.as_ref().is_some_and(|s| s.is_completed())
         }
     }
 
@@ -148,10 +146,7 @@ mod tests {
         p.state = Some(SessionCheckpointState::new(0, token2));
 
         assert!(!p.is_checkpoint_complete());
-        assert_eq!(
-            p.checkpoint_state().unwrap().checkpoint_token(),
-            token2
-        );
+        assert_eq!(p.checkpoint_state().unwrap().checkpoint_token(), token2);
     }
 
     // -----------------------------------------------------------------------

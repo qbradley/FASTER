@@ -121,7 +121,10 @@ impl std::fmt::Display for PendingIoError {
             PendingIoError::IoError(e) => write!(f, "I/O error: {e}"),
             PendingIoError::DeviceError(s) => write!(f, "device error: {s:?}"),
             PendingIoError::InvalidRecord => write!(f, "invalid record data"),
-            PendingIoError::TimedOut { context_id, elapsed } => {
+            PendingIoError::TimedOut {
+                context_id,
+                elapsed,
+            } => {
                 write!(f, "pending I/O {context_id} timed out after {elapsed:?}")
             }
             PendingIoError::Cancelled { context_id } => {
@@ -893,8 +896,12 @@ mod tests {
     #[test]
     fn context_not_expired_by_default() {
         let ctx = PendingIoContext::<TestFunctions>::new_for_test(
-            make_pending_op(0, 0), AlignedBuffer::new(512, 512), 0,
-            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None)), Arc::new(AtomicU32::new(0)),
+            make_pending_op(0, 0),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None)),
+            Arc::new(AtomicU32::new(0)),
         );
         assert!(!ctx.is_expired());
         assert!(ctx.timeout() == Duration::from_secs(30));
@@ -905,9 +912,14 @@ mod tests {
     fn context_expired_with_zero_timeout() {
         let past = Instant::now() - Duration::from_millis(1);
         let ctx = PendingIoContext::<TestFunctions>::new_for_test_with_timeout(
-            make_pending_op(0, 0), AlignedBuffer::new(512, 512), 0,
-            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None)), Arc::new(AtomicU32::new(0)),
-            Duration::ZERO, past,
+            make_pending_op(0, 0),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None)),
+            Arc::new(AtomicU32::new(0)),
+            Duration::ZERO,
+            past,
         );
         assert!(ctx.is_expired());
     }
@@ -916,9 +928,14 @@ mod tests {
     fn context_expired_after_timeout_elapses() {
         let past = Instant::now() - Duration::from_secs(2);
         let ctx = PendingIoContext::<TestFunctions>::new_for_test_with_timeout(
-            make_pending_op(0, 0), AlignedBuffer::new(512, 512), 0,
-            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None)), Arc::new(AtomicU32::new(0)),
-            Duration::from_secs(1), past,
+            make_pending_op(0, 0),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None)),
+            Arc::new(AtomicU32::new(0)),
+            Duration::from_secs(1),
+            past,
         );
         assert!(ctx.is_expired());
         assert!(ctx.elapsed() >= Duration::from_secs(2));
@@ -927,9 +944,14 @@ mod tests {
     #[test]
     fn context_not_expired_within_timeout() {
         let ctx = PendingIoContext::<TestFunctions>::new_for_test_with_timeout(
-            make_pending_op(0, 0), AlignedBuffer::new(512, 512), 0,
-            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None)), Arc::new(AtomicU32::new(0)),
-            Duration::from_secs(60), Instant::now(),
+            make_pending_op(0, 0),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None)),
+            Arc::new(AtomicU32::new(0)),
+            Duration::from_secs(60),
+            Instant::now(),
         );
         assert!(!ctx.is_expired());
     }
@@ -937,12 +959,20 @@ mod tests {
     #[test]
     fn context_ids_are_unique() {
         let ctx1 = PendingIoContext::<TestFunctions>::new_for_test(
-            make_pending_op(0, 0), AlignedBuffer::new(512, 512), 0,
-            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None)), Arc::new(AtomicU32::new(0)),
+            make_pending_op(0, 0),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None)),
+            Arc::new(AtomicU32::new(0)),
         );
         let ctx2 = PendingIoContext::<TestFunctions>::new_for_test(
-            make_pending_op(0, 0), AlignedBuffer::new(512, 512), 0,
-            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None)), Arc::new(AtomicU32::new(0)),
+            make_pending_op(0, 0),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None)),
+            Arc::new(AtomicU32::new(0)),
         );
         assert_ne!(ctx1.id(), ctx2.id());
     }
@@ -950,8 +980,12 @@ mod tests {
     #[test]
     fn context_debug_includes_id_and_expired() {
         let ctx = PendingIoContext::<TestFunctions>::new_for_test(
-            make_pending_op(0, 0), AlignedBuffer::new(512, 512), 0,
-            Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None)), Arc::new(AtomicU32::new(0)),
+            make_pending_op(0, 0),
+            AlignedBuffer::new(512, 512),
+            0,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None)),
+            Arc::new(AtomicU32::new(0)),
         );
         let debug = format!("{ctx:?}");
         assert!(debug.contains("id"));
@@ -997,9 +1031,15 @@ mod tests {
     #[test]
     fn io_failed_error_has_source() {
         use std::error::Error;
-        let e = PendingIoError::IoFailed { context_id: 1, source: std::io::Error::other("disk") };
+        let e = PendingIoError::IoFailed {
+            context_id: 1,
+            source: std::io::Error::other("disk"),
+        };
         assert!(e.source().is_some());
-        let e = PendingIoError::TimedOut { context_id: 1, elapsed: Duration::from_secs(1) };
+        let e = PendingIoError::TimedOut {
+            context_id: 1,
+            elapsed: Duration::from_secs(1),
+        };
         assert!(e.source().is_none());
         let e = PendingIoError::Cancelled { context_id: 1 };
         assert!(e.source().is_none());

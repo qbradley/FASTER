@@ -521,8 +521,7 @@ mod tests {
     #[test]
     fn question_mark_propagation_from_grow() {
         fn try_grow() -> Result<()> {
-            let grow_err: std::result::Result<(), GrowError> =
-                Err(GrowError::AlreadyInProgress);
+            let grow_err: std::result::Result<(), GrowError> = Err(GrowError::AlreadyInProgress);
             grow_err?;
             Ok(())
         }

@@ -178,10 +178,7 @@ impl CheckpointOrchestrator {
         store.write_checkpoint_metadata(token, &index_info, &log_info, &session_infos)?;
 
         // WaitCompletion → Completed
-        self.advance(
-            CheckpointPhase::WaitCompletion,
-            CheckpointPhase::Completed,
-        )?;
+        self.advance(CheckpointPhase::WaitCompletion, CheckpointPhase::Completed)?;
 
         // Completed → Rest
         self.state_machine.reset().map_err(|e| {
@@ -192,15 +189,9 @@ impl CheckpointOrchestrator {
     }
 
     /// Advance the state machine, wrapping the error for the orchestrator.
-    fn advance(
-        &self,
-        from: CheckpointPhase,
-        to: CheckpointPhase,
-    ) -> Result<(), CheckpointError> {
+    fn advance(&self, from: CheckpointPhase, to: CheckpointPhase) -> Result<(), CheckpointError> {
         self.state_machine.try_advance(from, to).map_err(|e| {
-            CheckpointError::InvalidState(format!(
-                "state transition {from:?} → {to:?} failed: {e}"
-            ))
+            CheckpointError::InvalidState(format!("state transition {from:?} → {to:?} failed: {e}"))
         })?;
         Ok(())
     }
@@ -308,7 +299,9 @@ fn random_token_value() -> u128 {
     let thread_id = format!("{:?}", std::thread::current().id());
     let mut hash: u128 = nanos;
     for b in thread_id.bytes() {
-        hash = hash.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(u128::from(b));
+        hash = hash
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(u128::from(b));
     }
     // Mix in a stack address for additional entropy.
     let stack_var: u8 = 0;
@@ -329,8 +322,8 @@ mod tests {
     use crate::checkpoint::{
         CheckpointPhase, CheckpointToken, CheckpointType, SessionCheckpointState,
     };
-    use crate::hash::index::HashIndex;
     use crate::hash::KeyHash;
+    use crate::hash::index::HashIndex;
     use crate::hash_bucket::HashBucketEntry;
     use crate::hybrid_log::log_allocator::HybridLogAllocator;
     use tempfile::tempdir;
@@ -682,13 +675,7 @@ mod tests {
         flush_log_fully(&log);
 
         let result_token = orchestrator
-            .take_checkpoint(
-                CheckpointType::Snapshot,
-                &index,
-                &log,
-                &[],
-                dir.path(),
-            )
+            .take_checkpoint(CheckpointType::Snapshot, &index, &log, &[], dir.path())
             .unwrap();
 
         let store = CheckpointMetadataStore::new(dir.path().to_path_buf());

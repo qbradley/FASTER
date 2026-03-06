@@ -179,10 +179,7 @@ impl core::fmt::Debug for GrowState {
             .field("new_version", &self.new_version)
             .field("num_chunks", &self.num_chunks)
             .field("pending_chunks", &self.pending_chunks())
-            .field(
-                "next_chunk",
-                &self.next_chunk.load(Ordering::Relaxed),
-            )
+            .field("next_chunk", &self.next_chunk.load(Ordering::Relaxed))
             .finish()
     }
 }

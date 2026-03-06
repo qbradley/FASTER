@@ -43,10 +43,10 @@
 use core::sync::atomic::Ordering;
 
 use crate::address::LogicalAddress;
-use crate::hash_bucket::{HashBucketEntry, BUCKET_NUM_ENTRIES};
+use crate::hash_bucket::{BUCKET_NUM_ENTRIES, HashBucketEntry};
 use crate::hash_table::HashTable;
 
-use super::{splits_right, CHUNK_SIZE};
+use super::{CHUNK_SIZE, splits_right};
 
 // ---------------------------------------------------------------------------
 // HashResolver
@@ -426,10 +426,7 @@ mod tests {
     }
 
     /// Collects all (tag, address) pairs from a bucket chain.
-    fn collect_bucket_entries(
-        table: &HashTable,
-        bucket_index: u64,
-    ) -> Vec<(u16, LogicalAddress)> {
+    fn collect_bucket_entries(table: &HashTable, bucket_index: u64) -> Vec<(u16, LogicalAddress)> {
         let bucket = table.bucket_by_index(bucket_index);
         let pool = table.overflow_pool();
         let mut entries = Vec::new();
@@ -862,7 +859,7 @@ mod tests {
 
         // CHUNK_SIZE is 16384, which is much larger than 32 buckets.
         // So one chunk covers the entire table.
-        let num_chunks = ((old_size as u32) + super::CHUNK_SIZE - 1) / super::CHUNK_SIZE;
+        let num_chunks = (old_size as u32).div_ceil(super::CHUNK_SIZE);
         assert_eq!(num_chunks, 1);
 
         let mut combined = SplitResult::default();

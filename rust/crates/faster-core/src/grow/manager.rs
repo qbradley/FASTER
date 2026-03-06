@@ -276,8 +276,7 @@ impl GrowManager {
         let mut _split_result = SplitResult::default();
         for _ in 0..chunks_per_call {
             if let Some(chunk_idx) = state_guard.claim_next_chunk() {
-                let chunk_result =
-                    splitter.split_chunk(chunk_idx, old_log2 as u8, new_log2 as u8);
+                let chunk_result = splitter.split_chunk(chunk_idx, old_log2 as u8, new_log2 as u8);
                 _split_result.merge(&chunk_result);
                 state_guard.complete_chunk();
             } else {
@@ -636,11 +635,7 @@ mod tests {
             for &k in &keys {
                 let hash = KeyHash::new(k);
                 let found = index.find(hash);
-                assert!(
-                    found.is_some(),
-                    "key {} not found after grow",
-                    k
-                );
+                assert!(found.is_some(), "key {} not found after grow", k);
             }
         }
     }

@@ -116,12 +116,16 @@ fn write_index_checkpoint(
     let table = HashTable::new(log2_size);
     let inserted = populate_table(&table, entry_count);
 
-    let mut writer = faster_core::checkpoint::index_writer::IndexCheckpointWriter::new(
-        &ckpt_dir, &token,
-    )
-    .expect("create writer");
+    let mut writer =
+        faster_core::checkpoint::index_writer::IndexCheckpointWriter::new(&ckpt_dir, &token)
+            .expect("create writer");
     writer
-        .write_index(table.bucket_slice(), table.log2_buckets() as u8, version, inserted)
+        .write_index(
+            table.bucket_slice(),
+            table.log2_buckets() as u8,
+            version,
+            inserted,
+        )
         .unwrap();
 
     (base, token, inserted)
@@ -134,11 +138,8 @@ fn populate_table(table: &HashTable, count: u64) -> u64 {
         let hash = KeyHash::new(i.wrapping_mul(0x9E37_79B9_7F4A_7C15));
         let result = table.find_or_create_entry(hash, LogicalAddress::INVALID);
         if result.created {
-            let committed = HashBucketEntry::new(
-                result.entry.tag(),
-                LogicalAddress::from_raw(i + 1),
-                false,
-            );
+            let committed =
+                HashBucketEntry::new(result.entry.tag(), LogicalAddress::from_raw(i + 1), false);
             table.update_entry(result.slot, result.entry, committed);
             inserted += 1;
         }
@@ -221,13 +222,27 @@ fn snapshot_metadata_write_and_recover() {
 
     assert_eq!(plan.checkpoint_type, CheckpointType::Snapshot);
     assert!(plan.log_info.use_snapshot_file);
-    assert_eq!(plan.log_info.snapshot_start_address, log_info.snapshot_start_address);
-    assert_eq!(plan.log_info.snapshot_final_address, log_info.snapshot_final_address);
+    assert_eq!(
+        plan.log_info.snapshot_start_address,
+        log_info.snapshot_start_address
+    );
+    assert_eq!(
+        plan.log_info.snapshot_final_address,
+        log_info.snapshot_final_address
+    );
 
     // Recovery plan should use snapshot_final_address for log recovery
-    let log_step = plan.steps.iter().find(|s| matches!(s, RecoveryStep::RecoverLog { .. }));
+    let log_step = plan
+        .steps
+        .iter()
+        .find(|s| matches!(s, RecoveryStep::RecoverLog { .. }));
     assert!(log_step.is_some(), "expected RecoverLog step");
-    if let Some(RecoveryStep::RecoverLog { checkpoint_type, until_address, .. }) = log_step {
+    if let Some(RecoveryStep::RecoverLog {
+        checkpoint_type,
+        until_address,
+        ..
+    }) = log_step
+    {
         assert_eq!(*checkpoint_type, CheckpointType::Snapshot);
         assert_eq!(*until_address, log_info.snapshot_final_address);
     }
@@ -462,7 +477,12 @@ fn session_recovery_with_no_sessions() {
     assert!(plan.session_infos.is_empty());
 
     // No RecoverSessions step in the plan
-    assert!(!plan.steps.iter().any(|s| matches!(s, RecoveryStep::RecoverSessions { .. })));
+    assert!(
+        !plan
+            .steps
+            .iter()
+            .any(|s| matches!(s, RecoveryStep::RecoverSessions { .. }))
+    );
 
     let engine = SessionRecoveryEngine::new();
     let recovered = engine.recover_sessions(&plan).unwrap();
@@ -519,11 +539,8 @@ fn index_checkpoint_recovery_preserves_entries() {
     for (i, &hash) in hashes.iter().enumerate() {
         let r = original.find_or_create(hash, LogicalAddress::INVALID);
         assert!(r.created, "entry {i} was not newly created");
-        let committed = HashBucketEntry::new(
-            r.entry.tag(),
-            LogicalAddress::from_raw(i as u64 + 1),
-            false,
-        );
+        let committed =
+            HashBucketEntry::new(r.entry.tag(), LogicalAddress::from_raw(i as u64 + 1), false);
         original.update(r.slot, r.entry, committed);
     }
 
@@ -646,8 +663,7 @@ fn large_scale_index_checkpoint_recovery() {
     for i in (0..entry_target).step_by(50) {
         let hash = KeyHash::new(i.wrapping_mul(0x9E37_79B9_7F4A_7C15));
         let result = recovered.find(hash);
-        if result.is_some() {
-            let (entry, _) = result.unwrap();
+        if let Some((entry, _)) = result {
             assert!(!entry.is_empty());
             assert!(!entry.is_tentative());
         }
@@ -681,7 +697,10 @@ fn corrupt_checkpoint_json_returns_error() {
 
     let mgr = RecoveryManager::new(dir.path().to_path_buf());
     let result = mgr.select_checkpoint(Some(token));
-    assert!(result.is_err(), "expected error for corrupt checkpoint.json");
+    assert!(
+        result.is_err(),
+        "expected error for corrupt checkpoint.json"
+    );
 }
 
 #[test]
@@ -707,7 +726,10 @@ fn corrupt_index_recovery_json_returns_error() {
 
     let mgr = RecoveryManager::new(dir.path().to_path_buf());
     let result = mgr.select_checkpoint(Some(token));
-    assert!(result.is_err(), "expected error for corrupt index.recovery.json");
+    assert!(
+        result.is_err(),
+        "expected error for corrupt index.recovery.json"
+    );
 }
 
 #[test]
@@ -818,7 +840,10 @@ fn corrupt_index_checkpoint_file_detected_by_crc() {
 
     let engine = IndexRecoveryEngine::new();
     let result = engine.recover_index(&plan, base.path());
-    assert!(result.is_err(), "expected error for CRC-corrupted index file");
+    assert!(
+        result.is_err(),
+        "expected error for CRC-corrupted index file"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -945,7 +970,10 @@ fn recovery_plan_fold_over_has_correct_steps() {
 
     // Step 1: LoadIndex
     match &plan.steps[0] {
-        RecoveryStep::LoadIndex { path, expected_buckets } => {
+        RecoveryStep::LoadIndex {
+            path,
+            expected_buckets,
+        } => {
             assert!(path.ends_with("index.recovery.json"));
             assert_eq!(*expected_buckets, sample_index_info().num_buckets);
         }
@@ -954,7 +982,11 @@ fn recovery_plan_fold_over_has_correct_steps() {
 
     // Step 2: RecoverLog with fold-over type uses final_address
     match &plan.steps[1] {
-        RecoveryStep::RecoverLog { checkpoint_type, begin_address, until_address } => {
+        RecoveryStep::RecoverLog {
+            checkpoint_type,
+            begin_address,
+            until_address,
+        } => {
             assert_eq!(*checkpoint_type, CheckpointType::FoldOver);
             assert_eq!(*begin_address, log_info.begin_address);
             assert_eq!(*until_address, log_info.final_address);
@@ -977,13 +1009,7 @@ fn recovery_plan_snapshot_uses_snapshot_final_address() {
     let token = sample_token(111);
     let log_info = snapshot_log_info();
 
-    write_checkpoint_metadata(
-        dir.path(),
-        &token,
-        &sample_index_info(),
-        &log_info,
-        &[],
-    );
+    write_checkpoint_metadata(dir.path(), &token, &sample_index_info(), &log_info, &[]);
 
     let mgr = RecoveryManager::new(dir.path().to_path_buf());
     let plan = mgr.select_checkpoint(Some(token)).unwrap();
@@ -992,7 +1018,11 @@ fn recovery_plan_snapshot_uses_snapshot_final_address() {
     assert_eq!(plan.steps.len(), 2);
 
     match &plan.steps[1] {
-        RecoveryStep::RecoverLog { checkpoint_type, until_address, .. } => {
+        RecoveryStep::RecoverLog {
+            checkpoint_type,
+            until_address,
+            ..
+        } => {
             assert_eq!(*checkpoint_type, CheckpointType::Snapshot);
             assert_eq!(*until_address, log_info.snapshot_final_address);
         }
@@ -1017,7 +1047,12 @@ fn recovery_plan_no_sessions_omits_session_step() {
     let plan = mgr.select_checkpoint(Some(token)).unwrap();
 
     assert_eq!(plan.steps.len(), 2);
-    assert!(!plan.steps.iter().any(|s| matches!(s, RecoveryStep::RecoverSessions { .. })));
+    assert!(
+        !plan
+            .steps
+            .iter()
+            .any(|s| matches!(s, RecoveryStep::RecoverSessions { .. }))
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1141,12 +1176,7 @@ fn metadata_store_list_checkpoints() {
     for val in [10, 20, 30] {
         let token = sample_token(val);
         store
-            .write_checkpoint_metadata(
-                &token,
-                &sample_index_info(),
-                &fold_over_log_info(),
-                &[],
-            )
+            .write_checkpoint_metadata(&token, &sample_index_info(), &fold_over_log_info(), &[])
             .unwrap();
     }
 
@@ -1403,10 +1433,7 @@ fn full_index_cycle_checkpoint_recover_verify_all_entries() {
 
     for (i, hash, expected_addr) in &addresses {
         let result = recovered.find(*hash);
-        assert!(
-            result.is_some(),
-            "entry {i} not found after recovery"
-        );
+        assert!(result.is_some(), "entry {i} not found after recovery");
         let (entry, _) = result.unwrap();
         assert_eq!(
             entry.address(),
@@ -1489,7 +1516,12 @@ fn metadata_store_overwrite_checkpoint() {
         excluded_serial_numbers: vec![],
     }];
     store
-        .write_checkpoint_metadata(&token, &sample_index_info(), &fold_over_log_info(), &sessions_v1)
+        .write_checkpoint_metadata(
+            &token,
+            &sample_index_info(),
+            &fold_over_log_info(),
+            &sessions_v1,
+        )
         .unwrap();
 
     // Overwrite with updated sessions
@@ -1499,7 +1531,12 @@ fn metadata_store_overwrite_checkpoint() {
         excluded_serial_numbers: vec![199],
     }];
     store
-        .write_checkpoint_metadata(&token, &sample_index_info(), &fold_over_log_info(), &sessions_v2)
+        .write_checkpoint_metadata(
+            &token,
+            &sample_index_info(),
+            &fold_over_log_info(),
+            &sessions_v2,
+        )
         .unwrap();
 
     // Read back — should have v2 data
