@@ -323,7 +323,7 @@ pub(crate) fn internal_upsert<F: Functions>(
                         );
                     }
 
-                    // Read old value, write new value in-place.
+                    // In-place update via raw or standard path.
                     let ptr = ctx.allocator.get_physical_address(found_addr);
                     if let Some(ptr) = ptr {
                         // SF-15: Verify the address is still in memory after
@@ -338,17 +338,26 @@ pub(crate) fn internal_upsert<F: Functions>(
                         // epoch protection, so the page frame won't be evicted.
                         let accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
 
-                        // TODO (SF-6): This does deserialize → clone → serialize
-                        // (3 copies). For Copy types like u64, a single 8-byte
-                        // write suffices. Add `Functions::upsert_in_place_raw()`
-                        // or specialize for Copy types.
-                        let old_value: F::Value = accessor.value(&layout);
-                        let mut output = F::Output::default();
-
-                        // Let the user callback decide the final value.
-                        let mut new_val = old_value.clone();
-                        functions.upsert(key, &mut new_val, input, Some(&old_value), &mut output);
-                        accessor.write_value(&new_val, &layout);
+                        if F::SUPPORTS_RAW_IN_PLACE {
+                            let value_ptr = accessor.value_mut_ptr(&layout);
+                            let value_len = std::mem::size_of::<F::Value>();
+                            let mut output = F::Output::default();
+                            // SAFETY: value_ptr points into a mutable-region
+                            // page frame under epoch protection.
+                            unsafe {
+                                functions.upsert_in_place_raw(
+                                    key, value_ptr, value_len, input, &mut output,
+                                );
+                            }
+                        } else {
+                            let old_value: F::Value = accessor.value(&layout);
+                            let mut output = F::Output::default();
+                            let mut new_val = old_value.clone();
+                            functions.upsert(
+                                key, &mut new_val, input, Some(&old_value), &mut output,
+                            );
+                            accessor.write_value(&new_val, &layout);
+                        }
 
                         OperationStatus::InPlaceUpdated
                     } else {
@@ -549,28 +558,40 @@ pub(crate) fn internal_rmw<F: Functions>(
                     // SAFETY: record is in mutable region, epoch guard held.
                     let accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
 
-                    let mut value: F::Value = accessor.value(&layout);
-                    let rmw_result = functions.rmw_in_place(key, input, &mut value, output);
-
-                    match rmw_result {
-                        RmwInPlaceResult::InPlaceOk => {
-                            accessor.write_value(&value, &layout);
-                            OperationStatus::InPlaceUpdated
-                        }
-                        RmwInPlaceResult::NeedsNewRecord => {
-                            // Fall through to copy-to-tail.
-                            rmw_copy_to_tail(
-                                ctx,
-                                functions,
-                                key,
-                                input,
-                                &value,
-                                output,
-                                &layout,
-                                result.entry,
-                                result.slot,
-                                found_addr,
+                    if F::SUPPORTS_RAW_IN_PLACE {
+                        let value_ptr = accessor.value_mut_ptr(&layout);
+                        let value_len = std::mem::size_of::<F::Value>();
+                        // SAFETY: value_ptr in mutable-region page under epoch.
+                        let rmw_result = unsafe {
+                            functions.rmw_in_place_raw(
+                                key, value_ptr, value_len, input, output,
                             )
+                        };
+                        match rmw_result {
+                            RmwInPlaceResult::InPlaceOk => OperationStatus::InPlaceUpdated,
+                            RmwInPlaceResult::NeedsNewRecord => {
+                                let value: F::Value = accessor.value(&layout);
+                                rmw_copy_to_tail(
+                                    ctx, functions, key, input, &value, output,
+                                    &layout, result.entry, result.slot, found_addr,
+                                )
+                            }
+                        }
+                    } else {
+                        let mut value: F::Value = accessor.value(&layout);
+                        let rmw_result =
+                            functions.rmw_in_place(key, input, &mut value, output);
+                        match rmw_result {
+                            RmwInPlaceResult::InPlaceOk => {
+                                accessor.write_value(&value, &layout);
+                                OperationStatus::InPlaceUpdated
+                            }
+                            RmwInPlaceResult::NeedsNewRecord => {
+                                rmw_copy_to_tail(
+                                    ctx, functions, key, input, &value, output,
+                                    &layout, result.entry, result.slot, found_addr,
+                                )
+                            }
                         }
                     }
                 }

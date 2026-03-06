@@ -226,6 +226,14 @@ impl MutableRecordAccessor {
         &slice[layout.value_offset()..self.record_size as usize]
     }
 
+    /// Returns a mutable raw pointer to the start of the value data.
+    #[inline]
+    pub fn value_mut_ptr(&self, layout: &RecordLayout) -> *mut u8 {
+        // SAFETY: ptr is valid for record_size writable bytes (constructor
+        // invariant), and value_offset() < total_size <= record_size.
+        unsafe { self.ptr.add(layout.value_offset()) }
+    }
+
     /// Returns the full record as a read-only byte slice.
     #[inline]
     pub fn as_slice(&self) -> &[u8] {

@@ -103,6 +103,51 @@ pub trait Functions: Send + Sync + 'static {
         output: &mut Self::Output,
     );
 
+    // ── Raw in-place support ────────────────────────────────────────────
+
+    /// Whether this implementation supports raw in-place updates.
+    ///
+    /// When `true`, [`upsert_in_place_raw`](Self::upsert_in_place_raw) and
+    /// [`rmw_in_place_raw`](Self::rmw_in_place_raw) bypass the default
+    /// deserialize→callback→serialize path. The compiler eliminates
+    /// the dead branch at monomorphization time (zero-cost abstraction).
+    const SUPPORTS_RAW_IN_PLACE: bool = false;
+
+    /// Raw in-place upsert: directly modify the value bytes in the page.
+    ///
+    /// # Safety
+    ///
+    /// `value_ptr` must be valid, aligned, and writable for `value_len` bytes.
+    /// The caller must hold epoch protection.
+    unsafe fn upsert_in_place_raw(
+        &self,
+        key: &Self::Key,
+        value_ptr: *mut u8,
+        value_len: usize,
+        input: &Self::Input,
+        output: &mut Self::Output,
+    ) {
+        let _ = (key, value_ptr, value_len, input, output);
+        unimplemented!("upsert_in_place_raw requires SUPPORTS_RAW_IN_PLACE = true")
+    }
+
+    /// Raw in-place RMW: directly modify the value bytes in the page.
+    ///
+    /// # Safety
+    ///
+    /// Same requirements as [`upsert_in_place_raw`](Self::upsert_in_place_raw).
+    unsafe fn rmw_in_place_raw(
+        &self,
+        key: &Self::Key,
+        value_ptr: *mut u8,
+        value_len: usize,
+        input: &Self::Input,
+        output: &mut Self::Output,
+    ) -> RmwInPlaceResult {
+        let _ = (key, value_ptr, value_len, input, output);
+        unimplemented!("rmw_in_place_raw requires SUPPORTS_RAW_IN_PLACE = true")
+    }
+
     // ── RMW ─────────────────────────────────────────────────────────
 
     /// Decide whether to create a new record when the key is not found.
@@ -201,7 +246,7 @@ impl<K, V> Default for SimpleFunctions<K, V> {
 impl<K, V> Functions for SimpleFunctions<K, V>
 where
     K: Key,
-    V: Value + Clone,
+    V: Value + Copy,
 {
     type Key = K;
     type Value = V;
@@ -216,7 +261,7 @@ where
         _input: &Self::Input,
         output: &mut Self::Output,
     ) {
-        *output = Some(value.clone());
+        *output = Some(*value);
     }
 
     fn upsert(
@@ -227,7 +272,37 @@ where
         _old_value: Option<&Self::Value>,
         _output: &mut Self::Output,
     ) {
-        *value = input.clone();
+        *value = *input;
+    }
+
+    const SUPPORTS_RAW_IN_PLACE: bool = true;
+
+    unsafe fn upsert_in_place_raw(
+        &self,
+        _key: &Self::Key,
+        value_ptr: *mut u8,
+        value_len: usize,
+        input: &Self::Input,
+        _output: &mut Self::Output,
+    ) {
+        debug_assert_eq!(value_len, core::mem::size_of::<V>());
+        // SAFETY: Caller guarantees value_ptr is valid, properly aligned, and
+        // writable for value_len bytes within a mutable-region page frame.
+        unsafe { core::ptr::write(value_ptr as *mut V, *input) };
+    }
+
+    unsafe fn rmw_in_place_raw(
+        &self,
+        _key: &Self::Key,
+        value_ptr: *mut u8,
+        value_len: usize,
+        input: &Self::Input,
+        _output: &mut Self::Output,
+    ) -> RmwInPlaceResult {
+        debug_assert_eq!(value_len, core::mem::size_of::<V>());
+        // SAFETY: Same guarantees as upsert_in_place_raw.
+        unsafe { core::ptr::write(value_ptr as *mut V, *input) };
+        RmwInPlaceResult::InPlaceOk
     }
 
     fn rmw_initial(
@@ -237,7 +312,7 @@ where
         value: &mut Self::Value,
         _output: &mut Self::Output,
     ) {
-        *value = input.clone();
+        *value = *input;
     }
 
     fn rmw_in_place(
@@ -247,7 +322,7 @@ where
         value: &mut Self::Value,
         _output: &mut Self::Output,
     ) -> RmwInPlaceResult {
-        *value = input.clone();
+        *value = *input;
         RmwInPlaceResult::InPlaceOk
     }
 
@@ -259,7 +334,7 @@ where
         new_value: &mut Self::Value,
         _output: &mut Self::Output,
     ) {
-        *new_value = input.clone();
+        *new_value = *input;
     }
 }
 
@@ -565,5 +640,84 @@ mod tests {
         let mut output = 0i64;
         f.upsert(&1u64, &mut value, &99i64, None, &mut output);
         assert_eq!(value, 99);
+    }
+
+
+    // ── Raw in-place tests ─────────────────────────────────────────────
+
+    #[test]
+    fn simple_functions_supports_raw_in_place() {
+        assert!(SimpleFunctions::<u64, u64>::SUPPORTS_RAW_IN_PLACE);
+    }
+
+    #[test]
+    fn counter_functions_does_not_support_raw_in_place() {
+        assert!(!CounterFunctions::<u64>::SUPPORTS_RAW_IN_PLACE);
+    }
+
+    #[test]
+    fn upsert_in_place_raw_round_trip_u64() {
+        let f = SimpleFunctions::<u64, u64>::new();
+        let mut buf = 0u64.to_le_bytes();
+        let value_ptr = buf.as_mut_ptr();
+        let value_len = core::mem::size_of::<u64>();
+        let mut output: Option<u64> = None;
+        unsafe {
+            f.upsert_in_place_raw(&1u64, value_ptr, value_len, &42u64, &mut output);
+        }
+        assert_eq!(u64::from_le_bytes(buf), 42);
+    }
+
+    #[test]
+    fn rmw_in_place_raw_round_trip_u64() {
+        let f = SimpleFunctions::<u64, u64>::new();
+        let mut buf = 0u64.to_le_bytes();
+        let value_ptr = buf.as_mut_ptr();
+        let value_len = core::mem::size_of::<u64>();
+        let mut output: Option<u64> = None;
+        let result = unsafe {
+            f.rmw_in_place_raw(&1u64, value_ptr, value_len, &99u64, &mut output)
+        };
+        assert_eq!(result, RmwInPlaceResult::InPlaceOk);
+        assert_eq!(u64::from_le_bytes(buf), 99);
+    }
+
+    #[test]
+    fn upsert_in_place_raw_round_trip_u32() {
+        let f = SimpleFunctions::<u64, u32>::new();
+        let mut buf = 0u32.to_le_bytes();
+        let value_ptr = buf.as_mut_ptr();
+        let value_len = core::mem::size_of::<u32>();
+        let mut output: Option<u32> = None;
+        unsafe {
+            f.upsert_in_place_raw(&1u64, value_ptr, value_len, &12345u32, &mut output);
+        }
+        assert_eq!(u32::from_le_bytes(buf), 12345);
+    }
+
+    #[test]
+    fn raw_path_successive_overwrites() {
+        let f = SimpleFunctions::<u64, u64>::new();
+        let mut buf = [0u8; 8];
+        let ptr = buf.as_mut_ptr();
+        let mut output: Option<u64> = None;
+        for expected in [1u64, 100, u64::MAX, 0, 42] {
+            unsafe {
+                f.upsert_in_place_raw(&0u64, ptr, 8, &expected, &mut output);
+            }
+            assert_eq!(u64::from_le_bytes(buf), expected);
+        }
+    }
+
+    #[test]
+    fn non_raw_functions_still_work() {
+        let f = CounterFunctions::<u64>::new();
+        assert!(!CounterFunctions::<u64>::SUPPORTS_RAW_IN_PLACE);
+        let mut value = 10i64;
+        let mut output = 0i64;
+        let result = f.rmw_in_place(&1u64, &5i64, &mut value, &mut output);
+        assert_eq!(result, RmwInPlaceResult::InPlaceOk);
+        assert_eq!(value, 15);
+        assert_eq!(output, 15);
     }
 }
