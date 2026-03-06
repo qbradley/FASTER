@@ -23,4 +23,7 @@ mod session;
 pub use functions::{CounterFunctions, Functions, RmwInPlaceResult, SimpleFunctions};
 pub use kv::{FasterKv, FasterKvConfig};
 pub use pending_io::{CompletedIo, PendingIoContext, PendingIoError, PendingIoManager};
-pub use session::{FasterSession, PendingOpType, PendingOperation, SessionGuard, SessionPool};
+pub use session::{
+    CompletePendingResult, FasterSession, PendingOpType, PendingOperation, SessionGuard,
+    SessionPool,
+};

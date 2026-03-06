@@ -49,7 +49,7 @@ use crate::store::operations::{
     InternalContext, internal_delete, internal_read, internal_rmw, internal_upsert,
 };
 use crate::store::pending_io::PendingIoManager;
-use crate::store::session::{FasterSession, PendingOpType, SessionPool};
+use crate::store::session::{CompletePendingResult, FasterSession, PendingOpType, SessionPool};
 
 // ── FasterKvConfig ──────────────────────────────────────────────────
 
@@ -558,7 +558,96 @@ impl<F: Functions> FasterKv<F> {
         results
     }
 
-    /// Process a single completed I/O and return the result.
+    /// Drain completed I/O and return a structured summary.
+    ///
+    /// When `wait` is `false`, polls in-flight I/O once and processes any
+    /// completions that are ready. When `wait` is `true`, spin-waits until
+    /// **all** in-flight I/O has completed before returning.
+    ///
+    /// This is the preferred user-facing API for pending completion. It
+    /// combines the internal `complete_pending` / `complete_pending_sync`
+    /// into a single entry point that returns [`CompletePendingResult`]
+    /// instead of a raw `Vec`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
+    /// # use faster_core::NullDevice;
+    /// # let store: FasterKv<SimpleFunctions<u64, u64>> = FasterKv::new(
+    /// #     FasterKvConfig::default(), SimpleFunctions::default(), NullDevice::new());
+    /// let mut session = store.new_session();
+    /// // ... perform operations that may go pending ...
+    /// let result = store.try_complete_pending(&mut session, false);
+    /// if result.is_done() {
+    ///     println!("all {} ops completed", result.completed);
+    /// }
+    /// store.dispose_session(session);
+    /// ```
+    pub fn try_complete_pending(
+        &self,
+        session: &mut FasterSession<F>,
+        wait: bool,
+    ) -> CompletePendingResult {
+        let completed = if wait {
+            session.wait_for_all_io()
+        } else {
+            session.take_completed_io()
+        };
+
+        let total = completed.len() as u32;
+        let mut had_errors = false;
+
+        for cio in completed {
+            if self.process_completed_io(cio).is_none() {
+                had_errors = true;
+            }
+        }
+
+        CompletePendingResult {
+            completed: total,
+            remaining: session.pending_count() as u32,
+            had_errors,
+        }
+    }
+
+    /// Bump the global epoch and drain any completed pending operations.
+    ///
+    /// This is a convenience method that matches the C++/C# FASTER
+    /// `session.Refresh()` pattern: advance the epoch so that safe-epoch
+    /// callbacks can fire, then poll for completed I/O.
+    ///
+    /// Equivalent to:
+    /// ```ignore
+    /// store.epoch_table.bump_current_epoch_no_callback();
+    /// store.try_complete_pending(session, false);
+    /// ```
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
+    /// # use faster_core::NullDevice;
+    /// # let store: FasterKv<SimpleFunctions<u64, u64>> = FasterKv::new(
+    /// #     FasterKvConfig::default(), SimpleFunctions::default(), NullDevice::new());
+    /// let mut session = store.new_session();
+    /// // Periodically call refresh to advance the epoch and drain pending ops.
+    /// let result = store.refresh(&mut session);
+    /// store.dispose_session(session);
+    /// ```
+    pub fn refresh(&self, session: &mut FasterSession<F>) -> CompletePendingResult {
+        self.epoch_table.bump_current_epoch_no_callback();
+        self.try_complete_pending(session, false)
+    }
+
+    /// Returns the current global epoch value.
+    ///
+    /// Useful for diagnostics or testing whether [`refresh`](Self::refresh)
+    /// advanced the epoch.
+    #[inline]
+    pub fn current_epoch(&self) -> u64 {
+        self.epoch_table.current_epoch()
+    }
     ///
     /// For read operations, extracts the value from the buffer and invokes
     /// the user's `Functions::read` callback. For write operations, this is
@@ -600,13 +689,38 @@ impl<F: Functions> FasterKv<F> {
                 Some((output, cio.operation.context))
             }
             PendingOpType::Upsert | PendingOpType::Rmw | PendingOpType::Delete => {
-                // TODO(L3): Write-path pending completion requires re-entering
-                // the hash index to copy-to-tail or write a tombstone. For now,
-                // the I/O is read-back only; write completions are deferred.
+                // TODO: Write-path pending completion.
+                //
+                // When a write operation (upsert/rmw/delete) hits the on-disk
+                // region, the disk page is read back so we have the old record.
+                // To complete the write we need to:
+                //
+                //   1. **Upsert**: Read the old value from `cio.buffer`, allocate
+                //      a new record at the log tail, write the new value via
+                //      `Functions::upsert`, and CAS-update the hash index to
+                //      point to the new record (copy-to-tail / RCU).
+                //
+                //   2. **RMW**: Read the old value, call `Functions::rmw_copy_update`
+                //      to produce the merged value, allocate at the tail, and CAS
+                //      the hash entry.
+                //
+                //   3. **Delete**: Allocate a tombstone record at the tail and
+                //      CAS the hash entry.
+                //
+                // All three paths re-enter the hash index and allocator, which
+                // requires epoch protection. This is architecturally similar to
+                // the copy-to-tail path in `internal_upsert` / `internal_rmw`
+                // for the read-only region, but requires the data from the
+                // device buffer instead of the in-memory page.
+                //
+                // For now, the I/O is read-back only; the write is silently
+                // dropped. This means writes to on-disk records are lost.
+                // Callers should ensure the working set fits in-memory for
+                // write-heavy workloads until this is implemented.
                 #[cfg(debug_assertions)]
                 eprintln!(
                     "process_completed_io: write-path completion not yet implemented \
-                     for {:?}",
+                     for {:?} — write to on-disk record was dropped",
                     cio.operation.op_type
                 );
                 None
@@ -1239,5 +1353,224 @@ mod tests {
         assert!(results.is_empty());
 
         store.dispose_session(session);
+    }
+
+    // ── L3: Session complete_pending() API tests ─────────────────────
+
+    #[test]
+    fn try_complete_pending_no_pending_returns_empty_result() {
+        let store = test_store();
+        let mut session = store.new_session();
+
+        let result = store.try_complete_pending(&mut session, false);
+        assert_eq!(result, crate::store::CompletePendingResult::EMPTY);
+        assert!(result.is_done());
+        assert_eq!(result.completed, 0);
+        assert_eq!(result.remaining, 0);
+        assert!(!result.had_errors);
+
+        store.dispose_session(session);
+    }
+
+    #[test]
+    fn try_complete_pending_after_in_memory_ops() {
+        let store = test_store();
+        let mut session = store.new_session();
+
+        // Upsert and read — all in mutable region, no pending generated.
+        let _ = store.upsert(&mut session, &42u64, &100u64, ());
+        let mut output: Option<u64> = None;
+        let status = store.read(&mut session, &42u64, &0u64, &mut output, ());
+        assert_eq!(status, OperationStatus::Ok);
+        assert_eq!(output, Some(100));
+
+        // No pending ops, so try_complete_pending is a no-op.
+        let result = store.try_complete_pending(&mut session, false);
+        assert!(result.is_done());
+        assert_eq!(result.completed, 0);
+        assert_eq!(result.remaining, 0);
+        assert!(!result.had_errors);
+
+        store.dispose_session(session);
+    }
+
+    #[test]
+    fn try_complete_pending_wait_true_drains_all() {
+        use crate::device::InMemoryDevice;
+
+        let config = FasterKvConfig {
+            hash_index_size_log2: 8,
+            buffer_size_pages: 2,
+            mutable_fraction: 0.5,
+            sector_size: 512,
+            eviction_policy: EvictionPolicy::default(),
+        };
+        let device = InMemoryDevice::with_sizes(512, 1 << 24);
+        let store: FasterKv<SimpleFunctions<u64, u64>> =
+            FasterKv::new(config, SimpleFunctions::default(), device);
+
+        let mut session = store.new_session();
+
+        // Fill the log past the buffer to force disk reads.
+        for i in 0..5000u64 {
+            let _ = store.upsert(&mut session, &i, &(i * 10), ());
+        }
+        store.maintenance();
+        store.maintenance();
+        store.maintenance();
+
+        // Read an early key — likely evicted.
+        let mut output: Option<u64> = None;
+        let status = store.read(&mut session, &0u64, &0u64, &mut output, ());
+
+        if status == OperationStatus::Pending {
+            // wait=true should block and drain everything.
+            let result = store.try_complete_pending(&mut session, true);
+            assert!(result.is_done());
+            assert!(result.completed >= 1);
+            assert_eq!(result.remaining, 0);
+        }
+
+        store.dispose_session(session);
+    }
+
+    #[test]
+    fn refresh_advances_epoch_and_drains() {
+        let store = test_store();
+        let mut session = store.new_session();
+
+        let epoch_before = store.current_epoch();
+
+        // Perform some in-memory operations.
+        for i in 0..10u64 {
+            let _ = store.upsert(&mut session, &i, &(i * 100), ());
+        }
+
+        let result = store.refresh(&mut session);
+        let epoch_after = store.current_epoch();
+
+        // Epoch must have advanced.
+        assert!(epoch_after > epoch_before, "refresh must bump epoch");
+
+        // No pending ops for in-memory inserts.
+        assert!(result.is_done());
+        assert!(!result.had_errors);
+
+        store.dispose_session(session);
+    }
+
+    #[test]
+    fn refresh_multiple_calls_advance_epoch_monotonically() {
+        let store = test_store();
+        let mut session = store.new_session();
+
+        let mut prev_epoch = store.current_epoch();
+        for _ in 0..5 {
+            let _ = store.refresh(&mut session);
+            let cur = store.current_epoch();
+            assert!(cur > prev_epoch);
+            prev_epoch = cur;
+        }
+
+        store.dispose_session(session);
+    }
+
+    #[test]
+    fn complete_pending_result_fields_correct() {
+        use crate::store::CompletePendingResult;
+
+        let result = CompletePendingResult {
+            completed: 5,
+            remaining: 3,
+            had_errors: true,
+        };
+        assert!(!result.is_done());
+        assert_eq!(result.completed, 5);
+        assert_eq!(result.remaining, 3);
+        assert!(result.had_errors);
+
+        let done = CompletePendingResult {
+            completed: 10,
+            remaining: 0,
+            had_errors: false,
+        };
+        assert!(done.is_done());
+
+        // EMPTY constant.
+        let empty = CompletePendingResult::EMPTY;
+        assert!(empty.is_done());
+        assert_eq!(empty.completed, 0);
+        assert_eq!(empty.remaining, 0);
+        assert!(!empty.had_errors);
+
+        // Debug and Clone.
+        let debug = format!("{:?}", result);
+        assert!(debug.contains("CompletePendingResult"));
+        let cloned = result;
+        assert_eq!(cloned, result);
+    }
+
+    #[test]
+    fn concurrent_session_pending_operations() {
+        use std::sync::Arc;
+        use crate::device::InMemoryDevice;
+
+        let config = FasterKvConfig {
+            hash_index_size_log2: 10,
+            buffer_size_pages: 2,
+            mutable_fraction: 0.5,
+            sector_size: 512,
+            eviction_policy: EvictionPolicy::default(),
+        };
+        let device = InMemoryDevice::with_sizes(512, 1 << 24);
+        let store = Arc::new(FasterKv::<SimpleFunctions<u64, u64>>::new(
+            config,
+            SimpleFunctions::default(),
+            device,
+        ));
+
+        // Session 1: write keys 0..2000
+        let store1 = Arc::clone(&store);
+        let h1 = std::thread::spawn(move || {
+            let mut session = store1.new_session();
+            for i in 0..2000u64 {
+                let _ = store1.upsert(&mut session, &i, &(i + 1), ());
+            }
+            store1.maintenance();
+            store1.maintenance();
+
+            // Try reading early keys — may go pending.
+            for i in 0..5u64 {
+                let mut output: Option<u64> = None;
+                let _ = store1.read(&mut session, &i, &0u64, &mut output, ());
+            }
+
+            let result = store1.try_complete_pending(&mut session, true);
+            assert!(result.is_done());
+            store1.dispose_session(session);
+        });
+
+        // Session 2: write keys 10000..12000
+        let store2 = Arc::clone(&store);
+        let h2 = std::thread::spawn(move || {
+            let mut session = store2.new_session();
+            for i in 10000..12000u64 {
+                let _ = store2.upsert(&mut session, &i, &(i + 1), ());
+            }
+            store2.maintenance();
+            store2.maintenance();
+
+            for i in 10000..10005u64 {
+                let mut output: Option<u64> = None;
+                let _ = store2.read(&mut session, &i, &0u64, &mut output, ());
+            }
+
+            let result = store2.try_complete_pending(&mut session, true);
+            assert!(result.is_done());
+            store2.dispose_session(session);
+        });
+
+        h1.join().expect("thread 1 panicked");
+        h2.join().expect("thread 2 panicked");
     }
 }

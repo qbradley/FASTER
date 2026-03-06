@@ -48,6 +48,52 @@ use crate::record::RecordLayout;
 use super::Functions;
 use super::pending_io::{CompletedIo, PendingIoContext};
 
+// ── CompletePendingResult ───────────────────────────────────────────
+
+/// Result returned by [`FasterKv::try_complete_pending`](super::FasterKv::try_complete_pending)
+/// and the session-level pending-completion APIs.
+///
+/// Provides callers with a structured summary of what happened during a
+/// completion pass so they can decide whether to poll again, log errors,
+/// or proceed with other work.
+///
+/// # Example
+///
+/// ```
+/// use faster_core::store::CompletePendingResult;
+///
+/// let result = CompletePendingResult {
+///     completed: 3,
+///     remaining: 0,
+///     had_errors: false,
+/// };
+/// assert!(result.is_done());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompletePendingResult {
+    /// Number of operations that completed during this call.
+    pub completed: u32,
+    /// Number of operations still pending (dispatched + in-flight I/O).
+    pub remaining: u32,
+    /// Whether any completions failed (I/O errors, invalid records, etc.).
+    pub had_errors: bool,
+}
+
+impl CompletePendingResult {
+    /// A no-op result: nothing completed, nothing remaining, no errors.
+    pub const EMPTY: Self = Self {
+        completed: 0,
+        remaining: 0,
+        had_errors: false,
+    };
+
+    /// Returns `true` if all pending operations have been completed.
+    #[inline]
+    pub fn is_done(&self) -> bool {
+        self.remaining == 0
+    }
+}
+
 // ── PendingOpType ───────────────────────────────────────────────────
 
 /// The type of a deferred (pending) operation.
@@ -301,12 +347,16 @@ impl<F: Functions> FasterSession<F> {
         self.io_contexts.len()
     }
 
-    /// Clears all pending state (operations and I/O contexts).
+    /// Clears all pending state (operations and I/O contexts) without
+    /// processing results.
     ///
     /// Used during session teardown when the caller does not need results.
     /// In-flight I/O callbacks will fire into dangling `Arc`s, which is safe
     /// (the atomics are ref-counted and the callback just writes booleans).
-    pub fn complete_pending(&mut self) {
+    ///
+    /// For structured pending-completion that actually processes I/O results,
+    /// use [`FasterKv::try_complete_pending`](super::FasterKv::try_complete_pending).
+    pub fn clear_pending(&mut self) {
         self.pending_ops.clear();
         self.io_contexts.clear();
     }
@@ -667,7 +717,7 @@ mod tests {
     // ── Additional edge-case tests ──────────────────────────────────
 
     #[test]
-    fn complete_pending_clears_queue() {
+    fn clear_pending_clears_queue() {
         let (_, pool) = make_pool();
         let mut session = pool.create_session();
 
@@ -675,7 +725,7 @@ mod tests {
         session.enqueue_pending(make_pending_op(2));
         assert_eq!(session.pending_count(), 2);
 
-        session.complete_pending();
+        session.clear_pending();
         assert_eq!(session.pending_count(), 0);
     }
 
