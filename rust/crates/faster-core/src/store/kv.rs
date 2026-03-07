@@ -52,7 +52,7 @@ use crate::hybrid_log::eviction::{EvictionPolicy, PageEvictor};
 use crate::hybrid_log::flush::PageFlusher;
 use crate::hybrid_log::log_allocator::HybridLogAllocator;
 use crate::hybrid_log::page::PageState;
-use crate::record::{Key, RecordInfo, Value, read_record_info, read_value};
+use crate::record::{RecordInfo, read_record_info, read_value};
 use crate::recovery::index_recovery::IndexRecoveryEngine;
 use crate::recovery::log_recovery::LogRecoveryEngine;
 use crate::recovery::{RecoveryError, RecoveryManager};
@@ -1378,11 +1378,9 @@ impl<F: Functions> FasterKv<F> {
     /// Concurrent `compact()` calls are serialized via an internal mutex.
     /// Normal read/write operations continue concurrently.
     ///
-    /// # Type parameters
-    ///
-    /// `K` and `V` must match the key/value types stored in the log.
-    /// For [`SimpleFunctions<K, V>`](crate::store::SimpleFunctions), use
-    /// the same `K` and `V`.
+    /// The key and value types are derived from `F::Key` and `F::Value`
+    /// (the associated types on the store's [`Functions`](crate::store::Functions)
+    /// implementation), so there is no risk of passing mismatched types.
     ///
     /// # Errors
     ///
@@ -1411,7 +1409,7 @@ impl<F: Functions> FasterKv<F> {
     ///     store.upsert(&mut session, &i, &i, ());
     /// }
     /// // Compact (may be a no-op if everything is still in-memory/mutable).
-    /// let _ = store.compact::<u64, u64>();
+    /// let _ = store.compact();
     /// store.dispose_session(session);
     /// ```
     ///
@@ -1435,10 +1433,10 @@ impl<F: Functions> FasterKv<F> {
     ///     let value = vec![0xABu8; 256];
     ///     store.upsert(&mut session, &key, &value, ());
     /// }
-    /// let _ = store.compact::<Vec<u8>, Vec<u8>>();
+    /// let _ = store.compact();
     /// store.dispose_session(session);
     /// ```
-    pub fn compact<K: Key, V: Value>(&self) -> Result<CompactionResult, CompactionError> {
+    pub fn compact(&self) -> Result<CompactionResult, CompactionError> {
         // Serialize concurrent compaction attempts.
         let _lock = self
             .compaction_lock
@@ -1461,7 +1459,7 @@ impl<F: Functions> FasterKv<F> {
             self.device.as_ref(),
             &self.epoch_table,
         );
-        orch.run::<K, V>(begin, until)
+        orch.run::<F::Key, F::Value>(begin, until)
     }
 
     /// Set the compaction policy used by [`maintenance()`](Self::maintenance)
@@ -1508,9 +1506,7 @@ impl<F: Functions> FasterKv<F> {
     /// the policy does not recommend compaction.
     ///
     /// Returns `Some(result)` if compaction ran, `None` otherwise.
-    pub fn maybe_compact<K: Key, V: Value>(
-        &self,
-    ) -> Option<Result<CompactionResult, CompactionError>> {
+    pub fn maybe_compact(&self) -> Option<Result<CompactionResult, CompactionError>> {
         if !self.config.auto_compact {
             return None;
         }
@@ -1522,7 +1518,7 @@ impl<F: Functions> FasterKv<F> {
             return None;
         }
 
-        Some(self.compact::<K, V>())
+        Some(self.compact())
     }
 
     // ── Hash Index Grow ─────────────────────────────────────────────
