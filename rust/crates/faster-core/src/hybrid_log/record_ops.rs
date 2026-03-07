@@ -31,15 +31,12 @@ use super::log_allocator::HybridLogAllocator;
 /// is critical for variable-length records (e.g. `Vec<u8>`) where a
 /// caller might only know a minimum header+key size at lookup time.
 ///
-/// Returns `max(page_remaining, min_size)` — the `min_size` fallback
-/// handles the (degenerate) case where the computed remainder is
-/// smaller than the caller's minimum.
+/// Returns the number of bytes remaining on the page from `addr`'s offset.
 #[inline]
-fn safe_record_size(addr: LogicalAddress, min_size: u32) -> u32 {
+fn safe_record_size(addr: LogicalAddress) -> u32 {
     let page_size = 1u32 << OFFSET_BITS;
     let offset = addr.offset().0;
-    let remaining = page_size.saturating_sub(offset);
-    remaining.max(min_size)
+    page_size.saturating_sub(offset)
 }
 
 // ── RecordAccessor ──────────────────────────────────────────────────
@@ -485,7 +482,7 @@ impl<'a> LogRecordReader<'a> {
     ///
     /// Returns `None` if the address is not in memory.
     pub fn read_key<K: Key>(&self, addr: LogicalAddress, layout: &RecordLayout) -> Option<K> {
-        let record_size = safe_record_size(addr, layout.value_offset() as u32);
+        let record_size = safe_record_size(addr);
         let accessor = self.get_record(addr, record_size)?;
         Some(accessor.key(layout))
     }
@@ -498,7 +495,7 @@ impl<'a> LogRecordReader<'a> {
     ///
     /// Returns `None` if the address is not in memory.
     pub fn read_value<V: Value>(&self, addr: LogicalAddress, layout: &RecordLayout) -> Option<V> {
-        let record_size = safe_record_size(addr, layout.total_size() as u32);
+        let record_size = safe_record_size(addr);
         let accessor = self.get_record(addr, record_size)?;
         Some(accessor.value(layout))
     }
@@ -524,7 +521,7 @@ impl<'a> LogRecordReader<'a> {
         layout: &RecordLayout,
     ) -> Option<(RecordInfo, bool)> {
         // Only the header + key are needed; value_offset covers both.
-        let record_size = safe_record_size(addr, layout.value_offset() as u32);
+        let record_size = safe_record_size(addr);
         let accessor = RecordAccessor::from_log(self.allocator, addr, record_size)?;
         let ri = accessor.record_info();
         let stored_key: K = accessor.key(layout);
@@ -547,7 +544,7 @@ impl<'a> LogRecordReader<'a> {
         key: &K,
     ) -> Option<(RecordInfo, bool)> {
         // Use page-remaining as the access size — records never span pages.
-        let record_size = safe_record_size(addr, RECORD_HEADER_SIZE as u32);
+        let record_size = safe_record_size(addr);
         let accessor = RecordAccessor::from_log(self.allocator, addr, record_size)?;
         let ri = accessor.record_info();
         let key_matches = key.eq_from_bytes(&accessor.as_slice()[KEY_OFFSET..]);
