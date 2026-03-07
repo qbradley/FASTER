@@ -41,12 +41,12 @@ Additional Inputs: none
 - [x] Code Research (CodeResearch.md created)
 - [x] Planning (ImplementationPlan.md created)
 - [x] Planning Docs Review (SoT debate — 5 specialists, premortem perspective, REVIEW-SYNTHESIS.md written, plan revised)
-- [ ] Implementation
-  - [ ] Phase 1: Record Size Resolution Infrastructure
-  - [ ] Phase 2: Scanner Variable-Stride Support
-  - [ ] Phase 3: Address Updater Variable-Length Support
-  - [ ] Phase 4: Orchestrator and Public API Generalization
-  - [ ] Phase 5: Documentation, Benchmarks, and Quality
-- [ ] Implementation Review
-- [ ] Final Review (SoT debate)
+- [x] Implementation
+  - [x] Phase 1: Record Size Resolution Infrastructure
+  - [x] Phase 2: Scanner Variable-Stride Support
+  - [x] Phase 3: Address Updater Variable-Length Support
+  - [x] Phase 4: Orchestrator and Public API Generalization
+  - [x] Phase 5: Documentation, Benchmarks, and Quality
+- [x] Implementation Review (PASS — Boromir, no issues found)
+- [x] Final Review (SoT debate — 9 specialists × 2 perspectives, 96 findings → 22 threads, 3 MF fixed by Sam)
 - [ ] PR
