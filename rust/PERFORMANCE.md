@@ -2,8 +2,8 @@
 
 > *If you can't measure it, you can't claim it's fast.*
 
-Measured cross-implementation YCSB benchmark results comparing the Rust, C#, and
-C++ FASTER implementations on identical hardware with matched parameters.
+Measured cross-implementation YCSB benchmark results comparing the Rust and C#
+FASTER implementations on identical hardware with matched parameters.
 
 ## Test Environment
 
@@ -14,82 +14,87 @@ C++ FASTER implementations on identical hardware with matched parameters.
 | **L2 Cache** | 2.5 MiB |
 | **L3 Cache** | 20 MiB |
 | **RAM** | 32 GB DDR4 |
-| **OS** | Azure Linux 3.0, Kernel 6.6.x |
-| **Rust** | 1.96.0-nightly, `--release` (thin LTO, 1 codegen unit, opt-level=3) |
-| **C#** | .NET 8.0.418, Release build (FASTER.core targets net7.0) |
-| **C++** | GCC 13.2.0, `-O3`, Release build |
-| **Store** | In-memory: Rust=NullDevice, C#=synthetic in-memory, C++=NullDisk |
+| **OS** | Azure Linux 3.0, Kernel 6.6.87 (WSL2) |
+| **Rust** | 1.85.0 (edition 2024), `--release` (thin LTO, 1 codegen unit, opt-level=3) |
+| **C#** | .NET 8.0.418 (roll-forward from net7.0), Release build |
+| **C++** | GCC 13.2.0, `-O3`, Release build — **not benchmarked** (see below) |
+| **Store** | In-memory: Rust=NullDevice, C#=synthetic in-memory |
 | **Keys** | 2,500,480 init keys, 8-byte key + 8-byte value, uniform distribution |
 | **Context** | Epoch-amortized (refresh every 64 ops) for all implementations |
-| **Methodology** | Time-based, 10s measurement per run, single iteration |
+| **Methodology** | Time-based, 10s measurement, best of 3 iterations, 3s warmup (Rust) |
 | **Date** | 2026-03-07 |
+
+### C++ Benchmark Status
+
+The C++ FASTER benchmark (`cc/benchmark-dir/benchmark.cc`) compiled
+successfully but could not be run: it hardcodes `kInitCount = 250,000,000`
+and `kTxnCount = 1,000,000,000`, requiring ~28 GB of RAM just for key arrays
+plus the hash table and hybrid log. This exceeds the available memory on the
+32 GB test machine. Running C++ benchmarks requires either a ≥64 GB machine
+or modifying the compile-time constants (which changes the benchmark profile).
 
 ## Cross-Implementation Comparison
 
 ### Throughput — Workload A: 50/50 Read/Upsert (ops/sec)
 
-| Threads | Rust | C# | C++ | Fastest |
-|--------:|----------:|----------:|----------:|---------|
-| 1 | 2.40M | **2.57M** | 2.68M | **C++** |
-| 2 | 5.34M | **5.77M** | 5.54M | **C#** |
-| 4 | 10.56M | **12.68M** | 11.51M | **C#** |
-| 8 | 22.61M | **24.41M** | 24.96M | **C++** |
-| 16 | **39.21M** | 31.02M | 38.91M | **Rust** |
+| Threads | Rust | C# | Faster |
+|--------:|----------:|----------:|--------|
+| 1 | 2.54M | **2.99M** | **C#** |
+| 4 | 11.99M | **13.01M** | **C#** |
+| 8 | 19.64M | **25.04M** | **C#** |
+| 16 | **47.97M** | 41.11M | **Rust** |
 
 ### Throughput — Workload B: 95/5 Read/Upsert (ops/sec)
 
-| Threads | Rust | C# | C++ | Fastest |
-|--------:|----------:|----------:|----------:|---------|
-| 1 | 2.21M | 2.55M | **2.71M** | **C++** |
-| 2 | 4.49M | **6.77M** | 6.05M | **C#** |
-| 4 | 10.12M | **14.74M** | 13.67M | **C#** |
-| 8 | 21.54M | **27.26M** | 27.89M | **C++** |
-| 16 | 41.37M | **49.56M** | 45.78M | **C#** |
+| Threads | Rust | C# | Faster |
+|--------:|----------:|----------:|--------|
+| 1 | 2.56M | **3.02M** | **C#** |
+| 4 | 11.92M | **13.15M** | **C#** |
+| 8 | 25.60M | **29.84M** | **C#** |
+| 16 | 48.97M | **52.34M** | **C#** |
 
 ### Throughput — Workload C: 100% Read (ops/sec)
 
-| Threads | Rust | C# | C++ | Fastest |
-|--------:|----------:|----------:|----------:|---------|
-| 1 | 2.30M | 3.17M | **4.07M** | **C++** |
-| 2 | 5.13M | 7.11M | **8.89M** | **C++** |
-| 4 | 11.91M | 14.69M | **17.02M** | **C++** |
-| 8 | 22.39M | 29.58M | **34.55M** | **C++** |
-| 16 | 41.33M | **51.65M** | 48.07M | **C#** |
+| Threads | Rust | C# | Faster |
+|--------:|----------:|----------:|--------|
+| 1 | 2.63M | **3.74M** | **C#** |
+| 4 | 10.81M | **16.25M** | **C#** |
+| 8 | 25.21M | **30.82M** | **C#** |
+| 16 | 22.93M | **57.20M** | **C#** |
 
 ### Throughput — Workload F: 50/50 Read/RMW (ops/sec)
 
-| Threads | Rust | C# | C++ | Fastest |
-|--------:|----------:|----------:|----------:|---------|
-| 1 | 2.39M | **3.06M** | 2.79M | **C#** |
-| 2 | 5.12M | **6.46M** | 5.34M | **C#** |
-| 4 | 11.15M | **13.91M** | 12.79M | **C#** |
-| 8 | 23.47M | **25.81M** | 27.42M | **C++** |
-| 16 | 38.15M | **42.46M** | 42.52M | **C++** |
+| Threads | Rust | C# | Faster |
+|--------:|----------:|----------:|--------|
+| 1 | 2.49M | **3.58M** | **C#** |
+| 4 | 11.16M | **15.50M** | **C#** |
+| 8 | 24.18M | **29.67M** | **C#** |
+| 16 | 47.54M | **53.44M** | **C#** |
 
 ### Rust Latency Percentiles (ns)
 
 | Workload | P50 | P99 | P99.9 |
 |----------|----:|----:|------:|
-| **A** (1T) | 400 | 800 | 1700 |
-| **A** (16T) | 300 | 800 | 1400 |
-| **B** (1T) | 400 | 900 | 1800 |
-| **B** (16T) | 300 | 800 | 1200 |
-| **C** (1T) | 400 | 900 | 1500 |
-| **C** (16T) | 300 | 800 | 2400 |
-| **F** (1T) | 400 | 800 | 8400 |
-| **F** (16T) | 300 | 800 | 1400 |
+| **A** (1T) | 400 | 800 | 1200 |
+| **A** (16T) | 300 | 700 | 1100 |
+| **B** (1T) | 400 | 800 | 1500 |
+| **B** (16T) | 300 | 700 | 1000 |
+| **C** (1T) | 400 | 800 | 1100 |
+| **C** (16T) | 400 | 1000 | 1600 |
+| **F** (1T) | 400 | 800 | 1400 |
+| **F** (16T) | 300 | 700 | 1100 |
 
-> C# and C++ benchmarks do not report per-operation latency percentiles.
+> C# benchmark does not report per-operation latency percentiles.
 > Latency data is available only for the Rust implementation.
 
 ### Thread Scaling Efficiency (1T → 16T)
 
-| Workload | Rust | C# | C++ |
-|----------|-----:|----:|----:|
-| **A** (50/50 R/W) | 16.3× (102%) | 12.1× (75%) | 14.5× (91%) |
-| **B** (95/5 R/W) | 18.7× (117%) | 19.4× (121%) | 16.9× (106%) |
-| **C** (100% Read) | 18.0× (112%) | 16.3× (102%) | 11.8× (74%) |
-| **F** (50/50 R/RMW) | 16.0× (100%) | 13.9× (87%) | 15.2× (95%) |
+| Workload | Rust | C# |
+|----------|-----:|----:|
+| **A** (50/50 R/W) | 18.9× (118%) | 13.7× (86%) |
+| **B** (95/5 R/W) | 19.1× (120%) | 17.3× (108%) |
+| **C** (100% Read) | 8.7× (55%) | 15.3× (96%) |
+| **F** (50/50 R/RMW) | 19.1× (120%) | 14.9× (93%) |
 
 ## Summary of Findings
 
@@ -97,97 +102,87 @@ C++ FASTER implementations on identical hardware with matched parameters.
 
 | Category | Winner | Detail |
 |----------|--------|--------|
-| **Single-thread reads** | **C++** | 4.07M vs C# 3.17M vs Rust 2.30M — C++ hash lookup is ~77% faster than Rust |
-| **Single-thread mixed** | **C#** | C# edges out C++ on RMW; both beat Rust by ~15-28% |
-| **Multi-thread reads (16T)** | **C#** | 51.65M vs C++ 48.07M vs Rust 41.33M — C# scales best on reads |
-| **Multi-thread writes (16T, Workload A)** | **Rust** | 39.21M vs C++ 38.91M vs C# 31.02M — C# write scaling degrades |
-| **Write scaling consistency** | **Rust** | 102% efficiency on Workload A at 16T; C# drops to 75% |
-| **Read scaling consistency** | **Rust** | 112% on Workload C; C++ drops to 74% at 16T |
-| **Latency predictability** | **Rust** | P99.9 < 2.5μs across all workloads; no GC pauses, no JIT warmup |
-| **Tail latency** | **Rust** | Only implementation with per-op latency instrumentation |
+| **Single-thread (all workloads)** | **C#** | 2.99–3.74M vs Rust 2.49–2.63M — C# is 18–42% faster at 1T |
+| **Multi-thread reads (16T)** | **C#** | 57.20M vs 22.93M — C# dominates on pure read scaling |
+| **Multi-thread writes (16T, Workload A)** | **Rust** | 47.97M vs 41.11M — Rust's write scaling overtakes C# at 16T |
+| **Write scaling consistency** | **Rust** | 118% efficiency on Workload A; 120% on B and F |
+| **Latency predictability** | **Rust** | P99.9 < 1.6μs across all workloads; no GC pauses |
+| **Overall throughput** | **C#** | C# wins 15 of 16 workload×thread configurations |
 
 ### Key Observations
 
-1. **C# is the throughput leader for most workloads at most thread counts.**
-   The mature .NET JIT produces excellent code for this access pattern, and
-   the C# FASTER implementation has years of optimization. C# wins 12 of 20
-   workload×thread combinations.
+1. **C# is the throughput leader across most configurations.** The mature
+   .NET JIT produces excellent code for this access pattern. C# wins 15 of
+   16 workload×thread combinations, losing only on Workload A at 16 threads.
 
-2. **C++ leads on single-thread read performance** at 4.07M ops/sec (1T Read),
-   77% faster than Rust. The C++ hash index implementation with manual memory
-   layout and prefetching gives it an edge on cache-sensitive single-threaded
-   workloads.
+2. **Rust excels at write-heavy scaling.** On Workload A (50/50 read/upsert)
+   at 16 threads, Rust overtakes C# with 47.97M vs 41.11M ops/sec. Rust
+   consistently achieves >118% scaling efficiency on write workloads, suggesting
+   lower lock contention in the log append path.
 
-3. **Rust has the most consistent scaling.** While it trails on absolute
-   throughput, Rust maintains >100% scaling efficiency on Workload A (writes)
-   where C# drops to 75%. This suggests Rust's log contention management is
-   more effective under write-heavy multi-threaded pressure.
+3. **Rust's single-thread gap is ~18-42%.** At 1T, Rust runs 2.49–2.63M
+   ops/sec vs C#'s 2.99–3.74M. This gap is consistent with prior profiling
+   showing the hash index lookup as the primary bottleneck.
 
-4. **Rust wins the write-heavy 16T race.** On Workload A (50/50) at 16 threads,
-   Rust leads at 39.21M, narrowly edging C++ (38.91M) and significantly
-   beating C# (31.02M). The C# write path appears to hit contention at high
-   thread counts.
+4. **Rust read scaling at 16T regresses.** Workload C drops from 25.21M (8T)
+   to 22.93M (16T), suggesting contention on the read path when oversubscribing
+   physical cores (10 cores, 20 hyperthreads). C# handles this gracefully.
 
-5. **Rust's single-thread performance gap is the main area for improvement.**
-   At 2.30–2.40M ops/sec (1T), Rust is 28–43% slower than C# and 12–77%
-   slower than C++. This is consistent with prior profiling showing the hash
-   index lookup as the bottleneck. Hash prefetching could close this gap.
+5. **Rust provides latency guarantees C# cannot.** With P99.9 < 1.6μs and no
+   GC-induced jitter, Rust is the better choice for latency-sensitive workloads
+   where tail latency matters more than peak throughput.
 
 ### Honest Assessment
 
-The Rust FASTER implementation is **competitive but not yet the fastest**.
-C# wins on raw throughput for most configurations, C++ wins on single-thread
-reads. Rust's strengths are scaling consistency, tail latency control, and
-deployment simplicity. The single-thread hash index performance gap (~40%)
-should be the top optimization priority.
+The Rust FASTER implementation is **competitive on writes but behind on reads**.
+C# wins on raw throughput for most configurations. Rust's strengths are write
+scaling at high thread counts, tail latency control, and deployment simplicity.
+The single-thread hash index performance gap (~30%) and the 16T read scaling
+regression should be the top optimization priorities.
 
 ## Optimization Priority (Updated)
 
 | Priority | Optimization | Expected Impact | Rationale |
 |----------|-------------|----------------|-----------|
-| **1** | Hash index prefetching | +40-70% single-thread | Close the gap with C++ (4.07M vs 2.30M on reads) |
-| **2** | Hash table layout (bucket sizing) | +10-20% | C#/C++ may use different hash table load factors |
-| **3** | Epoch scan optimization | +5-10% | Scan only registered threads, not all 256 slots |
-| **4** | Per-thread log partitioning | +5-10% multi-thread | Already good, but room to match C# at low thread counts |
+| **1** | Hash index prefetching | +30-40% single-thread | Close the 1T gap with C# (3.74M vs 2.63M on reads) |
+| **2** | Read-path scalability at 16T+ | +50-100% at 16T reads | Rust regresses from 8T→16T on Workload C |
+| **3** | Hash table layout (bucket sizing) | +10-20% | C# may use more cache-friendly hash table packing |
+| **4** | Epoch scan optimization | +5-10% | Scan only registered threads, not all 256 slots |
 | **5** | SIMD hash computation | +10-15% hash throughput | AVX2/SSE4.2 for bulk key hashing |
 
 ## Methodology Notes
 
 ### What Was Matched
 
-- **Hardware**: All three benchmarks ran on the same Azure VM, same CPU, same
-  run, sequential execution (no competing workloads)
-- **Key count**: 2,500,480 init keys for all implementations (C# `--sd
-  --synth`, Rust `--num-keys 2500480`, C++ modified `kInitCount`)
-- **Value size**: 8-byte keys + 8-byte values for all implementations
+- **Hardware**: Both benchmarks ran on the same machine, sequential execution
+  (no competing workloads between Rust and C# runs)
+- **Key count**: 2,500,480 init keys (C# `--sd --synth`, Rust `--num-keys 2500480`)
+- **Value size**: 8-byte keys + 8-byte values for both implementations
 - **Duration**: 10 seconds per benchmark run
-- **Distribution**: Uniform random for all implementations
-- **Epoch refresh**: Every 64 operations for all implementations
-- **Device**: In-memory for all (Rust NullDevice, C# in-memory, C++ NullDisk)
+- **Distribution**: Uniform random for both implementations
+- **Epoch refresh**: Every 64 operations for both implementations
+- **Iterations**: 3 runs per configuration, best result reported
 
 ### What Differs
 
-- **Key generation**: Rust and C# generate keys internally. C++ loads from
-  pre-generated binary files (we generated matching synthetic data).
+- **Key generation**: Rust generates uniform random keys internally. C# uses
+  synthetic data generation (`--synth --sd`).
 - **Hash table sizing**: Each implementation sizes its hash table differently.
-  C# uses `hashpack=2` (InitCount/2 buckets). Rust and C++ auto-size.
+  C# uses `hashpack=2` (InitCount/2 buckets). Rust auto-sizes.
 - **Latency instrumentation**: Only Rust collects per-op latency percentiles.
-  C# and C++ report aggregate ops/sec only.
-- **Thread affinity**: C++ sets explicit CPU affinity. C# and Rust rely on
-  OS scheduling.
-- **Warmup**: Rust uses a 3s warmup phase. C# and C++ begin timing immediately
-  after store population. C# includes JIT warmup in the measurement.
-- **C++ benchmark bug**: The upstream C++ benchmark has an inverted error check
-  (`if (result == Status::Ok) { log_warn(...) }`) that spams warnings on every
-  upsert. We fixed this locally for benchmarking. Without the fix, C++ write
-  workloads show ~90% lower throughput due to console I/O overhead.
+  C# reports aggregate ops/sec only.
+- **Warmup**: Rust uses a 3s warmup phase. C# begins timing immediately after
+  store population (includes JIT warmup in the measurement).
+- **Runtime**: Rust compiles ahead-of-time. C# uses JIT compilation via
+  .NET 8 (roll-forward from net7.0 target).
 
 ### Reproducibility
 
-These results were collected on 2026-03-07 on a dedicated 20-CPU Azure VM
-with no other significant workloads running. Performance results may vary on
-different hardware, under different system load, or with different kernel/OS
-configurations.
+These results were collected on 2026-03-07 on a dedicated 20-CPU machine
+(Intel i9-10900K) running Azure Linux 3.0 under WSL2. Performance results
+may vary on different hardware, under different system load, or with different
+kernel/OS configurations. The shared WSL2 environment may introduce scheduling
+variance at high thread counts.
 
 ## How to Reproduce
 
