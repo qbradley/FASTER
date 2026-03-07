@@ -63,6 +63,11 @@ pub struct LiveRecord {
 pub struct CompactionPlan {
     /// Addresses of live records that need to be copied.
     pub live_records: Vec<LiveRecord>,
+    /// Tombstone records found during scanning.
+    ///
+    /// Collected so that the address updater (Phase 3) can remove stale
+    /// hash index entries for deleted keys.
+    pub tombstone_records: Vec<LiveRecord>,
     /// Number of dead records found (superseded by a newer version).
     pub dead_count: usize,
     /// Number of tombstoned records found.

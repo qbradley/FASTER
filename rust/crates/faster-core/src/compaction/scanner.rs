@@ -26,17 +26,19 @@
 //! This ensures that pages are not evicted while the scanner reads them.
 //! Typically, the caller enters a session and holds an epoch guard.
 //!
-//! # Fixed-size records
+//! # Variable-length records
 //!
-//! The current implementation assumes fixed-size keys and values. The
-//! caller provides `key_size` and `value_size` so the scanner can compute
-//! the record layout. Variable-length record scanning is future work.
+//! The scanner discovers per-record sizes via
+//! [`record_size_from_bytes`](crate::record::record_size_from_bytes)
+//! and uses [`Key::eq_from_bytes`] for zero-copy key comparison during
+//! version chain walks. This handles both fixed-size and variable-length
+//! key/value types uniformly.
 
 use crate::address::{LogicalAddress, OFFSET_BITS, Offset, Page};
 use crate::hash::index::HashIndex;
 use crate::hybrid_log::log_allocator::HybridLogAllocator;
 use crate::hybrid_log::record_ops::{LogRecordReader, RecordAccessor};
-use crate::record::{Key, RecordLayout};
+use crate::record::{Key, RECORD_HEADER_SIZE, RecordSizeError, Value, record_size_from_bytes};
 
 use super::{CompactionPlan, LiveRecord};
 
@@ -45,6 +47,19 @@ use super::{CompactionPlan, LiveRecord};
 /// Matches the limit used in `store::operations` to prevent infinite
 /// traversal on corrupted chains.
 const MAX_CHAIN_DEPTH: usize = 4096;
+
+/// Minimum bytes needed to read a record header + one length prefix.
+///
+/// 8 bytes (`RecordInfo`) + 4 bytes (u32 length prefix) = 12.
+/// For fixed-size keys this is conservative (they don't use a prefix),
+/// but keeping the check type-agnostic simplifies the scanning loop.
+const MIN_READABLE: u32 = (RECORD_HEADER_SIZE + crate::record::LENGTH_PREFIX_SIZE) as u32;
+
+/// Key offset within any record — always 8 bytes.
+///
+/// This is an invariant of the record layout:
+/// `pad_alignment(RECORD_HEADER_SIZE, RECORD_ALIGNMENT) == 8`.
+const KEY_OFFSET: usize = 8;
 
 // ── CompactionScanner ───────────────────────────────────────────────
 
@@ -59,7 +74,7 @@ const MAX_CHAIN_DEPTH: usize = 4096;
 /// use faster_core::compaction::scanner::CompactionScanner;
 ///
 /// let scanner = CompactionScanner::new(&allocator, &hash_index);
-/// let plan = scanner.scan::<u64>(begin, until, 8, 8);
+/// let plan = scanner.scan::<u64, u64>(begin, until)?;
 /// println!("live={}, dead={}, tombstones={}",
 ///     plan.live_records.len(), plan.dead_count, plan.tombstone_count);
 /// ```
@@ -83,31 +98,34 @@ impl<'a> CompactionScanner<'a> {
 
     /// Scan records in `[begin_address, until_address)` and classify them.
     ///
-    /// `K` must be the same key type used when the records were written.
-    /// `key_size` and `value_size` are the serialized sizes of the key and
-    /// value types (e.g., 8 and 8 for `u64`).
+    /// `K` and `V` must be the same key/value types used when the records
+    /// were written. Record sizes are discovered per-record via
+    /// [`record_size_from_bytes`], so this works for both fixed-size and
+    /// variable-length types.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecordSizeError::CorruptedRecord`] if a corrupted length
+    /// prefix is detected. Compaction is aborted to preserve original data.
     ///
     /// # Panics
     ///
     /// Debug-panics if `begin_address >= until_address`.
-    pub fn scan<K: Key>(
+    pub fn scan<K: Key, V: Value>(
         &self,
         begin_address: LogicalAddress,
         until_address: LogicalAddress,
-        key_size: usize,
-        value_size: usize,
-    ) -> CompactionPlan {
+    ) -> Result<CompactionPlan, RecordSizeError> {
         debug_assert!(
             begin_address <= until_address,
             "scan range is empty or inverted: begin={begin_address} >= until={until_address}"
         );
 
-        let layout = RecordLayout::compute(key_size, value_size);
-        let record_size = layout.total_size();
         let page_size = 1u32 << OFFSET_BITS;
 
         let mut plan = CompactionPlan {
             live_records: Vec::new(),
+            tombstone_records: Vec::new(),
             dead_count: 0,
             tombstone_count: 0,
             total_bytes_scanned: 0,
@@ -117,39 +135,65 @@ impl<'a> CompactionScanner<'a> {
         let mut current = begin_address;
 
         while current < until_address {
-            // Handle page boundary: if there's not enough room for a record
-            // on the current page, skip to the next page.
             let offset = current.offset().0;
-            if offset > 0 && (page_size - offset) < record_size as u32 {
-                let next_page = current.page().0 + 1;
-                current = LogicalAddress::new(Page(next_page), Offset(0));
+            let remaining = page_size - offset;
+
+            // MF-2: Universal page boundary check — if fewer than
+            // MIN_READABLE bytes remain, no valid record can start here.
+            if remaining < MIN_READABLE {
+                current = LogicalAddress::new(Page(current.page().0 + 1), Offset(0));
                 continue;
             }
 
-            // Try to read the record header at the current position.
-            let accessor =
-                match RecordAccessor::from_log(self.allocator, current, record_size as u32) {
-                    Some(a) => a,
-                    None => {
-                        // Page not in memory — skip forward.
-                        advance(&mut current, record_size as u32, page_size);
-                        continue;
-                    }
-                };
+            // Get page-bounded access starting at the current record.
+            // We request `remaining` bytes so that `record_size_from_bytes`
+            // can inspect key/value length prefixes.
+            let accessor = match RecordAccessor::from_log(self.allocator, current, remaining) {
+                Some(a) => a,
+                None => {
+                    // Page not in memory — skip to next page.
+                    current = LogicalAddress::new(Page(current.page().0 + 1), Offset(0));
+                    continue;
+                }
+            };
+
+            let bytes = accessor.as_slice();
+
+            // Discover the record size from raw page bytes.
+            let record_size = match record_size_from_bytes::<K, V>(bytes, 0, remaining as usize) {
+                Ok(size) => size,
+                Err(RecordSizeError::InsufficientPageSpace) => {
+                    // Gap at page end — skip to next page.
+                    current = LogicalAddress::new(Page(current.page().0 + 1), Offset(0));
+                    continue;
+                }
+                Err(e @ RecordSizeError::CorruptedRecord { .. }) => {
+                    // MF-3: Abort compaction on corruption (T-2 decision).
+                    return Err(e);
+                }
+            };
+
+            debug_assert!(
+                offset as usize + record_size <= page_size as usize,
+                "record at offset {offset} with size {record_size} exceeds page boundary"
+            );
 
             let info = accessor.record_info();
-
-            // This is a real record — account for it.
             plan.total_bytes_scanned += record_size;
 
             if info.is_tombstone() {
+                // MF-5: Collect tombstones for the address updater.
                 plan.tombstone_count += 1;
+                plan.tombstone_records.push(LiveRecord {
+                    address: current,
+                    record_size,
+                });
             } else if info.is_invalid() {
                 plan.dead_count += 1;
             } else {
                 // Classify by checking the hash index.
-                let key: K = accessor.key(&layout);
-                if self.is_current_version(&key, current, &layout) {
+                let key: K = K::deserialize(&bytes[KEY_OFFSET..]);
+                if self.is_current_version(&key, current) {
                     plan.live_records.push(LiveRecord {
                         address: current,
                         record_size,
@@ -160,10 +204,16 @@ impl<'a> CompactionScanner<'a> {
                 }
             }
 
+            // C-1: Software prefetch hint for the next record header.
+            // NOTE: Omitted because the crate uses `#[deny(unsafe_code)]`.
+            // When unsafe blocks are permitted in a future release, add
+            // `_mm_prefetch` here targeting `bytes[record_size..]` with
+            // `_MM_HINT_T0` on x86_64 to compensate for data-dependent stride.
+
             advance(&mut current, record_size as u32, page_size);
         }
 
-        plan
+        Ok(plan)
     }
 
     /// Determine whether the record at `addr` with key `key` is the
@@ -177,12 +227,14 @@ impl<'a> CompactionScanner<'a> {
     /// - No hash index entry exists for this key's hash.
     /// - The chain head address is invalid.
     /// - The chain cannot be followed (page not in memory, cycle, depth limit).
-    fn is_current_version<K: Key>(
-        &self,
-        key: &K,
-        addr: LogicalAddress,
-        layout: &RecordLayout,
-    ) -> bool {
+    ///
+    /// # Per-hop variable-length safety (MF-1)
+    ///
+    /// Uses [`LogRecordReader::read_header_and_match_key_varlen`] which
+    /// performs zero-copy key comparison via [`Key::eq_from_bytes`]. This
+    /// is correct even when different records in the same hash bucket have
+    /// different serialized sizes.
+    fn is_current_version<K: Key>(&self, key: &K, addr: LogicalAddress) -> bool {
         let hash = key.hash();
 
         let (entry, _slot) = match self.hash_index.find(hash) {
@@ -210,7 +262,7 @@ impl<'a> CompactionScanner<'a> {
         while current.is_valid() && depth < MAX_CHAIN_DEPTH {
             depth += 1;
 
-            match reader.read_header_and_match_key(current, key, layout) {
+            match reader.read_header_and_match_key_varlen::<K>(current, key) {
                 Some((ri, key_matches)) => {
                     if key_matches && !ri.is_invalid() {
                         // Found the current version for this key.
@@ -236,6 +288,10 @@ impl<'a> CompactionScanner<'a> {
 /// Advance `current` by `step` bytes, handling page-boundary wrap.
 #[inline]
 fn advance(current: &mut LogicalAddress, step: u32, page_size: u32) {
+    debug_assert!(
+        step <= page_size,
+        "advance step {step} exceeds page size {page_size}"
+    );
     let new_offset = current.offset().0 + step;
     if new_offset >= page_size {
         *current = LogicalAddress::new(Page(current.page().0 + 1), Offset(0));
@@ -252,6 +308,7 @@ mod tests {
     use crate::device::NullDevice;
     use crate::grow::GrowConfig;
     use crate::hybrid_log::eviction::EvictionPolicy;
+    use crate::record::{RecordSizeError, record_size_from_bytes};
     use crate::status::OperationStatus;
     use crate::store::{FasterKv, FasterKvConfig, SimpleFunctions};
 
@@ -270,10 +327,6 @@ mod tests {
         FasterKv::new(config, SimpleFunctions::default(), NullDevice::new())
     }
 
-    // Helper: size of u64 key and u64 value
-    const KEY_SIZE: usize = 8;
-    const VALUE_SIZE: usize = 8;
-
     // ── 1. Empty log → empty plan ───────────────────────────────────
 
     #[test]
@@ -283,12 +336,9 @@ mod tests {
         {
             let _guard = session.begin_unsafe();
             let scanner = CompactionScanner::new(&store.allocator, &store.hash_index);
-            let plan = scanner.scan::<u64>(
-                store.first_data_address(),
-                store.allocator.tail_address(),
-                KEY_SIZE,
-                VALUE_SIZE,
-            );
+            let plan = scanner
+                .scan::<u64, u64>(store.first_data_address(), store.allocator.tail_address())
+                .expect("scan should succeed");
             assert_eq!(
                 plan.live_records.len(),
                 0,
@@ -296,6 +346,7 @@ mod tests {
             );
             assert_eq!(plan.dead_count, 0);
             assert_eq!(plan.tombstone_count, 0);
+            assert!(plan.tombstone_records.is_empty());
         }
         store.dispose_session(session);
     }
@@ -310,12 +361,9 @@ mod tests {
         {
             let _guard = session.begin_unsafe();
             let scanner = CompactionScanner::new(&store.allocator, &store.hash_index);
-            let plan = scanner.scan::<u64>(
-                store.first_data_address(),
-                store.allocator.tail_address(),
-                KEY_SIZE,
-                VALUE_SIZE,
-            );
+            let plan = scanner
+                .scan::<u64, u64>(store.first_data_address(), store.allocator.tail_address())
+                .expect("scan should succeed");
             assert_eq!(plan.live_records.len(), 1, "single record should be live");
             assert_eq!(plan.dead_count, 0);
             assert_eq!(plan.tombstone_count, 0);
@@ -336,12 +384,9 @@ mod tests {
         {
             let _guard = session.begin_unsafe();
             let scanner = CompactionScanner::new(&store.allocator, &store.hash_index);
-            let plan = scanner.scan::<u64>(
-                store.first_data_address(),
-                store.allocator.tail_address(),
-                KEY_SIZE,
-                VALUE_SIZE,
-            );
+            let plan = scanner
+                .scan::<u64, u64>(store.first_data_address(), store.allocator.tail_address())
+                .expect("scan should succeed");
             assert_eq!(
                 plan.live_records.len(),
                 n as usize,
@@ -381,12 +426,9 @@ mod tests {
         {
             let _guard = session.begin_unsafe();
             let scanner = CompactionScanner::new(&store.allocator, &store.hash_index);
-            let plan = scanner.scan::<u64>(
-                store.first_data_address(),
-                store.allocator.tail_address(),
-                KEY_SIZE,
-                VALUE_SIZE,
-            );
+            let plan = scanner
+                .scan::<u64, u64>(store.first_data_address(), store.allocator.tail_address())
+                .expect("scan should succeed");
             // Keys 0..5: old versions dead + new versions live = 5 dead, 5 live
             // Keys 5..10: original versions still live = 5 live
             // Total: 10 live, 5 dead
@@ -432,16 +474,18 @@ mod tests {
         {
             let _guard = session.begin_unsafe();
             let scanner = CompactionScanner::new(&store.allocator, &store.hash_index);
-            let plan = scanner.scan::<u64>(
-                store.first_data_address(),
-                store.allocator.tail_address(),
-                KEY_SIZE,
-                VALUE_SIZE,
-            );
+            let plan = scanner
+                .scan::<u64, u64>(store.first_data_address(), store.allocator.tail_address())
+                .expect("scan should succeed");
             // Original keys 0..2: dead (hash index now points to tombstones)
             // Original keys 3..4: still live
             // Tombstones at tail: 3 tombstones
             assert_eq!(plan.tombstone_count, 3, "should have 3 tombstones");
+            assert_eq!(
+                plan.tombstone_records.len(),
+                3,
+                "should have 3 tombstone records collected"
+            );
             assert_eq!(
                 plan.live_records.len(),
                 2,
@@ -487,12 +531,9 @@ mod tests {
         {
             let _guard = session.begin_unsafe();
             let scanner = CompactionScanner::new(&store.allocator, &store.hash_index);
-            let plan = scanner.scan::<u64>(
-                store.first_data_address(),
-                store.allocator.tail_address(),
-                KEY_SIZE,
-                VALUE_SIZE,
-            );
+            let plan = scanner
+                .scan::<u64, u64>(store.first_data_address(), store.allocator.tail_address())
+                .expect("scan should succeed");
             // Read-only region: 15 original records
             //   Keys 0..5: dead (superseded by new copies at tail) = 5 dead
             //   Keys 5..8: dead (superseded by tombstones at tail) = 3 dead
@@ -507,6 +548,11 @@ mod tests {
             assert_eq!(plan.live_records.len(), expected_live, "live count");
             assert_eq!(plan.dead_count, expected_dead, "dead count");
             assert_eq!(plan.tombstone_count, expected_tombstones, "tombstone count");
+            assert_eq!(
+                plan.tombstone_records.len(),
+                expected_tombstones,
+                "tombstone records collected"
+            );
             assert_eq!(
                 plan.total_records(),
                 (n as usize) + 5 + 3, // originals + new copies + tombstones
@@ -536,12 +582,9 @@ mod tests {
         {
             let _guard = session.begin_unsafe();
             let scanner = CompactionScanner::new(&store.allocator, &store.hash_index);
-            let plan = scanner.scan::<u64>(
-                store.first_data_address(),
-                store.allocator.tail_address(),
-                KEY_SIZE,
-                VALUE_SIZE,
-            );
+            let plan = scanner
+                .scan::<u64, u64>(store.first_data_address(), store.allocator.tail_address())
+                .expect("scan should succeed");
             assert_eq!(
                 plan.live_records.len(),
                 0,
@@ -549,6 +592,11 @@ mod tests {
             );
             assert_eq!(plan.dead_count, 5, "all original records should be dead");
             assert_eq!(plan.tombstone_count, 5, "all deletes should be tombstones");
+            assert_eq!(
+                plan.tombstone_records.len(),
+                5,
+                "all tombstones should be collected"
+            );
         }
         store.dispose_session(session);
     }
@@ -568,6 +616,7 @@ mod tests {
                     record_size: 24,
                 },
             ],
+            tombstone_records: vec![],
             dead_count: 3,
             tombstone_count: 1,
             total_bytes_scanned: 144, // 6 records × 24 bytes
@@ -582,6 +631,7 @@ mod tests {
     fn plan_empty_live_fraction() {
         let plan = CompactionPlan {
             live_records: vec![],
+            tombstone_records: vec![],
             dead_count: 0,
             tombstone_count: 0,
             total_bytes_scanned: 0,
@@ -612,7 +662,9 @@ mod tests {
             let mid_raw = begin.raw() + (tail.raw() - begin.raw()) / 2;
             let mid = LogicalAddress::from_raw(mid_raw);
 
-            let plan = scanner.scan::<u64>(begin, mid, KEY_SIZE, VALUE_SIZE);
+            let plan = scanner
+                .scan::<u64, u64>(begin, mid)
+                .expect("scan should succeed");
             // Should have fewer records than the full scan.
             assert!(
                 plan.live_records.len() < 10,
@@ -671,12 +723,12 @@ mod tests {
                 {
                     let _guard = session.begin_unsafe();
                     let scanner = CompactionScanner::new(&store.allocator, &store.hash_index);
-                    let plan = scanner.scan::<u64>(
-                        store.first_data_address(),
-                        store.allocator.tail_address(),
-                        KEY_SIZE,
-                        VALUE_SIZE,
-                    );
+                    let plan = scanner
+                        .scan::<u64, u64>(
+                            store.first_data_address(),
+                            store.allocator.tail_address(),
+                        )
+                        .expect("scan should succeed");
 
                     // Each live key should have exactly one live record.
                     prop_assert_eq!(
@@ -698,5 +750,136 @@ mod tests {
                 store.dispose_session(session);
             }
         }
+    }
+
+    // ── 11. Tombstone collection test ───────────────────────────────
+
+    #[test]
+    fn tombstone_records_collected() {
+        let store = test_store();
+        let mut session = store.new_session();
+
+        for i in 0u64..10 {
+            let _ = store.upsert(&mut session, &i, &(i * 10), ());
+        }
+
+        store.allocator.shift_read_only_to_tail();
+
+        // Delete keys 3, 5, 7.
+        for &i in &[3u64, 5, 7] {
+            assert_eq!(store.delete(&mut session, &i, ()), OperationStatus::Deleted);
+        }
+
+        {
+            let _guard = session.begin_unsafe();
+            let scanner = CompactionScanner::new(&store.allocator, &store.hash_index);
+            let plan = scanner
+                .scan::<u64, u64>(store.first_data_address(), store.allocator.tail_address())
+                .expect("scan should succeed");
+
+            assert_eq!(plan.tombstone_count, 3);
+            assert_eq!(plan.tombstone_records.len(), 3);
+
+            // Each tombstone record should have a valid address and nonzero size.
+            for tr in &plan.tombstone_records {
+                assert!(tr.address.is_valid());
+                assert!(tr.record_size > 0);
+            }
+        }
+        store.dispose_session(session);
+    }
+
+    // ── 12. Corruption detection test ───────────────────────────────
+
+    #[test]
+    fn corruption_returns_error() {
+        // Verify that `record_size_from_bytes` returns an error for a
+        // corrupted length prefix (not a panic).
+        let page_size = 512;
+        let mut page = vec![0u8; page_size];
+
+        // Write a header (8 bytes of zeros) then a wildly large u32
+        // key length prefix that exceeds the page.
+        let key_offset = 8usize;
+        let bogus_len = (page_size as u32) + 1000;
+        page[key_offset..key_offset + 4].copy_from_slice(&bogus_len.to_le_bytes());
+
+        let result = record_size_from_bytes::<Vec<u8>, Vec<u8>>(&page, 0, page_size);
+        assert!(
+            result.is_err(),
+            "corrupted record should return Err, got {:?}",
+            result
+        );
+        match result {
+            Err(RecordSizeError::CorruptedRecord { offset }) => {
+                assert_eq!(offset, 0, "corruption should be at offset 0");
+            }
+            other => panic!("expected CorruptedRecord, got {other:?}"),
+        }
+    }
+
+    // ── 13. Page-end gap tests ──────────────────────────────────────
+
+    #[test]
+    fn page_end_insufficient_space() {
+        // Verify that `record_size_from_bytes` returns InsufficientPageSpace
+        // when fewer than MIN_READABLE (12) bytes remain.
+        let page_size = 64;
+        let page = vec![0u8; page_size];
+
+        // Gaps of 1, 4, 8, 11 bytes at page end — all < 12.
+        for gap in [1usize, 4, 8, 11] {
+            let offset = page_size - gap;
+            let result = record_size_from_bytes::<u64, u64>(&page, offset, page_size);
+            assert_eq!(
+                result,
+                Err(RecordSizeError::InsufficientPageSpace),
+                "gap of {gap} bytes at page end should be InsufficientPageSpace"
+            );
+        }
+
+        // 12 bytes remaining should NOT be InsufficientPageSpace for fixed-size.
+        let offset = page_size - 12;
+        let result = record_size_from_bytes::<u64, u64>(&page, offset, page_size);
+        assert_ne!(
+            result,
+            Err(RecordSizeError::InsufficientPageSpace),
+            "12 bytes remaining should be enough to attempt size computation"
+        );
+    }
+
+    // ── 14. Variable-length scanning ────────────────────────────────
+
+    #[test]
+    fn variable_length_record_size_discovery() {
+        // Verify that record_size_from_bytes correctly discovers sizes
+        // for records with different variable-length keys.
+        use crate::record::{RecordInfo, RecordLayout, write_record};
+
+        let page_size = 4096;
+        let mut page = vec![0u8; page_size];
+
+        // Record 1: small key + small value.
+        let k1: Vec<u8> = vec![1, 2, 3];
+        let v1: Vec<u8> = vec![10];
+        let layout1 = RecordLayout::for_kv(&k1, &v1);
+        let size1 = layout1.total_size();
+        let info = RecordInfo::default();
+        write_record(&mut page[0..], &info, &k1, &v1, &layout1);
+
+        // Record 2: larger key + larger value at offset = size1.
+        let k2: Vec<u8> = vec![4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+        let v2: Vec<u8> = vec![20, 21, 22, 23, 24];
+        let layout2 = RecordLayout::for_kv(&k2, &v2);
+        let size2 = layout2.total_size();
+        write_record(&mut page[size1..], &info, &k2, &v2, &layout2);
+
+        // Discover sizes from raw bytes.
+        let discovered1 = record_size_from_bytes::<Vec<u8>, Vec<u8>>(&page, 0, page_size).unwrap();
+        assert_eq!(discovered1, size1, "first record size mismatch");
+
+        let discovered2 =
+            record_size_from_bytes::<Vec<u8>, Vec<u8>>(&page, size1, page_size).unwrap();
+        assert_eq!(discovered2, size2, "second record size mismatch");
     }
 }

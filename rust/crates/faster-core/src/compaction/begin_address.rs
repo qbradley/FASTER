@@ -174,8 +174,9 @@ mod tests {
             let _guard = session.begin_unsafe();
 
             let scanner = CompactionScanner::new(&store.allocator, &store.hash_index);
-            let plan =
-                scanner.scan::<u64>(store.first_data_address(), scan_until, KEY_SIZE, VALUE_SIZE);
+            let plan = scanner
+                .scan::<u64, u64>(store.first_data_address(), scan_until)
+                .expect("scan should succeed");
 
             let copier = RecordCopier::new(&store.allocator);
             let copy_result = copier.copy_records(&plan.live_records).unwrap();
@@ -226,8 +227,9 @@ mod tests {
         let old_addresses: Vec<LogicalAddress> = {
             let _guard = session.begin_unsafe();
             let scanner = CompactionScanner::new(&store.allocator, &store.hash_index);
-            let plan =
-                scanner.scan::<u64>(store.first_data_address(), scan_until, KEY_SIZE, VALUE_SIZE);
+            let plan = scanner
+                .scan::<u64, u64>(store.first_data_address(), scan_until)
+                .expect("scan should succeed");
             plan.live_records.iter().map(|r| r.address).collect()
         };
 
@@ -235,8 +237,9 @@ mod tests {
         {
             let _guard = session.begin_unsafe();
             let scanner = CompactionScanner::new(&store.allocator, &store.hash_index);
-            let plan =
-                scanner.scan::<u64>(store.first_data_address(), scan_until, KEY_SIZE, VALUE_SIZE);
+            let plan = scanner
+                .scan::<u64, u64>(store.first_data_address(), scan_until)
+                .expect("scan should succeed");
             let copier = RecordCopier::new(&store.allocator);
             let copy_result = copier.copy_records(&plan.live_records).unwrap();
             let updater = AddressUpdater::new(&store.hash_index, &store.allocator);

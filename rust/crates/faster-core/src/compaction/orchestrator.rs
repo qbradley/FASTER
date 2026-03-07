@@ -36,6 +36,7 @@ use crate::hash::index::HashIndex;
 use crate::hybrid_log::log_allocator::HybridLogAllocator;
 use crate::record::FixedSizeKey;
 use crate::record::FixedSizeValue;
+use crate::record::RecordSizeError;
 
 // ── CompactionResult ────────────────────────────────────────────────
 
@@ -74,6 +75,8 @@ pub enum CompactionError {
     CopyFailed(CopyError),
     /// Epoch drain timed out after pointer swing.
     EpochDrainTimeout,
+    /// Scan detected a corrupted record; compaction aborted to preserve data.
+    ScanCorruption(RecordSizeError),
 }
 
 impl core::fmt::Display for CompactionError {
@@ -88,6 +91,9 @@ impl core::fmt::Display for CompactionError {
             CompactionError::CopyFailed(e) => write!(f, "record copy failed: {e}"),
             CompactionError::EpochDrainTimeout => {
                 write!(f, "epoch drain timed out after pointer swing")
+            }
+            CompactionError::ScanCorruption(e) => {
+                write!(f, "scan detected corrupted record: {e}")
             }
         }
     }
@@ -169,7 +175,9 @@ impl<'a> CompactionOrchestrator<'a> {
 
             // Phase 1: Scan
             let scanner = CompactionScanner::new(self.allocator, self.hash_index);
-            let plan = scanner.scan::<K>(begin, until, key_size, value_size);
+            let plan = scanner
+                .scan::<K, V>(begin, until)
+                .map_err(CompactionError::ScanCorruption)?;
 
             if plan.live_records.is_empty() {
                 // No live records — skip copy and swing.

@@ -264,12 +264,9 @@ mod tests {
         let plan = {
             let _guard = session.begin_unsafe();
             let scanner = CompactionScanner::new(&store.allocator, &store.hash_index);
-            scanner.scan::<u64>(
-                store.first_data_address(),
-                store.allocator.tail_address(),
-                KEY_SIZE,
-                VALUE_SIZE,
-            )
+            scanner
+                .scan::<u64, u64>(store.first_data_address(), store.allocator.tail_address())
+                .expect("scan should succeed")
         };
         store.dispose_session(session);
         (store, plan)
@@ -516,12 +513,9 @@ mod tests {
         let plan = {
             let _guard = session.begin_unsafe();
             let scanner = CompactionScanner::new(&store.allocator, &store.hash_index);
-            scanner.scan::<u64>(
-                store.first_data_address(),
-                store.allocator.tail_address(),
-                KEY_SIZE,
-                VALUE_SIZE,
-            )
+            scanner
+                .scan::<u64, u64>(store.first_data_address(), store.allocator.tail_address())
+                .expect("scan should succeed")
         };
         // Scanner finds live records (latest version of each key).
         // Note: In the mutable region, upserts may update in place rather than
