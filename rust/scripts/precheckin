@@ -73,39 +73,18 @@ run_gate "cargo fmt (check)" \
     exit 1
 }
 
-# ── Discover workspace crates to gate ───────────────────────────────────────
-# Gate all library/binary crates in the workspace (skip samples for speed)
-GATE_CRATES=()
-for crate_dir in crates/faster-core crates/faster-ffi crates/faster-tokio crates/faster-uring crates/faster-dst; do
-    if [[ -f "$crate_dir/Cargo.toml" ]]; then
-        crate_name="$(basename "$crate_dir")"
-        GATE_CRATES+=("$crate_name")
-    fi
-done
-
-if [[ ${#GATE_CRATES[@]} -eq 0 ]]; then
-    echo -e "${RED}❌ No workspace crates found to gate.${RESET}" >&2
+run_gate "cargo clippy (workspace)" \
+    cargo clippy --workspace --all-targets -- -D warnings || {
+    echo -e "\n${RED}💡 Fix: address the clippy warnings above then retry.${RESET}" >&2
     exit 1
-fi
-
-echo -e "${BOLD}  Gating crates: ${GATE_CRATES[*]}${RESET}"
-
-for crate in "${GATE_CRATES[@]}"; do
-    run_gate "cargo clippy ($crate)" \
-        cargo clippy -p "$crate" --all-targets -- -D warnings || {
-        echo -e "\n${RED}💡 Fix: address the clippy warnings in $crate above then retry.${RESET}" >&2
-        exit 1
-    }
-done
+}
 
 if [[ "$SKIP_TESTS" == false ]]; then
-    for crate in "${GATE_CRATES[@]}"; do
-        run_gate "cargo test --doc ($crate)" \
-            cargo test --doc -p "$crate" || {
-            echo -e "\n${RED}💡 Fix: repair the failing doctests in $crate above then retry.${RESET}" >&2
-            exit 1
-        }
-    done
+    run_gate "cargo test --doc (workspace)" \
+        cargo test --doc --workspace || {
+        echo -e "\n${RED}💡 Fix: repair the failing doctests above then retry.${RESET}" >&2
+        exit 1
+    }
 
     if command -v cargo-nextest &>/dev/null || cargo nextest --version &>/dev/null 2>&1; then
         run_gate "cargo nextest run (workspace)" \
