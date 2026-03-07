@@ -76,6 +76,11 @@ pub struct AddressMapping {
     pub old_address: LogicalAddress,
     /// Address of the copied record at the log tail.
     pub new_address: LogicalAddress,
+    /// Total record size in bytes (header + key + value + padding).
+    ///
+    /// Propagated from [`LiveRecord::record_size`] so that the address
+    /// updater can read per-record keys without re-computing sizes.
+    pub record_size: usize,
 }
 
 // ── CopyResult ──────────────────────────────────────────────────────
@@ -187,6 +192,7 @@ impl<'a> RecordCopier<'a> {
             mappings.push(AddressMapping {
                 old_address: record.address,
                 new_address: new_addr,
+                record_size: record.record_size,
             });
             bytes_copied += record.record_size;
         }

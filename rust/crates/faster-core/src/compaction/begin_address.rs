@@ -151,9 +151,6 @@ mod tests {
         FasterKv::new(config, SimpleFunctions::default(), NullDevice::new())
     }
 
-    const KEY_SIZE: usize = 8;
-    const VALUE_SIZE: usize = 8;
-
     // ── 1. Advance begin-address after compaction ───────────────────
 
     #[test]
@@ -182,7 +179,7 @@ mod tests {
             let copy_result = copier.copy_records(&plan.live_records).unwrap();
 
             let updater = AddressUpdater::new(&store.hash_index, &store.allocator);
-            updater.swing::<u64>(&copy_result, &[], KEY_SIZE, VALUE_SIZE);
+            updater.swing::<u64, u64>(&copy_result, &plan);
 
             copy_result
         };
@@ -243,7 +240,7 @@ mod tests {
             let copier = RecordCopier::new(&store.allocator);
             let copy_result = copier.copy_records(&plan.live_records).unwrap();
             let updater = AddressUpdater::new(&store.hash_index, &store.allocator);
-            updater.swing::<u64>(&copy_result, &[], KEY_SIZE, VALUE_SIZE);
+            updater.swing::<u64, u64>(&copy_result, &plan);
         }
 
         let null_dev2 = NullDevice::new();
