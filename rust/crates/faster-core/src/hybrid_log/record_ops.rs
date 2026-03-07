@@ -14,13 +14,33 @@
 //! | [`LogRecordReader`] | Read records from in-memory pages |
 //! | [`VersionChainIterator`] | Walk the `previous_address` chain |
 
-use crate::address::LogicalAddress;
+use crate::address::{LogicalAddress, OFFSET_BITS};
 use crate::record::{
     AtomicRecordInfo, Key, RECORD_HEADER_SIZE, RecordInfo, RecordLayout, Value,
     read_record_info as layout_read_record_info, write_record as layout_write_record,
 };
 
 use super::log_allocator::HybridLogAllocator;
+
+// ── Helper ──────────────────────────────────────────────────────────
+
+/// Compute a safe `record_size` for reading a record at `addr`.
+///
+/// Records never span page boundaries, so the remaining space within the
+/// current page is a safe upper bound on the record's actual size.  This
+/// is critical for variable-length records (e.g. `Vec<u8>`) where a
+/// caller might only know a minimum header+key size at lookup time.
+///
+/// Returns `max(page_remaining, min_size)` — the `min_size` fallback
+/// handles the (degenerate) case where the computed remainder is
+/// smaller than the caller's minimum.
+#[inline]
+fn safe_record_size(addr: LogicalAddress, min_size: u32) -> u32 {
+    let page_size = 1u32 << OFFSET_BITS;
+    let offset = addr.offset().0;
+    let remaining = page_size.saturating_sub(offset);
+    remaining.max(min_size)
+}
 
 // ── RecordAccessor ──────────────────────────────────────────────────
 
@@ -459,17 +479,27 @@ impl<'a> LogRecordReader<'a> {
 
     /// Read a key at the given address with the given layout.
     ///
+    /// Uses page-bounded record sizing so that variable-length records
+    /// (where `layout.total_size()` may underestimate the true size)
+    /// are read correctly.
+    ///
     /// Returns `None` if the address is not in memory.
     pub fn read_key<K: Key>(&self, addr: LogicalAddress, layout: &RecordLayout) -> Option<K> {
-        let accessor = self.get_record(addr, layout.total_size() as u32)?;
+        let record_size = safe_record_size(addr, layout.value_offset() as u32);
+        let accessor = self.get_record(addr, record_size)?;
         Some(accessor.key(layout))
     }
 
     /// Read a value at the given address with the given layout.
     ///
+    /// Uses page-bounded record sizing so that variable-length records
+    /// (where `layout.total_size()` may underestimate the true size)
+    /// are read correctly.
+    ///
     /// Returns `None` if the address is not in memory.
     pub fn read_value<V: Value>(&self, addr: LogicalAddress, layout: &RecordLayout) -> Option<V> {
-        let accessor = self.get_record(addr, layout.total_size() as u32)?;
+        let record_size = safe_record_size(addr, layout.total_size() as u32);
+        let accessor = self.get_record(addr, record_size)?;
         Some(accessor.value(layout))
     }
 
@@ -481,13 +511,20 @@ impl<'a> LogRecordReader<'a> {
     /// [`read_record_info`](Self::read_record_info) followed by
     /// [`key_matches`](Self::key_matches) because the logical→physical
     /// translation is performed only once.
+    ///
+    /// Uses page-bounded record sizing: since records never span page
+    /// boundaries, the remaining space in the current page is always a
+    /// safe upper bound.  This is essential for variable-length value
+    /// types where `layout.total_size()` (computed from
+    /// `std::mem::size_of::<V>()`) may be smaller than the true record.
     pub fn read_header_and_match_key<K: Key>(
         &self,
         addr: LogicalAddress,
         key: &K,
         layout: &RecordLayout,
     ) -> Option<(RecordInfo, bool)> {
-        let record_size = layout.total_size() as u32;
+        // Only the header + key are needed; value_offset covers both.
+        let record_size = safe_record_size(addr, layout.value_offset() as u32);
         let accessor = RecordAccessor::from_log(self.allocator, addr, record_size)?;
         let ri = accessor.record_info();
         let stored_key: K = accessor.key(layout);

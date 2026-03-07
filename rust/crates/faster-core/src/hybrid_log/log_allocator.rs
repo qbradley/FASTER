@@ -294,7 +294,8 @@ impl HybridLogAllocator {
     /// Called when [`try_allocate`](Self::try_allocate) returns `None` due to a
     /// page boundary crossing. Seals the current page and opens the next one.
     ///
-    /// Returns the first address on the new page, or `None` if sealed.
+    /// Returns the first address on the new page, or `None` if sealed or if
+    /// the circular page buffer is full (tail would lap head).
     pub fn advance_to_next_page(&self) -> Option<LogicalAddress> {
         if self.sealed.load(Ordering::Acquire) {
             return None;
@@ -308,6 +309,17 @@ impl HybridLogAllocator {
                 return None;
             }
             let next_page = Page(current_page.0 + 1);
+
+            // SF-10: Prevent the tail from lapping the head in the
+            // circular page buffer.  If the number of in-memory pages
+            // would exceed buffer_size, the caller must run maintenance
+            // (flush + evict) before retrying.
+            let head_page = self.head_address.load(Ordering::Acquire).page().0;
+            let buffer_size = self.page_table.buffer_size() as u32;
+            if next_page.0.saturating_sub(head_page) >= buffer_size {
+                return None;
+            }
+
             let new_tail = LogicalAddress::new(next_page, Offset(0));
 
             match self.tail_address.compare_exchange(

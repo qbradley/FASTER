@@ -27,11 +27,16 @@
 //! | **Fuzzy / ReadOnly** | read value directly | copy to tail (RCU) | tombstone at tail |
 //! | **OnDisk** | return `Pending` | return `Pending` | return `Pending` |
 //!
-//! # Fixed-size MVP
+//! # Variable-length value support
 //!
-//! This iteration assumes fixed-size keys and values. Variable-length
-//! support (where the record size is not known at compile time) is a
-//! future optimisation.
+//! For fixed-size types (`u64`, `i64`, etc.) the record layout can be
+//! determined at compile time. For variable-length types (`Vec<u8>`,
+//! `String`) the serialized value size is only known at write time, so
+//! **read paths use page-bounded record sizing** rather than relying on
+//! `layout_for_fixed`. The key_offset / value_offset from
+//! `layout_for_fixed` are still correct (they depend only on key size),
+//! but `total_size()` must not be used as the authoritative record size
+//! when reading from the log.
 
 use crate::address::{LogicalAddress, OFFSET_BITS};
 use crate::hash::Hashable;
