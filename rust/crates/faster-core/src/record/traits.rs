@@ -244,7 +244,8 @@ macro_rules! impl_key_value_for_numeric {
 
             #[inline]
             fn eq_from_bytes(&self, buf: &[u8]) -> bool {
-                buf[..core::mem::size_of::<$t>()] == self.to_le_bytes()
+                buf.len() >= core::mem::size_of::<$t>()
+                    && buf[..core::mem::size_of::<$t>()] == self.to_le_bytes()
             }
         }
 
@@ -839,6 +840,36 @@ mod tests {
         let key = String::from("test");
         let buf = vec![0u8; 2];
         assert!(!key.eq_from_bytes(&buf));
+    }
+
+    /// Regression test for MF-2: numeric eq_from_bytes panicked on short buffers.
+    ///
+    /// Before the fix, calling `eq_from_bytes` on a u64 with fewer than 8 bytes
+    /// caused an index-out-of-bounds panic instead of returning `false`.
+    #[test]
+    fn eq_from_bytes_numeric_short_buffer_returns_false() {
+        let key: u64 = 42;
+        // Empty buffer
+        assert!(!key.eq_from_bytes(&[]));
+        // 1 byte — shorter than size_of::<u64>() = 8
+        assert!(!key.eq_from_bytes(&[0]));
+        // 7 bytes — still one byte short
+        assert!(!key.eq_from_bytes(&[0u8; 7]));
+
+        // Same for u32
+        let key32: u32 = 99;
+        assert!(!key32.eq_from_bytes(&[]));
+        assert!(!key32.eq_from_bytes(&[0u8; 3]));
+
+        // Same for i64
+        let keyi64: i64 = -1;
+        assert!(!keyi64.eq_from_bytes(&[]));
+        assert!(!keyi64.eq_from_bytes(&[0u8; 7]));
+
+        // Same for i32
+        let keyi32: i32 = -1;
+        assert!(!keyi32.eq_from_bytes(&[]));
+        assert!(!keyi32.eq_from_bytes(&[0u8; 3]));
     }
 
     mod proptests {
