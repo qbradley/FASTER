@@ -1,0 +1,35 @@
+[package]
+name = "tokio-kv-server"
+version = "0.1.0"
+description = "Async key-value server powered by FASTER + Tokio"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+faster-core = { path = "../../faster-core" }
+faster-tokio = { path = "../../faster-tokio" }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "net",
+    "io-util",
+    "signal",
+    "macros",
+    "sync",
+    "time",
+] }
+clap = { version = "4", features = ["derive"] }
+rand = "0.9"
+
+[dev-dependencies]
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "net",
+    "io-util",
+    "macros",
+    "sync",
+    "time",
+    "test-util",
+] }
