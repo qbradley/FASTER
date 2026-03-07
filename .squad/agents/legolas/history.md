@@ -84,3 +84,37 @@
 4. Per-thread log tail allocation (+5–10%, Medium effort)
 5. Hash table layout optimization (+10–15%, High effort)
 
+
+---
+
+## 2026-03-06: Cross-Implementation Benchmark Suite Delivered
+
+**What:** Built `cross-impl-bench` — a standalone YCSB benchmark binary in `rust/crates/samples/cross-impl-bench/` with clap CLI, 4 workloads (A/B/C/F), thread scaling (1-16T), uniform+zipfian distributions, 3 value sizes (8B/100B/1KB), latency histograms (P50/P99/P99.9), and CSV+table output.
+
+**Performance Numbers (i9-10900K, 20 CPUs, 1M keys, 8B KV, UnsafeContext):**
+- Single-thread: 3.4-3.5M ops/sec across all workloads (P50=300ns, P99=700ns)
+- 4 threads: ~15.4M ops/sec (4.5× scaling, >100% efficiency)
+- 8 threads: ~31M ops/sec (9.2× scaling)
+- 16 threads: 56-60M ops/sec (16.5-17× scaling, super-linear due to cache effects)
+- All workloads near-identical at in-memory scale; read-only (C) marginally fastest at 59.77M/16T
+
+**Key Observations:**
+- Super-linear scaling (>100% efficiency) from 1→8T due to aggregate L1/L2 cache coverage
+- Tail latency well-controlled: P99.9 < 1.3μs under all conditions
+- Workload type has minimal impact when dataset fits in memory (1M × 16B = 16MB << L3)
+- UnsafeContext essential — epoch amortization eliminates ~100ns/op overhead
+
+**C#/C++ Comparison Framework:**
+- C# benchmark: `cs/benchmark/` with `FASTER.benchmark` binary, supports identical workloads via `--rumd` flags
+- C++ benchmark: `cc/benchmark-dir/` with YCSB workloads 0-3, requires pre-generated data files
+- Fair comparison requires: same hardware, same key count, same duration, same distribution, same refresh interval (64)
+
+**Artifacts:**
+- Benchmark crate: `rust/crates/samples/cross-impl-bench/`
+- Performance report: `rust/PERFORMANCE.md`
+- CSV results: generated via `--csv` flag
+
+**Optimization Priority (unchanged from prior analysis):**
+1. Hash index prefetching (+20-40% single-thread)
+2. Epoch scan optimization (+5-10%)
+3. Per-thread log partitioning (+5-10% multi-thread)

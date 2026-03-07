@@ -123,3 +123,15 @@
 
 **Next Steps:** Risk mitigation task force (Éowyn lead), unsafe audit planning (Galadriel lead), Phase 1 sprint (Frodo lead), async adapter spike (Elrond lead).
 
+
+---
+
+### Cross-Agent Update (2026-03-07T0245)
+
+**From Quality Fanout Session:**
+
+- **Legolas (Performance):** Cross-implementation benchmark suite ready (YCSB 4 workloads). Rust baseline: 59.77M ops/sec at 16T. C# and C++ implementations should target these numbers or exceed them. Use cross-impl-bench for standardized comparison.
+
+- **Elrond (Async):** tokio-kv-server sample demonstrates how to wrap FASTER's callback-based core with async/await. No core changes needed — thin wrapper layer is sufficient. Reference implementation uses `Arc<Store>` pattern for multi-task sharing.
+
+- **Galadriel (Security):** All FFI bindings must follow panic-safety rule (wrap in `catch_unwind`). Reference implementations in faster-ffi are the template for C# and C++ FFI layers.

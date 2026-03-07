@@ -3807,3 +3807,89 @@ Chain traversal, search, and insert live on `HashBucket` because they access the
 - **Gimli (storage):** Checkpoint must serialize overflow buckets. `OverflowBucketPool` addresses are `LogicalAddress`es that can be persisted.
 - **Aragorn (API):** Hash table (task 2d) can now use `insert_in_chain` and `find_entry_in_chain` directly — no manual overflow management needed.
 - **Legolas (perf):** Benchmarks added for chain traversal at depth 0/1/2/5. Primary bucket lookup (depth=0) is the hot path and has zero overhead from overflow machinery.
+
+---
+
+## 38. FFI Panic Safety Is Mandatory
+
+**Agent:** Galadriel (Security Expert)
+**Date:** 2026-03-06
+**Status:** DECIDED — Applied
+**Impact:** FFI boundary safety — prevents undefined behavior from Rust panics
+
+### Decision
+
+All `extern "C"` FFI functions MUST be wrapped in `std::panic::catch_unwind` to prevent Rust panics from unwinding across the FFI boundary.
+
+### Rationale
+
+Unwinding across an FFI boundary is instant undefined behavior per the Rust Reference. The FASTER FFI crate exposes 12 `extern "C"` functions that invoke complex Rust store operations (allocations, CAS loops, hash index lookups). Any of these could panic under extreme conditions (OOM, poisoned locks, debug assertions). Without `catch_unwind`, a single panic corrupts the C caller's stack.
+
+### Implementation
+
+- Handle-returning functions: return `INVALID_HANDLE` on panic
+- Status-returning functions: return `FasterStatus::InternalError` on panic
+- Pointer validation happens BEFORE the `catch_unwind` boundary (pointer UB → abort is acceptable)
+- Use `AssertUnwindSafe` where the closure captures mutable state (correct for FFI error recovery)
+
+### Rule
+
+Any new `extern "C"` function added to `faster-ffi` MUST include `catch_unwind`. PR reviewers should reject FFI functions without it.
+
+### Verification
+
+70 FFI tests pass after the change. Clippy clean.
+
+---
+
+## 39. Rust FASTER Benchmark Baseline Established
+
+**Author:** Legolas (Performance Guru)
+**Date:** 2026-03-06
+**Status:** Informational
+**Impact:** Performance regression testing and cross-implementation comparison baseline
+
+### Context
+
+Cross-implementation benchmark suite (`cross-impl-bench`) is now available for standardized YCSB performance testing. Results establish the Rust baseline.
+
+### Key Numbers (i9-10900K, UnsafeContext, 1M keys, uniform)
+
+| Metric | 1T | 8T | 16T |
+|--------|---:|---:|----:|
+| Workload A ops/sec | 3.42M | 31.58M | 56.42M |
+| Workload C ops/sec | 3.50M | 31.17M | 59.77M |
+| P50 latency | 300ns | 200ns | 200ns |
+| P99.9 latency | 1000ns | 900ns | 900ns |
+
+### Implications
+
+- **All:** 60M ops/sec at 16T is the Rust baseline to beat or defend
+- **Aragorn/Frodo:** Any core changes must not regress below these numbers
+- **Legolas:** Hash prefetching is the #1 optimization target for single-thread gains
+- **Éowyn:** These numbers should be tracked in CI regression tests
+
+---
+
+## 40. io_uring Async Read Beyond EOF Semantics
+
+**Author:** Gimli (Database/Storage Expert)
+**Date:** 2026-03-07
+**Status:** Observation (informational)
+**Impact:** UringDevice API semantics documentation
+
+### Context
+
+During battle testing of UringDevice, discovered that io_uring's `read` opcode returns a short read (0 bytes) when reading beyond the end of a file, rather than filling the buffer with zeros.
+
+The sync path (`read_sync` → `read_complete_at`) explicitly handles this by zero-filling the remainder of the buffer on short reads/EOF.
+
+The async path does not — the io_uring CQE result indicates the number of bytes actually read, and the callback reports success with partial bytes.
+
+### Implication
+
+Any caller using `read_async` at offsets beyond what was written may receive partial or zero-length reads. The hybrid log allocator and recovery code must account for this if they rely on zero-initialized unwritten regions.
+
+### Recommendation
+
+If FASTER's higher layers depend on unwritten regions returning zeros, the UringDevice should add a zero-fill step in the completion handler for short reads (matching the sync path behavior). This is a future enhancement — the current behavior is correct per the Device trait contract which makes no promise about unwritten regions.
