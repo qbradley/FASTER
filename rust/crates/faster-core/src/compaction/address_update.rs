@@ -271,12 +271,9 @@ mod tests {
             let _guard = session.begin_unsafe();
 
             let scanner = CompactionScanner::new(&store.allocator, &store.hash_index);
-            let plan = scanner.scan::<u64>(
-                store.first_data_address(),
-                store.allocator.tail_address(),
-                KEY_SIZE,
-                VALUE_SIZE,
-            );
+            let plan = scanner
+                .scan::<u64, u64>(store.first_data_address(), store.allocator.tail_address())
+                .expect("scan should succeed");
 
             let copier = RecordCopier::new(&store.allocator);
             let copy_result = copier.copy_records(&plan.live_records).unwrap();
@@ -343,12 +340,9 @@ mod tests {
             let _guard = session.begin_unsafe();
 
             let scanner = CompactionScanner::new(&store.allocator, &store.hash_index);
-            let plan = scanner.scan::<u64>(
-                store.first_data_address(),
-                store.allocator.tail_address(),
-                KEY_SIZE,
-                VALUE_SIZE,
-            );
+            let plan = scanner
+                .scan::<u64, u64>(store.first_data_address(), store.allocator.tail_address())
+                .expect("scan should succeed");
 
             let copier = RecordCopier::new(&store.allocator);
             let copy_result = copier.copy_records(&plan.live_records).unwrap();
@@ -458,12 +452,9 @@ mod tests {
         let copy_result = {
             let _guard = session.begin_unsafe();
             let scanner = CompactionScanner::new(&store.allocator, &store.hash_index);
-            let plan = scanner.scan::<u64>(
-                store.first_data_address(),
-                store.allocator.tail_address(),
-                KEY_SIZE,
-                VALUE_SIZE,
-            );
+            let plan = scanner
+                .scan::<u64, u64>(store.first_data_address(), store.allocator.tail_address())
+                .expect("scan should succeed");
             let copier = RecordCopier::new(&store.allocator);
             copier.copy_records(&plan.live_records).unwrap()
         };
@@ -519,12 +510,9 @@ mod tests {
             let result = {
                 let _guard = session.begin_unsafe();
                 let scanner = CompactionScanner::new(&store.allocator, &store.hash_index);
-                let plan = scanner.scan::<u64>(
-                    store.first_data_address(),
-                    store.allocator.tail_address(),
-                    KEY_SIZE,
-                    VALUE_SIZE,
-                );
+                let plan = scanner
+                    .scan::<u64, u64>(store.first_data_address(), store.allocator.tail_address())
+                    .expect("scan should succeed");
                 let copier = RecordCopier::new(&store.allocator);
                 copier.copy_records(&plan.live_records).unwrap()
             };

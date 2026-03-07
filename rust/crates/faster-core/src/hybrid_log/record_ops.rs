@@ -531,6 +531,31 @@ impl<'a> LogRecordReader<'a> {
         Some((ri, stored_key == *key))
     }
 
+    /// Like [`read_header_and_match_key`](Self::read_header_and_match_key)
+    /// but does not require a pre-computed [`RecordLayout`].
+    ///
+    /// Uses page-bounded access and [`Key::eq_from_bytes`] for zero-copy
+    /// key comparison. This is correct for hash chains containing records
+    /// of different sizes (variable-length keys/values).
+    ///
+    /// The key offset is always 8 bytes from the record start — an
+    /// invariant of the record layout (`pad_alignment(RECORD_HEADER_SIZE,
+    /// RECORD_ALIGNMENT) == 8`).
+    pub fn read_header_and_match_key_varlen<K: Key>(
+        &self,
+        addr: LogicalAddress,
+        key: &K,
+    ) -> Option<(RecordInfo, bool)> {
+        // Use page-remaining as the access size — records never span pages.
+        let record_size = safe_record_size(addr, RECORD_HEADER_SIZE as u32);
+        let accessor = RecordAccessor::from_log(self.allocator, addr, record_size)?;
+        let ri = accessor.record_info();
+        // KEY_OFFSET is always 8: pad_alignment(RECORD_HEADER_SIZE, RECORD_ALIGNMENT).
+        const KEY_OFFSET: usize = 8;
+        let key_matches = key.eq_from_bytes(&accessor.as_slice()[KEY_OFFSET..]);
+        Some((ri, key_matches))
+    }
+
     /// Check if the record at `addr` matches the given key.
     ///
     /// Returns `false` if the address is not in memory or the stored key
