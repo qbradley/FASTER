@@ -12,6 +12,41 @@
 
 ---
 
+## 2026-03-07: Iteration 4 Blog Post Written (blog-iteration-4.md)
+
+**What:** Wrote comprehensive blog post covering Iteration 4 — the production push. Covers compaction (K1–K6), C FFI (F1–F5), async/Tokio bridge (T1–T4), io_uring device (U1–U4), DST framework, the alignment bug story, test audit, quality gate evolution, and the squad rename from Star Wars to Lord of the Rings.
+
+**Blog style patterns established across 4 posts:**
+- Title formula: compelling stat + count + hook (e.g., "1,525 Tests, 6 Crates, and a Vec<u8> That Humbled Us All")
+- Opens with callback to previous blog's closing teaser
+- Chronological storytelling with technical depth — real code snippets, not pseudocode
+- "By The Numbers" table comparing metrics across iterations
+- "What Went Wrong (The Honest Part)" section — credibility through transparency
+- "Lessons for Squad Users" section — actionable takeaways
+- Fun coda at the end (team rename, cultural moments)
+- Closing boilerplate links to previous posts and project
+
+**Key narrative decisions:**
+- The alignment bug is the emotional center of the post — it's the story of what "production-grade" means
+- Code snippets chosen for illumination, not exhaustiveness: CAS pointer swing, Waker bridge, TreiberStack, SimulatedDevice
+- Variable-length test gap (0 → 27) is the most important number in the metrics table
+- DST positioned as "production crash simulator" — emphasizing reproducibility via seeds
+
+**Architecture patterns learned:**
+- 6 crate structure: faster-core, faster-ffi, faster-tokio, faster-uring, faster-dst, read-cache-sim
+- Compaction orchestrator manages epoch lifecycle internally (K1–K3 under protection, K4 outside)
+- FFI uses HandleTable with monotonic u64 handles, poisoned-lock recovery, #[repr(C)] enums
+- Async bridge: PendingFuture/CompletionSender with Waker registration — zero tokio deps in core
+- io_uring: dedicated I/O thread with mpsc dispatch, TreiberStack buffer pool, EMA adaptive batching
+- DST: SimulatedDevice with seed-controlled fault injection, SimulationHarness for crash-recovery tests
+
+**File paths:**
+- Blog: `.squad/agents/arwen/blog-iteration-4.md`
+- Previous blogs: `blog-behind-the-scenes.md`, `blog-iteration-2.md`, `blog-iteration-3.md`
+- Iteration plan: `.squad/plans/iteration-4.md`
+
+---
+
 ## 2026-03-06: Quality Gate & Doc Conventions Documented (AI-2, AI-3, AI-6)
 
 **What:** Created `rust/CONTRIBUTING.md` with quality gate (nextest + doctests + clippy + fmt), doc example rules (public API only, no internal test types), and documentation timing convention (inline doc-comments with code, user-facing docs after stabilization). Updated `rust/README.md` to reference the contributing guide.
