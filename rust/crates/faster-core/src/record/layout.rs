@@ -18,7 +18,7 @@
 //! performance for all primitive types.
 
 use crate::record::record_info::RecordInfo;
-use crate::record::traits::{Key, Value};
+use crate::record::traits::{Key, LENGTH_PREFIX_SIZE, Value};
 
 /// Size of the [`RecordInfo`] header in bytes (always 8).
 pub const RECORD_HEADER_SIZE: usize = core::mem::size_of::<RecordInfo>();
@@ -252,6 +252,98 @@ pub fn read_value<V: Value>(buf: &[u8], layout: &RecordLayout) -> V {
 #[inline]
 pub fn record_size<K: Key, V: Value>(key: &K, value: &V) -> usize {
     RecordLayout::for_kv(key, value).total_size()
+}
+
+// ── RecordSizeError ─────────────────────────────────────────────────
+
+/// Errors from computing record size from raw page bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecordSizeError {
+    /// Not enough page space remaining to read the minimum record header
+    /// and length prefix.
+    InsufficientPageSpace,
+    /// Record data at the given offset appears corrupted — the computed
+    /// size exceeds the remaining page space.
+    CorruptedRecord {
+        /// Byte offset of the corrupted record within the page.
+        offset: usize,
+    },
+}
+
+impl core::fmt::Display for RecordSizeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            RecordSizeError::InsufficientPageSpace => {
+                write!(f, "insufficient page space for record header + prefix")
+            }
+            RecordSizeError::CorruptedRecord { offset } => {
+                write!(f, "corrupted record at page offset {offset}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RecordSizeError {}
+
+// ── record_size_from_bytes ──────────────────────────────────────────
+
+/// Computes the total record size from raw page bytes without
+/// deserializing key or value data.
+///
+/// This is the core building block for variable-length record scanning
+/// during compaction. It reads the key and value length prefixes (for
+/// variable-length types) or uses compile-time sizes (for fixed-size
+/// types) to determine the full record footprint including all padding.
+///
+/// # Arguments
+///
+/// * `page_bytes` — Byte slice covering the full page.
+/// * `offset` — Byte offset of the record within `page_bytes`.
+/// * `page_size` — Total page size in bytes.
+///
+/// # Errors
+///
+/// Returns [`RecordSizeError::InsufficientPageSpace`] if fewer than 12
+/// bytes remain (the minimum to read header + one length prefix).
+///
+/// Returns [`RecordSizeError::CorruptedRecord`] if the computed field
+/// offsets or total size exceed the remaining page space, indicating a
+/// corrupted length prefix.
+pub fn record_size_from_bytes<K: Key, V: Value>(
+    page_bytes: &[u8],
+    offset: usize,
+    page_size: usize,
+) -> Result<usize, RecordSizeError> {
+    let remaining = page_size.saturating_sub(offset);
+
+    // Minimum readable: 8-byte header + 4-byte length prefix = 12.
+    // For fixed-size keys this is conservative (they ignore the buffer),
+    // but keeps the check type-agnostic.
+    const MIN_READABLE: usize = RECORD_HEADER_SIZE + LENGTH_PREFIX_SIZE; // 12
+    if remaining < MIN_READABLE {
+        return Err(RecordSizeError::InsufficientPageSpace);
+    }
+
+    let key_offset = pad_alignment(RECORD_HEADER_SIZE, RECORD_ALIGNMENT); // = 8
+    let key_buf = &page_bytes[offset + key_offset..];
+    let key_size = K::serialized_size_from_bytes(key_buf);
+    let value_offset = pad_alignment(key_offset + key_size, RECORD_ALIGNMENT);
+
+    // Validate that the key didn't push us past the page boundary.
+    if value_offset > remaining {
+        return Err(RecordSizeError::CorruptedRecord { offset });
+    }
+
+    let value_buf = &page_bytes[offset + value_offset..];
+    let value_size = V::serialized_size_from_bytes(value_buf);
+    let total = pad_alignment(value_offset + value_size, RECORD_ALIGNMENT);
+
+    // Validate that the complete record fits on the page.
+    if total > remaining {
+        return Err(RecordSizeError::CorruptedRecord { offset });
+    }
+
+    Ok(total)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -489,6 +581,192 @@ mod tests {
     }
 
     // ── Property tests ──────────────────────────────────────────────
+
+    // ── record_size_from_bytes tests ────────────────────────────────
+
+    /// Helper: write a record into a page-sized buffer at the given offset.
+    fn write_record_at<K: Key, V: Value>(
+        page: &mut [u8],
+        offset: usize,
+        key: &K,
+        value: &V,
+    ) -> usize {
+        let info = RecordInfo::new(LogicalAddress::ZERO, 0, false, false, false);
+        let layout = RecordLayout::for_kv(key, value);
+        write_record(&mut page[offset..], &info, key, value, &layout);
+        layout.total_size()
+    }
+
+    #[test]
+    fn record_size_from_bytes_u64_u64() {
+        let page_size = 256;
+        let mut page = vec![0u8; page_size];
+        let key: u64 = 42;
+        let value: u64 = 999;
+        write_record_at(&mut page, 0, &key, &value);
+
+        let result = record_size_from_bytes::<u64, u64>(&page, 0, page_size);
+        assert_eq!(result.unwrap(), RecordLayout::compute(8, 8).total_size());
+    }
+
+    #[test]
+    fn record_size_from_bytes_u32_u64() {
+        let page_size = 256;
+        let mut page = vec![0u8; page_size];
+        let key: u32 = 42;
+        let value: u64 = 999;
+        write_record_at(&mut page, 0, &key, &value);
+
+        let result = record_size_from_bytes::<u32, u64>(&page, 0, page_size);
+        assert_eq!(result.unwrap(), RecordLayout::compute(4, 8).total_size());
+    }
+
+    #[test]
+    fn record_size_from_bytes_vec_u8() {
+        let page_size = 512;
+        let mut page = vec![0u8; page_size];
+        let key: Vec<u8> = vec![1, 2, 3, 4, 5]; // 4+5 = 9 bytes
+        let value: Vec<u8> = vec![10, 20, 30]; // 4+3 = 7 bytes
+        let written = write_record_at(&mut page, 0, &key, &value);
+
+        let result = record_size_from_bytes::<Vec<u8>, Vec<u8>>(&page, 0, page_size).unwrap();
+        assert_eq!(result, written);
+        assert_eq!(result, RecordLayout::for_kv(&key, &value).total_size());
+    }
+
+    #[test]
+    fn record_size_from_bytes_string() {
+        let page_size = 512;
+        let mut page = vec![0u8; page_size];
+        let key = String::from("hello");
+        let value = String::from("world");
+        let written = write_record_at(&mut page, 0, &key, &value);
+
+        let result = record_size_from_bytes::<String, String>(&page, 0, page_size);
+        assert_eq!(result.unwrap(), written);
+    }
+
+    #[test]
+    fn record_size_from_bytes_zero_length_value() {
+        let page_size = 256;
+        let mut page = vec![0u8; page_size];
+        let key: Vec<u8> = vec![1, 2, 3];
+        let value: Vec<u8> = vec![];
+        let written = write_record_at(&mut page, 0, &key, &value);
+
+        let result = record_size_from_bytes::<Vec<u8>, Vec<u8>>(&page, 0, page_size);
+        assert_eq!(result.unwrap(), written);
+    }
+
+    #[test]
+    fn record_size_from_bytes_at_offset() {
+        let page_size = 512;
+        let mut page = vec![0u8; page_size];
+        let key: u64 = 42;
+        let value: u64 = 999;
+        let offset = 64;
+        write_record_at(&mut page, offset, &key, &value);
+
+        let result = record_size_from_bytes::<u64, u64>(&page, offset, page_size);
+        assert_eq!(result.unwrap(), RecordLayout::compute(8, 8).total_size());
+    }
+
+    #[test]
+    fn record_size_from_bytes_multiple_records() {
+        let page_size = 512;
+        let mut page = vec![0u8; page_size];
+        let key1: Vec<u8> = vec![1, 2, 3]; // 4+3=7 bytes key
+        let val1: Vec<u8> = vec![10; 20]; // 4+20=24 bytes value
+        let size1 = write_record_at(&mut page, 0, &key1, &val1);
+
+        let key2: Vec<u8> = vec![4, 5]; // 4+2=6 bytes key
+        let val2: Vec<u8> = vec![20; 5]; // 4+5=9 bytes value
+        let size2 = write_record_at(&mut page, size1, &key2, &val2);
+
+        assert_eq!(
+            record_size_from_bytes::<Vec<u8>, Vec<u8>>(&page, 0, page_size).unwrap(),
+            size1
+        );
+        assert_eq!(
+            record_size_from_bytes::<Vec<u8>, Vec<u8>>(&page, size1, page_size).unwrap(),
+            size2
+        );
+    }
+
+    #[test]
+    fn record_size_from_bytes_insufficient_space() {
+        let page_size = 10; // Less than MIN_READABLE (12)
+        let page = vec![0u8; page_size];
+        let result = record_size_from_bytes::<u64, u64>(&page, 0, page_size);
+        assert_eq!(result, Err(RecordSizeError::InsufficientPageSpace));
+    }
+
+    #[test]
+    fn record_size_from_bytes_insufficient_at_offset() {
+        let page_size = 64;
+        let page = vec![0u8; page_size];
+        // Only 4 bytes remaining — not enough
+        let result = record_size_from_bytes::<u64, u64>(&page, 60, page_size);
+        assert_eq!(result, Err(RecordSizeError::InsufficientPageSpace));
+    }
+
+    #[test]
+    fn record_size_from_bytes_corrupted_key_prefix() {
+        let page_size = 64;
+        let mut page = vec![0u8; page_size];
+        // Write a corrupted key length prefix: u32::MAX at key_offset (8)
+        let corrupted_len = u32::MAX;
+        page[8..12].copy_from_slice(&corrupted_len.to_le_bytes());
+
+        let result = record_size_from_bytes::<Vec<u8>, Vec<u8>>(&page, 0, page_size);
+        assert_eq!(result, Err(RecordSizeError::CorruptedRecord { offset: 0 }));
+    }
+
+    #[test]
+    fn record_size_from_bytes_corrupted_value_prefix() {
+        let page_size = 128;
+        let mut page = vec![0u8; page_size];
+        // Write a valid key (0 bytes data = just the 4-byte prefix)
+        let key: Vec<u8> = vec![];
+        let value: Vec<u8> = vec![];
+        write_record_at(&mut page, 0, &key, &value);
+
+        // Now corrupt the value length prefix.
+        // key_offset=8, key_size=4 (prefix only), value_offset=pad(8+4,8)=16
+        let corrupted_len = u32::MAX;
+        page[16..20].copy_from_slice(&corrupted_len.to_le_bytes());
+
+        let result = record_size_from_bytes::<Vec<u8>, Vec<u8>>(&page, 0, page_size);
+        assert_eq!(result, Err(RecordSizeError::CorruptedRecord { offset: 0 }));
+    }
+
+    #[test]
+    fn record_size_from_bytes_page_boundary_tight_fit() {
+        // Record exactly fills the remaining page space.
+        let key: u64 = 42;
+        let value: u64 = 999;
+        let expected_size = RecordLayout::compute(8, 8).total_size(); // 24
+        let page_size = expected_size;
+        let mut page = vec![0u8; page_size];
+        write_record_at(&mut page, 0, &key, &value);
+
+        let result = record_size_from_bytes::<u64, u64>(&page, 0, page_size);
+        assert_eq!(result.unwrap(), expected_size);
+    }
+
+    #[test]
+    fn record_size_from_bytes_page_boundary_exact_min_readable() {
+        // Exactly 12 bytes remaining — the minimum.
+        let page_size = 64;
+        let page = vec![0u8; page_size];
+        let offset = page_size - 12;
+        // For u64 key (8 bytes), key area starts at offset+8, we need 8 bytes
+        // for key but only have 4 bytes remaining after key_offset. The total
+        // record (24 bytes) exceeds remaining (12), so this should be corrupted.
+        let result = record_size_from_bytes::<u64, u64>(&page, offset, page_size);
+        // u64 key_size=8, value_offset=pad(8+8,8)=16, 16>12 → CorruptedRecord
+        assert_eq!(result, Err(RecordSizeError::CorruptedRecord { offset }));
+    }
 
     mod proptests {
         use super::*;

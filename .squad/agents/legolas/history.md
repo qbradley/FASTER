@@ -118,3 +118,33 @@
 1. Hash index prefetching (+20-40% single-thread)
 2. Epoch scan optimization (+5-10%)
 3. Per-thread log partitioning (+5-10% multi-thread)
+
+---
+
+## 2026-03-07: Cross-Implementation YCSB Comparison Complete
+
+**What:** Ran Rust vs C# vs C++ FASTER benchmarks on identical hardware (i9-10900K 20T, Azure Linux) with matched parameters (2.5M keys, 8B KV, uniform, 10s runs, in-memory).
+
+**Results Summary:**
+- **C# leads most workloads** — 51.65M ops/sec on 100% reads at 16T (highest absolute throughput)
+- **C++ leads single-thread reads** — 4.07M ops/sec (77% faster than Rust's 2.30M)
+- **Rust wins write-heavy 16T** — 39.21M on Workload A (50/50), beating C# 31.02M and C++ 38.91M
+- **Rust has most consistent scaling** — 102% efficiency on Workload A at 16T; C# drops to 75%
+
+**Key Performance Gap:** Rust single-thread hash index lookup ~40% slower than C#, ~77% slower than C++. Hash prefetching is the #1 optimization priority.
+
+**Methodology Issues Found:**
+- C++ benchmark has an inverted error check (`if (result == Status::Ok) { log_warn(...) }`) in benchmark.h:525 that destroys upsert performance via console I/O. Must fix locally for benchmarking.
+- C++ benchmark uses FileSystemDisk by default (not NullDisk). Must switch to NullDisk for fair in-memory comparison.
+- C# benchmark.csproj targets net7.0; needs retargeting to net8.0 for .NET 8 SDK.
+- C# `--sd --synth` gives 2.5M init keys + 10M txn keys (SmallData synthetic mode).
+
+**Artifacts:**
+- Updated: `rust/PERFORMANCE.md` with full cross-implementation comparison tables
+- Benchmark runner: `/tmp/run_benchmarks.sh` (ephemeral)
+- C++ data generator: `/tmp/gen_ycsb_data` (ephemeral)
+
+**Build Commands:**
+- Rust: `cargo run -p cross-impl-bench --release -- --workloads A,B,C,F --threads 1,2,4,8,16 --num-keys 2500480`
+- C#: `dotnet run --project cs/benchmark/FASTER.benchmark.csproj -c Release -- -b 0 -t N --synth --sd --rumd R,U,M,D --runsec 10`
+- C++: Requires TBB + libaio + uuid headers; modify benchmark.h constants for key count; use NullDisk for in-memory.
