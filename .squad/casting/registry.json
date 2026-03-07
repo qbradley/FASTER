@@ -1,92 +1,92 @@
 {
   "agents": {
-    "thrawn": {
-      "persistent_name": "Thrawn",
-      "universe": "Star Wars",
+    "gandalf": {
+      "persistent_name": "Gandalf",
+      "universe": "Lord of the Rings",
       "created_at": "2026-03-05T16:39:47Z",
       "legacy_named": false,
       "status": "active"
     },
-    "grievous": {
-      "persistent_name": "Grievous",
-      "universe": "Star Wars",
+    "saruman": {
+      "persistent_name": "Saruman",
+      "universe": "Lord of the Rings",
       "created_at": "2026-03-05T16:39:47Z",
       "legacy_named": false,
       "status": "active"
     },
-    "dooku": {
-      "persistent_name": "Dooku",
-      "universe": "Star Wars",
+    "faramir": {
+      "persistent_name": "Faramir",
+      "universe": "Lord of the Rings",
       "created_at": "2026-03-05T16:39:47Z",
       "legacy_named": false,
       "status": "active"
     },
-    "mando": {
-      "persistent_name": "Mando",
-      "universe": "Star Wars",
+    "aragorn": {
+      "persistent_name": "Aragorn",
+      "universe": "Lord of the Rings",
       "created_at": "2026-03-05T16:39:47Z",
       "legacy_named": false,
       "status": "active"
     },
-    "chirrut": {
-      "persistent_name": "Chirrut",
-      "universe": "Star Wars",
+    "sam": {
+      "persistent_name": "Sam",
+      "universe": "Lord of the Rings",
       "created_at": "2026-03-05T16:39:47Z",
       "legacy_named": false,
       "status": "active"
     },
-    "cassian": {
-      "persistent_name": "Cassian",
-      "universe": "Star Wars",
+    "frodo": {
+      "persistent_name": "Frodo",
+      "universe": "Lord of the Rings",
       "created_at": "2026-03-05T16:39:47Z",
       "legacy_named": false,
       "status": "active"
     },
-    "tarkin": {
-      "persistent_name": "Tarkin",
-      "universe": "Star Wars",
+    "gimli": {
+      "persistent_name": "Gimli",
+      "universe": "Lord of the Rings",
       "created_at": "2026-03-05T16:39:47Z",
       "legacy_named": false,
       "status": "active"
     },
-    "maul": {
-      "persistent_name": "Maul",
-      "universe": "Star Wars",
+    "galadriel": {
+      "persistent_name": "Galadriel",
+      "universe": "Lord of the Rings",
       "created_at": "2026-03-05T16:39:47Z",
       "legacy_named": false,
       "status": "active"
     },
-    "ahsoka": {
-      "persistent_name": "Ahsoka",
-      "universe": "Star Wars",
+    "legolas": {
+      "persistent_name": "Legolas",
+      "universe": "Lord of the Rings",
       "created_at": "2026-03-05T16:39:47Z",
       "legacy_named": false,
       "status": "active"
     },
-    "rex": {
-      "persistent_name": "Rex",
-      "universe": "Star Wars",
+    "boromir": {
+      "persistent_name": "Boromir",
+      "universe": "Lord of the Rings",
       "created_at": "2026-03-05T16:39:47Z",
       "legacy_named": false,
       "status": "active"
     },
-    "jyn": {
-      "persistent_name": "Jyn",
-      "universe": "Star Wars",
+    "eowyn": {
+      "persistent_name": "Éowyn",
+      "universe": "Lord of the Rings",
       "created_at": "2026-03-05T16:39:47Z",
       "legacy_named": false,
       "status": "active"
     },
-    "kenobi": {
-      "persistent_name": "Kenobi",
-      "universe": "Star Wars",
+    "elrond": {
+      "persistent_name": "Elrond",
+      "universe": "Lord of the Rings",
       "created_at": "2026-03-05T16:39:47Z",
       "legacy_named": false,
       "status": "active"
     },
-    "leia": {
-      "persistent_name": "Leia",
-      "universe": "Star Wars",
+    "arwen": {
+      "persistent_name": "Arwen",
+      "universe": "Lord of the Rings",
       "created_at": "2026-03-05T17:01:27Z",
       "legacy_named": false,
       "status": "active"

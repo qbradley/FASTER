@@ -4,8 +4,8 @@
 
 - **when:** before
 - **condition:** architecture decision or new subsystem design
-- **facilitator:** Thrawn
-- **participants:** [Mando, Chirrut, Tarkin, Kenobi]
+- **facilitator:** Gandalf
+- **participants:** [Aragorn, Sam, Gimli, Elrond]
 - **duration:** 1 round
 - **output:** Decision recorded in decisions.md
 
@@ -13,8 +13,8 @@
 
 - **when:** before
 - **condition:** unsafe code, FFI boundary, or security-sensitive change
-- **facilitator:** Maul
-- **participants:** [Mando, Chirrut, Kenobi]
+- **facilitator:** Galadriel
+- **participants:** [Aragorn, Sam, Elrond]
 - **duration:** 1 round
 - **output:** Security findings + mitigations in decisions.md
 
@@ -22,8 +22,8 @@
 
 - **when:** after
 - **condition:** hot path implementation or data structure change
-- **facilitator:** Ahsoka
-- **participants:** [Chirrut, Mando, Tarkin]
+- **facilitator:** Legolas
+- **participants:** [Sam, Aragorn, Gimli]
 - **duration:** 1 round
 - **output:** Performance assessment + optimization recommendations
 
@@ -31,8 +31,8 @@
 
 - **when:** before
 - **condition:** new test harness or simulation framework
-- **facilitator:** Rex
-- **participants:** [Jyn, Mando, Thrawn]
+- **facilitator:** Boromir
+- **participants:** [Éowyn, Aragorn, Gandalf]
 - **duration:** 1 round
 - **output:** Test plan approved or revised
 
@@ -40,15 +40,15 @@
 
 - **when:** before
 - **condition:** porting a subsystem from C++ or C# reference
-- **facilitator:** Cassian
-- **participants:** [Grievous, Dooku, Mando]
+- **facilitator:** Frodo
+- **participants:** [Saruman, Faramir, Aragorn]
 - **duration:** 1 round
 - **output:** Behavioral specification + correctness criteria
 
 ## Retrospective
 
 - **when:** manual
-- **facilitator:** Thrawn
+- **facilitator:** Gandalf
 - **participants:** all
 - **duration:** 1 round
 - **output:** Action items in decisions.md

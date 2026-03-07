@@ -1,6 +1,6 @@
 # TRIAGE-DECISIONS.md — Iteration 2 SoT Review
 
-**Triage lead:** Grand Admiral Thrawn (architect)
+**Triage lead:** Grand Admiral Gandalf (architect)
 **Date:** Iteration 2 post-review
 **Scope:** SF-1 through SF-15, C-1 through C-11
 **Baseline:** MF-1, MF-2, MF-3 already resolved and committed

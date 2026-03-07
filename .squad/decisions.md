@@ -4,7 +4,7 @@
 
 ### 1. Rust Async Model Should Use async/await, Not Callback Chains
 
-**Agent:** Grievous (C++ Expert)  
+**Agent:** Saruman (C++ Expert)  
 **Date:** 2026-03-05  
 **Status:** Recommendation for Team Discussion  
 **Impact:** Core API design — affects all async operations
@@ -25,8 +25,8 @@
 - Must use Tokio runtime, not bare threads
 
 **Next Steps:**
-- [ ] Thrawn: Validate architecture alignment
-- [ ] Cassian: Confirm no blockers for implementation
+- [ ] Gandalf: Validate architecture alignment
+- [ ] Frodo: Confirm no blockers for implementation
 
 ---
 
@@ -52,19 +52,19 @@
 - Completion/pending operations: callback-based or polling-based, not Future-based
 - Async adapters: separate crates/feature flags per runtime (tokio, kimojio, compio, monoio)
 - I/O traits: must abstract over sync, threaded, and various async I/O models
-- **Overrides Decision #1** (Grievous async/await recommendation)
+- **Overrides Decision #1** (Saruman async/await recommendation)
 
 **Override Resolution:**
-- Grievous recommended async/await for ergonomics
+- Saruman recommended async/await for ergonomics
 - User directive takes precedence: core must remain async runtime-agnostic
-- Async ergonomics achieved via adapter layer (Kenobi responsibility)
+- Async ergonomics achieved via adapter layer (Elrond responsibility)
 - See Decision #5 (Async Integration Strategy) for bridge pattern
 
 ---
 
 ### 3. Async Integration: Callback Bridge to Future Pattern
 
-**Agent:** Thrawn (Lead Architect, Part 2)  
+**Agent:** Gandalf (Lead Architect, Part 2)  
 **Date:** 2026-03-05T18:33:00Z  
 **Status:** DECIDED  
 **Impact:** Bridges callback core to Rust async ecosystem
@@ -83,7 +83,7 @@
 3. Thread-spawning adapters: callback delegates to thread pool for blocking Device I/O
 
 **Implications:**
-- Kenobi leads async adapter design and implementation
+- Elrond leads async adapter design and implementation
 - Zero performance cost for sync path (direct callback)
 - Minimal overhead for async path (channel or Waker call)
 - Testing: adapter contracts verified against mock I/O
@@ -92,7 +92,7 @@
 
 ### 4. Rust Implementation Scope: MVP → Full → Deferred Phases
 
-**Agent:** Cassian (Cross-Implementation Expert)  
+**Agent:** Frodo (Cross-Implementation Expert)  
 **Date:** 2026-03-05  
 **Status:** Critical for Team Consensus  
 **Impact:** Defines entire 6-12 month roadmap
@@ -137,7 +137,7 @@
 
 ### 5. C# API Insights for Rust Design
 
-**Agent:** Dooku (C# Expert)  
+**Agent:** Faramir (C# Expert)  
 **Date:** 2026-03-05  
 **Status:** Design Recommendations  
 **Impact:** Public API ergonomics
@@ -186,22 +186,22 @@
 
 ### 7. Rust Async Model Overridden by User Directive (Decision #1 Superseded)
 
-**Original Agent:** Grievous (C++ Expert)  
+**Original Agent:** Saruman (C++ Expert)  
 **Original Date:** 2026-03-05  
 **Original Status:** Recommendation for Team Discussion  
 **Override Date:** 2026-03-05T17:10:00Z  
 
 **What Changed:**
-- Grievous recommended async/await (Decision #1)
+- Saruman recommended async/await (Decision #1)
 - User directive (qbradley) overrides: core must be callback-based, no async runtime
 - See Decision #2 for full directive rationale
 
 **Resolution Path:**
 - **Core:** Callback-based per user directive (non-negotiable)
 - **Ergonomics:** Async adapter crates (Decision #3) provide Future/async/await to users
-- **Best Practice:** Grievous's insights on safety/composability addressed in adapter design
+- **Best Practice:** Saruman's insights on safety/composability addressed in adapter design
 
-**Status:** RESOLVED — No team action needed; architecture accommodates both user constraint and Grievous's ergonomic concerns.
+**Status:** RESOLVED — No team action needed; architecture accommodates both user constraint and Saruman's ergonomic concerns.
 
 ---
 
@@ -226,20 +226,20 @@
 **Implications:**
 - Do NOT block or influence v1 architecture
 - DO keep architecture extensible enough that Tsavorite features could be added later (e.g., trait-based storage provider pattern)
-- Cassian: Tag in Full/Deferred phase review for potential Phase 2 evaluation
+- Frodo: Tag in Full/Deferred phase review for potential Phase 2 evaluation
 
 ---
 
-### 9. Thrawn Rust FASTER Architecture: 12 Key Decisions
+### 9. Gandalf Rust FASTER Architecture: 12 Key Decisions
 
-**Lead Architect:** Thrawn  
+**Lead Architect:** Gandalf  
 **Date:** 2026-03-05T18:33:00Z  
 **Status:** DOCUMENTED — Binding architectural decisions  
 **Impact:** Binding for all implementation phases
 
 **Summary of 12 Decisions:**
 
-1. **No async/await in core** (user directive, overrides Grievous #1) — Callback/completion model. Async adapter crates per runtime.
+1. **No async/await in core** (user directive, overrides Saruman #1) — Callback/completion model. Async adapter crates per runtime.
 
 2. **Custom epoch implementation** (not crossbeam-epoch) — FASTER's drain list semantics, checkpoint integration, thread entry management require purpose-built system. ~500 lines, extensively tested.
 
@@ -264,15 +264,15 @@
 12. **Epoch-coordinated grow protocol** — Table doubles, split phase via epoch coordination, no shrink. Reuses checkpoint-style phase transitions.
 
 **Team Implications:**
-- **Kenobi:** Async adapter design must bridge callback→Future (oneshot channels or Waker integration)
-- **Mando:** All core code sync-only, no tokio dependency
-- **Chirrut:** Device trait implementation is completion-based, not Future-based
-- **Jyn:** Simulation framework must model callback completion ordering
-- **Maul:** Unsafe audit scope includes hash index atomics, record pointer arithmetic, FFI boundary
+- **Elrond:** Async adapter design must bridge callback→Future (oneshot channels or Waker integration)
+- **Aragorn:** All core code sync-only, no tokio dependency
+- **Sam:** Device trait implementation is completion-based, not Future-based
+- **Éowyn:** Simulation framework must model callback completion ordering
+- **Galadriel:** Unsafe audit scope includes hash index atomics, record pointer arithmetic, FFI boundary
 
 **Risk Register:** 25 identified risks across 5 categories. 5 critical (score ≥ 15), 8 high (score 10-14). Primary mitigations: deterministic simulation testing, Miri verification, security audit, cross-implementation comparison.
 
-**Artifact Location:** `.squad/agents/thrawn/rust-faster-architecture.md` (288 KB, 6101 lines, 14 sections)
+**Artifact Location:** `.squad/agents/gandalf/rust-faster-architecture.md` (288 KB, 6101 lines, 14 sections)
 
 ---
 
@@ -335,7 +335,7 @@
 - `paw-workflow/PAW Review` — review workflow with multi-model deliberation
 
 **Team Action:**
-- Thrawn approved PAW for 5 complex MVP items (1f, 1g, 1h, 2d, 2e)
+- Gandalf approved PAW for 5 complex MVP items (1f, 1g, 1h, 2d, 2e)
 - Direct implementation for 11 simpler items
 - Further integration to be determined post-MVP-Phase-1
 
@@ -343,7 +343,7 @@
 
 ### 13. MVP Iteration 1 Implementation Plan Approved
 
-**Agent:** Thrawn (Lead Architect)  
+**Agent:** Gandalf (Lead Architect)  
 **Date:** 2026-03-05T19:08:00Z  
 **Status:** APPROVED FOR EXECUTION  
 **Impact:** Team-wide — assigns all Phase 1 and Phase 2 work
@@ -359,27 +359,27 @@
 6. **thiserror** added as acceptable `faster-core` dependency (zero runtime cost proc-macro for error types).
 
 **Assignments:**
-- **Mando:** Primary on 7 items (1b, 1c, 1d, 1f, 1g, 2a, 2c, 2d, 2e)
-- **Chirrut:** Primary on 2 items (1h, 2b), support on atomics/alignment
-- **Rex:** Primary on 3 items (1a, 1e, 1i, 2f)
-- **Maul:** Unsafe audit on all PAW items
-- **Cassian:** Behavioral spec extraction from C++/C# for validation
-- **Ahsoka:** Benchmark design and early performance analysis
-- **Thrawn:** Review authority on all PRs
+- **Aragorn:** Primary on 7 items (1b, 1c, 1d, 1f, 1g, 2a, 2c, 2d, 2e)
+- **Sam:** Primary on 2 items (1h, 2b), support on atomics/alignment
+- **Boromir:** Primary on 3 items (1a, 1e, 1i, 2f)
+- **Galadriel:** Unsafe audit on all PAW items
+- **Frodo:** Behavioral spec extraction from C++/C# for validation
+- **Legolas:** Benchmark design and early performance analysis
+- **Gandalf:** Review authority on all PRs
 
-**Artifact:** `.squad/agents/thrawn/mvp-iteration-1-plan.md` (46KB)
+**Artifact:** `.squad/agents/gandalf/mvp-iteration-1-plan.md` (46KB)
 
 **Implications:**
 - All team members should read the plan before starting work
 - Work items are to be executed in dependency order per the graphs in the plan
 - No work item merges without passing the stated success criteria
-- Thrawn has final review authority on all PRs per architecture governance
+- Gandalf has final review authority on all PRs per architecture governance
 
 ---
 
 ### 10. Typed Page/Offset Newtypes for LogicalAddress API
 
-**Agent:** Mando (Rust Expert)  
+**Agent:** Aragorn (Rust Expert)  
 **Date:** 2026-03-05  
 **Status:** Implemented  
 **Impact:** All code that constructs or destructures `LogicalAddress`
@@ -411,7 +411,7 @@ LogicalAddress::new(10u32, 256u32)  // Would compile even if swapped
 
 ### 11. Status and Error Type Design (Task 1c)
 
-**Agent:** Mando (Rust Expert)  
+**Agent:** Aragorn (Rust Expert)  
 **Date:** 2026-03-05  
 **Status:** Implemented  
 **Impact:** All operations in the system use these types
@@ -438,7 +438,7 @@ LogicalAddress::new(10u32, 256u32)  // Would compile even if swapped
 
 ### 12. Hash Function and Tag Layout for Rust FASTER
 
-**Agent:** Chirrut (Systems Programming Expert)  
+**Agent:** Sam (Systems Programming Expert)  
 **Date:** 2026-03-05  
 **Status:** Implemented  
 **Impact:** Hash index correctness, C++ behavioral compatibility
@@ -466,7 +466,7 @@ LogicalAddress::new(10u32, 256u32)  // Would compile even if swapped
 
 ### 13. Workspace Directory Named `rust/` (Not `faster-rs/`)
 
-**Agent:** Mando (Rust Expert)  
+**Agent:** Aragorn (Rust Expert)  
 **Date:** 2026-03-05  
 **Status:** DECIDED  
 **Impact:** Repository layout convention
@@ -483,7 +483,7 @@ LogicalAddress::new(10u32, 256u32)  // Would compile even if swapped
 
 ### 14. Rust CI Architecture (Task 1e)
 
-**Agent:** Rex (QA Engineer)  
+**Agent:** Boromir (QA Engineer)  
 **Date:** 2026-03-05  
 **Status:** Implemented  
 **Impact:** All Rust development — CI pipeline for workspace
@@ -520,7 +520,7 @@ LogicalAddress::new(10u32, 256u32)  // Would compile even if swapped
 - Archive decisions older than 30 days when file exceeds ~20KB
 # Decision: Record Format Design Choices
 
-**Agent:** Mando (Rust Expert)
+**Agent:** Aragorn (Rust Expert)
 **Date:** 2025-07-18
 **Status:** DECIDED
 **Task:** 1f — Record Format and Key/Value Traits
@@ -588,7 +588,7 @@ LogicalAddress::new(10u32, 256u32)  // Would compile even if swapped
 
 # Decision: Tentative Bit at Bit 63 (Not Bit 61)
 
-**Agent:** Chirrut (Systems Programming Expert)
+**Agent:** Sam (Systems Programming Expert)
 **Date:** 2026-03-06
 **Task:** 2a — Hash Bucket Entry Types
 **Status:** DECIDED — follows C++ source
@@ -627,7 +627,7 @@ Follow the C++ source code as the authoritative reference. Tentative is bit 63, 
 
 # Decision: HashBucket — Typed Fields vs Raw AtomicU64 Array
 
-**Author:** Chirrut  
+**Author:** Sam  
 **Date:** 2026-03-06  
 **Task:** 2c (Hash Bucket Structure)  
 **Status:** Decided
@@ -660,12 +660,12 @@ pub struct HashBucket {
 
 ## Impact
 
-- **Mando (2d: Hash Table Core):** Use `bucket.entry(i)` and `bucket.overflow_address()` for the lookup/insert algorithms. The overflow pointer is an `AtomicLogicalAddress`, not a raw pointer — you'll encode overflow bucket locations as `LogicalAddress` values into the overflow allocator's address space.
-- **Chirrut (future overflow allocator):** The overflow allocator will map `LogicalAddress` values to `&HashBucket` references. This is the only unsafe boundary in the hash index.
+- **Aragorn (2d: Hash Table Core):** Use `bucket.entry(i)` and `bucket.overflow_address()` for the lookup/insert algorithms. The overflow pointer is an `AtomicLogicalAddress`, not a raw pointer — you'll encode overflow bucket locations as `LogicalAddress` values into the overflow allocator's address space.
+- **Sam (future overflow allocator):** The overflow allocator will map `LogicalAddress` values to `&HashBucket` references. This is the only unsafe boundary in the hash index.
 
 # Decision: Epoch System Design Choices
 
-**Agent:** Mando (Rust Expert)
+**Agent:** Aragorn (Rust Expert)
 **Date:** 2025-07-18
 **Task:** 1g — Epoch-Based Reclamation System
 **Status:** Implemented
@@ -724,7 +724,7 @@ pub struct HashBucket {
 
 # Decision: MallocFixedPageSize Allocator Design
 
-**Agent:** Chirrut (Systems Programming Expert)
+**Agent:** Sam (Systems Programming Expert)
 **Date:** 2026-03-07
 **Status:** Implemented
 **Impact:** All overflow bucket allocation, future hybrid log page management
@@ -763,7 +763,7 @@ The bump counter is a flat u64 index, mapped to page/offset via shift and mask. 
 
 ## Implications
 
-- **Mando:** The allocator API is ready for hash index overflow bucket allocation. Use `allocate()` → `get()` for bucket lifecycle.
-- **Thrawn:** Address encoding matches C++ semantics. Phase 2 hash table can use `MallocFixedPageSize<HashBucket>` directly.
+- **Aragorn:** The allocator API is ready for hash index overflow bucket allocation. Use `allocate()` → `get()` for bucket lifecycle.
+- **Gandalf:** Address encoding matches C++ semantics. Phase 2 hash table can use `MallocFixedPageSize<HashBucket>` directly.
 - **Future epoch integration:** Add `free_at_epoch(addr, epoch)` method that defers the `free()` call until the epoch is safe to reclaim. The Treiber stack mechanism stays unchanged.
-- **Maul:** 10 unsafe blocks, all with SAFETY comments. Key audit points: `get`/`get_mut` aliasing contract, Treiber stack CAS correctness, `Drop` implementation.
+- **Galadriel:** 10 unsafe blocks, all with SAFETY comments. Key audit points: `get`/`get_mut` aliasing contract, Treiber stack CAS correctness, `Drop` implementation.

@@ -3,6 +3,7 @@
 - **Owner:** qbradley
 - **Project:** Rust implementation of Microsoft FASTER — a high-performance durable hash map
 - **Stack:** Rust (primary), C++ (reference), C# (reference), C FFI
+- **Goal:** Production-grade, no async runtime required, seamless Tokio integration, idiomatic Rust API + C FFI interface. Quality bar: mission-critical cloud services at planetary scale.
 - **Created:** 2026-03-05
 
 ## Learnings
@@ -46,4 +47,29 @@
 **Risk Profile:** 25 identified risks (5 critical ≥15, 8 high 10-14). Primary mitigations: deterministic simulation, Miri verification, security audit, cross-implementation comparison.
 
 **Next Steps:** Risk mitigation task force (Éowyn lead), unsafe audit planning (Galadriel lead), Phase 1 sprint (Frodo lead), async adapter spike (Elrond lead).
+
+---
+
+## 2026-03-07: Wave 5 U1 — faster-uring Crate (io_uring Ring Wrapper)
+
+**What:** Created `rust/crates/faster-uring/` — a safe Rust wrapper around Linux io_uring for high-performance async I/O.
+
+**Key Design Decisions:**
+- All unsafe io_uring syscalls encapsulated inside `Ring`; public API is fully safe
+- Completion-based model (submit → reap) aligns with FASTER's callback architecture (Decision #2)
+- `Drop` impl drains in-flight I/O to prevent kernel use-after-free of caller buffers
+- Buffer lifetime is caller's responsibility in U1; documented for U2 registered-buffer upgrade
+- `io-uring` crate v0.7.11 used (well-maintained, safe Rust bindings)
+- Linux-only via `#[cfg(target_os = "linux")]` on the module
+
+**Crash Analysis:**
+- Write completion alone does NOT mean durable — fsync required
+- Fsync completion guarantees all prior writes to that fd are on stable storage
+- Drop during in-flight I/O: drain() blocks until kernel finishes, preventing buffer UAF
+
+**Tests:** 9 tests covering ring creation, read/write round-trip, multi-I/O (10 ops), queue-full backpressure, fsync, clean shutdown with inflight I/O, drain, direct_io config.
+
+**Pre-existing issue noted:** faster-core has an uncommitted compilation error (`MutableRecordAccessor` wrong path in `allocate_with_retry`) from another agent's work. Does not affect faster-uring.
+
+**Next:** U2 will add registered buffer pool for zero-copy I/O. Integration with `Device` trait in faster-device comes in a later wave.
 
