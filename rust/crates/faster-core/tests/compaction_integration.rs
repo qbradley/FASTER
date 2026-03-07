@@ -62,7 +62,7 @@ fn compact_write_delete_verify() {
     store.dispose_session(session);
 
     // Run compaction.
-    let result = store.compact::<u64, u64>();
+    let result = store.compact();
     // Compaction may return EmptyRegion if safe_read_only hasn't advanced
     // past begin (all data still mutable). That's okay — it means there's
     // nothing to compact yet.
@@ -116,7 +116,7 @@ fn compact_public_api_basic() {
     store.dispose_session(session);
 
     // compact() should succeed or return EmptyRegion.
-    let result = store.compact::<u64, u64>();
+    let result = store.compact();
     match result {
         Ok(cr) => {
             assert!(cr.records_copied > 0 || cr.plan.live_records.is_empty());
@@ -162,7 +162,7 @@ fn compact_during_concurrent_writes() {
     });
 
     // Compact on the main thread (concurrent with writes).
-    let _ = store.compact::<u64, u64>();
+    let _ = store.compact();
 
     writer.join().expect("writer thread panicked");
 
@@ -196,8 +196,8 @@ fn multiple_compactions_serialized() {
     let store1 = Arc::clone(&store);
     let store2 = Arc::clone(&store);
 
-    let t1 = std::thread::spawn(move || store1.compact::<u64, u64>());
-    let t2 = std::thread::spawn(move || store2.compact::<u64, u64>());
+    let t1 = std::thread::spawn(move || store1.compact());
+    let t2 = std::thread::spawn(move || store2.compact());
 
     // Both should complete without panic (mutex serializes them).
     let _r1 = t1.join().expect("compaction thread 1 panicked");
@@ -250,7 +250,7 @@ fn maybe_compact_with_policy() {
     store.dispose_session(session);
 
     // maybe_compact should attempt compaction.
-    let result = store.maybe_compact::<u64, u64>();
+    let result = store.maybe_compact();
     // It should return Some(...) since auto_compact=true and policy always fires.
     assert!(result.is_some(), "should attempt compaction");
 }
@@ -262,7 +262,7 @@ fn maybe_compact_disabled_by_default() {
     let store = test_store();
 
     // auto_compact=false by default, so maybe_compact returns None.
-    let result = store.maybe_compact::<u64, u64>();
+    let result = store.maybe_compact();
     assert!(result.is_none(), "auto_compact is off by default");
 }
 
@@ -459,7 +459,7 @@ fn compact_variable_length_crud_roundtrip() {
     store.dispose_session(session);
 
     // Compact with variable-length types.
-    let result = store.compact::<Vec<u8>, Vec<u8>>();
+    let result = store.compact();
     match result {
         Ok(cr) => {
             assert!(
@@ -508,7 +508,7 @@ fn compact_mixed_size_records() {
     store.dispose_session(session);
 
     // Compact with u64 key, Vec<u8> value.
-    let result = store.compact::<u64, Vec<u8>>();
+    let result = store.compact();
     match result {
         Ok(_) | Err(faster_core::compaction::orchestrator::CompactionError::EmptyRegion { .. }) => {
         }
@@ -553,7 +553,7 @@ fn compact_variable_length_tombstones() {
     store.dispose_session(session);
 
     // Compact — tombstones should be cleaned up.
-    let result = store.compact::<u64, Vec<u8>>();
+    let result = store.compact();
     match result {
         Ok(cr) => {
             // Verify truncation happened or region was all-mutable.
@@ -623,7 +623,7 @@ fn compact_variable_length_concurrent_reads() {
     });
 
     // Compact on main thread.
-    let _ = store.compact::<u64, Vec<u8>>();
+    let _ = store.compact();
 
     reader.join().expect("reader thread panicked");
 
@@ -674,7 +674,7 @@ fn compact_variable_length_hash_collisions() {
     store.dispose_session(session);
 
     // Compact.
-    let result = store.compact::<Vec<u8>, Vec<u8>>();
+    let result = store.compact();
     match result {
         Ok(_) | Err(faster_core::compaction::orchestrator::CompactionError::EmptyRegion { .. }) => {
         }
