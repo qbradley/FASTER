@@ -524,6 +524,13 @@ criterion_group!(
     bench_hash_index_insert_concurrent,
     bench_hash_index_find_concurrent,
     bench_hash_index_mixed_rw_concurrent_8,
+    // Compaction — size discovery and key comparison
+    bench_compaction_size_from_bytes_u64,
+    bench_compaction_size_from_bytes_variable,
+    bench_compaction_eq_from_bytes_u64,
+    bench_compaction_eq_from_bytes_variable,
+    bench_compaction_record_size_u64,
+    bench_compaction_record_size_variable,
 );
 criterion_main!(benches);
 
@@ -945,4 +952,146 @@ fn bench_hash_index_mixed_rw_concurrent_8(c: &mut Criterion) {
             start.elapsed()
         });
     });
+}
+
+// ---------------------------------------------------------------------------
+// Compaction benchmarks — SC-009 (fixed-size regression) and SC-005
+// (variable-length overhead curve)
+// ---------------------------------------------------------------------------
+
+/// Benchmark `serialized_size_from_bytes` for fixed-size u64 keys.
+///
+/// SC-009 gate: verifies LLVM const-folds this to a no-op for fixed types.
+fn bench_compaction_size_from_bytes_u64(c: &mut Criterion) {
+    use faster_core::record::Key;
+
+    let buf = 42u64.to_le_bytes();
+    c.bench_function("compaction/serialized_size_from_bytes/u64", |b| {
+        b.iter(|| {
+            black_box(<u64 as Key>::serialized_size_from_bytes(black_box(&buf)));
+        });
+    });
+}
+
+/// Benchmark `serialized_size_from_bytes` for variable-length Vec<u8> keys
+/// at several record sizes to establish the overhead curve (SC-005).
+fn bench_compaction_size_from_bytes_variable(c: &mut Criterion) {
+    use faster_core::record::Key;
+
+    let mut group = c.benchmark_group("compaction/serialized_size_from_bytes/Vec<u8>");
+
+    for payload_size in [16, 64, 256, 1024, 10240] {
+        let key: Vec<u8> = vec![0xAB; payload_size];
+        let mut buf = vec![0u8; key.serialized_size()];
+        key.serialize(&mut buf);
+
+        group.bench_with_input(
+            criterion::BenchmarkId::new("payload", payload_size),
+            &payload_size,
+            |b, _| {
+                b.iter(|| {
+                    black_box(<Vec<u8> as Key>::serialized_size_from_bytes(black_box(
+                        &buf,
+                    )));
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+/// Benchmark `eq_from_bytes` for fixed-size u64 keys (should be ~memcmp).
+fn bench_compaction_eq_from_bytes_u64(c: &mut Criterion) {
+    use faster_core::record::Key;
+
+    let key: u64 = 0xDEAD_BEEF_CAFE_BABE;
+    let buf = key.to_le_bytes();
+    c.bench_function("compaction/eq_from_bytes/u64", |b| {
+        b.iter(|| {
+            black_box(key.eq_from_bytes(black_box(&buf)));
+        });
+    });
+}
+
+/// Benchmark `eq_from_bytes` for variable-length Vec<u8> at various sizes.
+fn bench_compaction_eq_from_bytes_variable(c: &mut Criterion) {
+    use faster_core::record::Key;
+
+    let mut group = c.benchmark_group("compaction/eq_from_bytes/Vec<u8>");
+
+    for payload_size in [16, 64, 256, 1024, 10240] {
+        let key: Vec<u8> = vec![0xAB; payload_size];
+        let mut buf = vec![0u8; key.serialized_size()];
+        key.serialize(&mut buf);
+
+        group.bench_with_input(
+            criterion::BenchmarkId::new("payload", payload_size),
+            &payload_size,
+            |b, _| {
+                b.iter(|| {
+                    black_box(key.eq_from_bytes(black_box(&buf)));
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+/// Benchmark `record_size_from_bytes` for fixed-size u64/u64 records.
+///
+/// SC-009 gate: fixed-size compaction size discovery should have near-zero cost.
+fn bench_compaction_record_size_u64(c: &mut Criterion) {
+    use faster_core::address::LogicalAddress;
+    use faster_core::record::{RecordInfo, RecordLayout, record_size_from_bytes, write_record};
+
+    let key: u64 = 0xDEAD_BEEF;
+    let value: u64 = 0xCAFE_BABE;
+    let layout = RecordLayout::for_kv(&key, &value);
+    let info = RecordInfo::new(LogicalAddress::ZERO, 0, false, false, false);
+    let mut page = vec![0u8; 4096];
+    write_record(&mut page, &info, &key, &value, &layout);
+
+    c.bench_function("compaction/record_size_from_bytes/u64+u64", |b| {
+        b.iter(|| {
+            let _ = black_box(record_size_from_bytes::<u64, u64>(
+                black_box(&page),
+                0,
+                4096,
+            ));
+        });
+    });
+}
+
+/// Benchmark `record_size_from_bytes` for variable-length records at
+/// several sizes to document the overhead curve (SC-005).
+fn bench_compaction_record_size_variable(c: &mut Criterion) {
+    use faster_core::address::LogicalAddress;
+    use faster_core::record::{RecordInfo, RecordLayout, record_size_from_bytes, write_record};
+
+    let mut group = c.benchmark_group("compaction/record_size_from_bytes/Vec<u8>");
+
+    for payload_size in [16, 64, 256, 1024, 10240] {
+        let key: Vec<u8> = vec![0xAB; payload_size];
+        let value: Vec<u8> = vec![0xCD; payload_size];
+        let layout = RecordLayout::for_kv(&key, &value);
+        let info = RecordInfo::new(LogicalAddress::ZERO, 0, false, false, false);
+        let total = layout.total_size();
+        let mut page = vec![0u8; total.max(4096)];
+        write_record(&mut page, &info, &key, &value, &layout);
+
+        group.bench_with_input(
+            criterion::BenchmarkId::new("payload", payload_size),
+            &payload_size,
+            |b, _| {
+                b.iter(|| {
+                    let _ = black_box(record_size_from_bytes::<Vec<u8>, Vec<u8>>(
+                        black_box(&page),
+                        0,
+                        page.len(),
+                    ));
+                });
+            },
+        );
+    }
+    group.finish();
 }

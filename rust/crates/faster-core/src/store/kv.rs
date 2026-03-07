@@ -1370,6 +1370,11 @@ impl<F: Functions> FasterKv<F> {
     /// safe-read-only address. Dead and tombstoned records are discarded;
     /// live records are copied to the log tail.
     ///
+    /// Supports **all** [`Key`]/[`Value`] types — fixed-size (`u64`, `u32`,
+    /// etc.) and variable-length (`Vec<u8>`, `String`). Record sizes are
+    /// discovered per-record via length prefix inspection, so no special
+    /// configuration is needed for variable-length workloads.
+    ///
     /// Concurrent `compact()` calls are serialized via an internal mutex.
     /// Normal read/write operations continue concurrently.
     ///
@@ -1382,9 +1387,14 @@ impl<F: Functions> FasterKv<F> {
     /// # Errors
     ///
     /// Returns [`CompactionError`] if the compaction region is empty,
-    /// record copying fails, or epoch drain times out.
+    /// record copying fails, or epoch drain times out. Returns a
+    /// [`CorruptedRecord`](crate::record::RecordSizeError::CorruptedRecord)
+    /// variant if a corrupted length prefix is detected — the original log
+    /// region is left untouched in that case.
     ///
-    /// # Example
+    /// # Examples
+    ///
+    /// Fixed-size keys and values:
     ///
     /// ```
     /// use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
@@ -1402,6 +1412,30 @@ impl<F: Functions> FasterKv<F> {
     /// }
     /// // Compact (may be a no-op if everything is still in-memory/mutable).
     /// let _ = store.compact::<u64, u64>();
+    /// store.dispose_session(session);
+    /// ```
+    ///
+    /// Variable-length keys and values (requires a custom [`Functions`](crate::store::Functions)
+    /// implementation that does not require `Copy`):
+    ///
+    /// ```ignore
+    /// use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
+    /// use faster_core::NullDevice;
+    ///
+    /// // With a Functions impl that supports Vec<u8>:
+    /// let store: FasterKv<MyVarLenFunctions> = FasterKv::new(
+    ///     FasterKvConfig::default(),
+    ///     MyVarLenFunctions::default(),
+    ///     NullDevice::new(),
+    /// );
+    ///
+    /// let mut session = store.new_session();
+    /// for i in 0u64..50 {
+    ///     let key = format!("key-{i}").into_bytes();
+    ///     let value = vec![0xABu8; 256];
+    ///     store.upsert(&mut session, &key, &value, ());
+    /// }
+    /// let _ = store.compact::<Vec<u8>, Vec<u8>>();
     /// store.dispose_session(session);
     /// ```
     pub fn compact<K: Key, V: Value>(&self) -> Result<CompactionResult, CompactionError> {
