@@ -3,6 +3,7 @@ members = [
     "crates/faster-bench",
     "crates/faster-core",
     "crates/faster-device",
+    "crates/faster-dst",
     "crates/faster-ffi",
     "crates/faster-tokio",
     "crates/faster-uring",

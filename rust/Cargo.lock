@@ -376,6 +376,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "faster-dst"
+version = "0.1.0"
+dependencies = [
+ "faster-core",
+ "rand",
+ "tempfile",
+]
+
+[[package]]
 name = "faster-ffi"
 version = "0.1.0"
 dependencies = [

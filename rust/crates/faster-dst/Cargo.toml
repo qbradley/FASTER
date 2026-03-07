@@ -1,0 +1,13 @@
+[package]
+name = "faster-dst"
+version = "0.1.0"
+description = "Deterministic simulation testing framework for FASTER"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+faster-core = { path = "../faster-core" }
+rand = { version = "0.9", features = ["small_rng"] }
+tempfile = "3"
