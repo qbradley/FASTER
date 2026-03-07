@@ -60,6 +60,7 @@ pub struct LiveRecord {
 ///   total number of non-null records in the scanned range.
 /// - `live_bytes` equals the sum of `record_size` across all `live_records`.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CompactionPlan {
     /// Addresses of live records that need to be copied.
     pub live_records: Vec<LiveRecord>,
