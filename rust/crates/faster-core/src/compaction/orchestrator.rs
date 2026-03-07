@@ -34,9 +34,9 @@ use crate::device::Device;
 use crate::epoch::EpochTable;
 use crate::hash::index::HashIndex;
 use crate::hybrid_log::log_allocator::HybridLogAllocator;
-use crate::record::FixedSizeKey;
-use crate::record::FixedSizeValue;
+use crate::record::Key;
 use crate::record::RecordSizeError;
+use crate::record::Value;
 
 // ── CompactionResult ────────────────────────────────────────────────
 
@@ -148,9 +148,9 @@ impl<'a> CompactionOrchestrator<'a> {
     /// # Type parameters
     ///
     /// `K` and `V` must match the key/value types stored in the log.
-    /// They must implement [`FixedSizeKey`] / [`FixedSizeValue`] so the
-    /// orchestrator can compute record layout sizes at compile time.
-    pub(crate) fn run<K: FixedSizeKey, V: FixedSizeValue>(
+    /// They must implement [`Key`] / [`Value`] so the scanner and
+    /// address updater can interpret record contents.
+    pub(crate) fn run<K: Key, V: Value>(
         &self,
         begin: LogicalAddress,
         until: LogicalAddress,
