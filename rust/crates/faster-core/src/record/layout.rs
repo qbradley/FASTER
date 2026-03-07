@@ -30,6 +30,18 @@ pub const RECORD_HEADER_SIZE: usize = core::mem::size_of::<RecordInfo>();
 /// avoids unaligned memory access penalties.
 pub const RECORD_ALIGNMENT: usize = core::mem::align_of::<u64>();
 
+/// Byte offset of the key within any record.
+///
+/// This is an invariant of the record layout:
+/// `pad_alignment(RECORD_HEADER_SIZE, RECORD_ALIGNMENT) == 8`.
+/// Because `RecordInfo` is exactly 8 bytes and alignment is 8, the key
+/// always starts immediately after the header with no padding.
+pub const KEY_OFFSET: usize = RECORD_HEADER_SIZE; // 8
+
+// Static assertion: KEY_OFFSET must equal 8. If RecordInfo ever changes
+// size, this will fail at compile time.
+const _: () = assert!(KEY_OFFSET == 8, "KEY_OFFSET must be 8");
+
 // ── pad_alignment ────────────────────────────────────────────────────
 
 /// Rounds `size` up to the next multiple of `alignment`.

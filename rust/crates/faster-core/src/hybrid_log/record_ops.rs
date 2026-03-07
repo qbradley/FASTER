@@ -16,7 +16,7 @@
 
 use crate::address::{LogicalAddress, OFFSET_BITS};
 use crate::record::{
-    AtomicRecordInfo, Key, RECORD_HEADER_SIZE, RecordInfo, RecordLayout, Value,
+    AtomicRecordInfo, KEY_OFFSET, Key, RECORD_HEADER_SIZE, RecordInfo, RecordLayout, Value,
     read_record_info as layout_read_record_info, write_record as layout_write_record,
 };
 
@@ -550,8 +550,6 @@ impl<'a> LogRecordReader<'a> {
         let record_size = safe_record_size(addr, RECORD_HEADER_SIZE as u32);
         let accessor = RecordAccessor::from_log(self.allocator, addr, record_size)?;
         let ri = accessor.record_info();
-        // KEY_OFFSET is always 8: pad_alignment(RECORD_HEADER_SIZE, RECORD_ALIGNMENT).
-        const KEY_OFFSET: usize = 8;
         let key_matches = key.eq_from_bytes(&accessor.as_slice()[KEY_OFFSET..]);
         Some((ri, key_matches))
     }

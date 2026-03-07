@@ -33,7 +33,7 @@ use crate::hash::index::HashIndex;
 use crate::hash_bucket::HashBucketEntry;
 use crate::hybrid_log::log_allocator::HybridLogAllocator;
 use crate::hybrid_log::record_ops::RecordAccessor;
-use crate::record::{Key, RECORD_HEADER_SIZE, Value};
+use crate::record::{KEY_OFFSET, Key, RECORD_HEADER_SIZE, Value};
 
 use super::CompactionPlan;
 use super::copier::{AddressMapping, CopyResult};
@@ -113,13 +113,11 @@ impl<'a> AddressUpdater<'a> {
         copy_result: &CopyResult,
         plan: &CompactionPlan,
     ) -> SwingStats {
-        // Key offset is always 8 — invariant of the record layout:
-        // pad_alignment(RECORD_HEADER_SIZE, RECORD_ALIGNMENT) == 8.
+        // Sanity check: KEY_OFFSET relies on RecordInfo being 8 bytes.
         debug_assert_eq!(
             RECORD_HEADER_SIZE, 8,
             "RecordInfo must be 8 bytes; key_offset invariant violated"
         );
-        const KEY_OFFSET: usize = 8;
 
         let mut stats = SwingStats {
             swung: 0,

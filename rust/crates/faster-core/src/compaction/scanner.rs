@@ -63,7 +63,9 @@ use crate::address::{LogicalAddress, OFFSET_BITS, Offset, Page};
 use crate::hash::index::HashIndex;
 use crate::hybrid_log::log_allocator::HybridLogAllocator;
 use crate::hybrid_log::record_ops::{LogRecordReader, RecordAccessor};
-use crate::record::{Key, RECORD_HEADER_SIZE, RecordSizeError, Value, record_size_from_bytes};
+use crate::record::{
+    KEY_OFFSET, Key, RECORD_HEADER_SIZE, RecordSizeError, Value, record_size_from_bytes,
+};
 
 use super::{CompactionPlan, LiveRecord};
 
@@ -79,12 +81,6 @@ const MAX_CHAIN_DEPTH: usize = 4096;
 /// For fixed-size keys this is conservative (they don't use a prefix),
 /// but keeping the check type-agnostic simplifies the scanning loop.
 const MIN_READABLE: u32 = (RECORD_HEADER_SIZE + crate::record::LENGTH_PREFIX_SIZE) as u32;
-
-/// Key offset within any record — always 8 bytes.
-///
-/// This is an invariant of the record layout:
-/// `pad_alignment(RECORD_HEADER_SIZE, RECORD_ALIGNMENT) == 8`.
-const KEY_OFFSET: usize = 8;
 
 // ── CompactionScanner ───────────────────────────────────────────────
 

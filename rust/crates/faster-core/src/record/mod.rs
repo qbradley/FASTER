@@ -28,8 +28,8 @@ mod traits;
 
 // Re-export the public API at the `record` module level.
 pub use layout::{
-    RECORD_ALIGNMENT, RECORD_HEADER_SIZE, RecordLayout, RecordSizeError, pad_alignment, read_key,
-    read_record_info, read_value, record_size, record_size_from_bytes, write_record,
+    KEY_OFFSET, RECORD_ALIGNMENT, RECORD_HEADER_SIZE, RecordLayout, RecordSizeError, pad_alignment,
+    read_key, read_record_info, read_value, record_size, record_size_from_bytes, write_record,
 };
 pub use record_info::{AtomicRecordInfo, RecordInfo};
 pub use traits::{FixedSizeKey, FixedSizeValue, Key, LENGTH_PREFIX_SIZE, Value};
