@@ -70,3 +70,29 @@
 
 **Next Steps:** Risk mitigation task force (Éowyn lead), unsafe audit planning (Galadriel lead), Phase 1 sprint (Frodo lead), async adapter spike (Elrond lead).
 
+---
+
+## 2026-03-06: tokio-kv-server Sample Application
+
+**What:** Created `rust/crates/samples/tokio-kv-server/` — a complete async TCP key-value server demonstrating `faster-tokio` integration with Tokio.
+
+**Architecture:**
+- `AsyncFasterKv` manages store lifecycle with background maintenance + graceful shutdown
+- Each TCP connection spawned via `tokio::spawn` (Send-compatible async task)
+- FASTER operations dispatched via `tokio::task::spawn_blocking` with short-lived sessions
+- This bridge pattern is necessary because `FasterSession` is `!Send` (thread-affine epoch protection)
+
+**Key Design Decisions:**
+- **Session-per-command via `spawn_blocking`:** Simplest correct pattern for interactive use. Production servers would use dedicated worker threads with long-lived sessions via channels.
+- **u64 keys/values:** `SimpleFunctions<K,V>` requires `V: Copy`, ruling out `String`/`Vec<u8>`. Custom `Functions` impl needed for variable-length values.
+- **Text protocol over TCP:** Line-based SET/GET/DEL/BENCH/STATS/HELP/QUIT. Testable via `nc`/`telnet`.
+- **broadcast channel for shutdown:** `tokio::sync::broadcast` propagates Ctrl+C to all connection handlers.
+
+**Test Coverage:** 13 unit tests (command parsing, CRUD logic, bench, stats) + 7 integration tests (full TCP round-trip including multi-client cross-visibility).
+
+**Learned:**
+- `FasterKv` handles epoch protection internally in `upsert`/`read`/`delete` — no explicit `begin_unsafe()` guard needed for simple operations.
+- `FasterKvConfig` fields are all `pub` — direct struct initialization with `..Default::default()` works.
+- The workspace had pre-existing issues (cross-impl-bench missing main.rs, faster-uring clippy/fmt warnings) that block `scripts/precheckin` on the full workspace.
+
+

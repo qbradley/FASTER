@@ -124,3 +124,38 @@
 **Tests:** 1161 passed, 3 skipped. **Clippy:** clean (0 warnings).
 
 **Key Insight:** The `#![forbid(clippy::undocumented_unsafe_blocks)]` lint makes this task self-enforcing — the codebase cannot compile with undocumented unsafe blocks. This is the strongest possible guarantee. The 44-site gap identified in the original audit has been fully closed.
+
+---
+
+## 2026-03-06: Full Production Security Audit — All 5 Crates
+
+**What:** Comprehensive security audit of the entire Rust FASTER codebase (302 unsafe sites across 55,500 LOC in 5 crates) for production readiness.
+
+**Artifact:** `rust/SECURITY-AUDIT.md` (full report with findings table, threat model, fuzzing targets)
+
+**Verdict: CONDITIONAL PASS**
+
+**Key Findings:**
+- **Critical (1, FIXED):** FFI panic safety — all 12 `extern "C"` functions lacked `catch_unwind`. A Rust panic would unwind across FFI boundary = instant UB. Fixed by wrapping all functions in `catch_unwind` with `AssertUnwindSafe`.
+- **High (4, OPEN):** (1) Device callback context pointer lifetime unenforceable at compile time. (2) `PendingIoContext` holds raw pointers to session state — dangling if session disposed during pending I/O. (3) FFI `SessionCell` Send+Sync relies on C caller honoring thread-affinity contract. (4) Tokio device casts raw pointers to usize for spawn_blocking — temporal window for UAF.
+- **Medium (6):** Allocator 16-bit ABA tag sufficient with epoch but fragile without. Buffer size u32 truncation in FFI read. io_uring buffer lifetime documentation-only. Flush callback page_table lifetime.
+- **Low/Info (8):** Handle counter debug_assert. Test-only pending_count visibility. O_DIRECT alignment validation.
+
+**Unsafe Inventory (302 total):**
+- faster-core: 142 (101 blocks, 29 fns, 12 impls)
+- faster-ffi: 80 (78 blocks, 0 fns, 2 impls)
+- faster-uring: 62 (56 blocks, 3 fns, 3 impls)
+- faster-tokio: 10 (7 blocks, 3 fns, 0 impls)
+- faster-dst: 8 (6 blocks, 2 fns, 0 impls)
+- **100% SAFETY comment coverage** — compiler-enforced via `forbid(clippy::undocumented_unsafe_blocks)`
+
+**Atomic Orderings:** All verified correct. No SeqCst overuse, no Relaxed underuse.
+
+**What This Means:**
+- **Aragorn:** Ensure `dispose_session` drains pending I/O (CORE-04). Document ABA tag limitation in `free_immediate`.
+- **Elrond:** Add optional thread-ID validation for FFI sessions (FFI-02). Fix u32 truncation in read path (FFI-03).
+- **Sam:** Add debug-mode validation for device callback context pointers (CORE-03).
+- **Éowyn:** Implement P0 fuzzing targets (FFI boundary, checkpoint recovery). Run Miri on allocator.
+- **Frodo:** Track High findings for remediation before GA.
+
+**Fix Applied:** `catch_unwind` added to all FFI `extern "C"` functions. 70 FFI tests pass. Committed via `security(audit): add catch_unwind panic protection to all FFI boundary functions`.

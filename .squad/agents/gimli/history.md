@@ -73,3 +73,34 @@
 
 **Next:** U2 will add registered buffer pool for zero-copy I/O. Integration with `Device` trait in faster-device comes in a later wave.
 
+
+---
+
+## 2026-03-07: Battle Testing — io_uring Stress Tests and Benchmarks
+
+**What:** Added 10 new integration tests to faster-uring (50 total) and created the `uring-stress` sample binary for stress testing and comparison benchmarks.
+
+**New Tests in faster-uring (device.rs):**
+- `stress_100k_operations` — 100K async writes across 8 threads, with spot-check verification
+- `large_value_sizes` — 4KB through 64KB sector-aligned values, write + read verification
+- `concurrent_multi_thread_16` — 16 threads doing write/read pairs simultaneously
+- `recovery_write_drop_reopen_verify` — write via sync, drop device, reopen, verify via both sync and async
+- `read_from_unwritten_offset_sync_returns_zeros` — confirms pread beyond EOF zero-fills
+- `max_queue_depth_saturation` — 64 ops through a queue_depth=4 ring (16x oversubscription)
+- `boundary_crossing_multi_segment` — 5 pages spanning 3 segments via cross-segment I/O
+- `mixed_sync_async_interleaved` — write sync/read async and write async/read sync combinations
+
+**uring-stress Sample Binary (`rust/crates/samples/uring-stress/`):**
+- Three modes: stress (default), comparison (`--compare`), recovery (`--recovery`)
+- Configurable: threads, ops, value-size, variable-sizes, queue-depth
+- Reports IOPS, MB/s, latency percentiles (p50/p99/p999)
+- Full data verification after every run
+- Comparison mode runs identical workloads on UringDevice vs SyncFileDevice and prints side-by-side table
+
+**Key Observations:**
+- io_uring async read of offset beyond file size returns short read (not zeros) — different from sync path which uses `read_complete_at` with zero-fill. This is correct behavior; the Device trait makes no promise about unwritten regions.
+- The cross-impl-bench sample crate was already broken in the workspace (listed but not properly committed with compilation errors). Pre-existing — not caused by this work.
+- At low op counts, SyncFileDevice can beat UringDevice due to channel dispatch overhead. io_uring advantage grows with batching and high concurrency.
+
+**Artifact:** `rust/crates/samples/uring-stress/` — self-contained binary
+**Test count:** 50 tests total in faster-uring (was 40 before)
