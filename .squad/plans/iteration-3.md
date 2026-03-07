@@ -1,6 +1,6 @@
 # MVP Iteration 3 — Checkpoint/Recovery, Performance Hardening, Hash Grow
 
-**Architect:** Grand Admiral Thrawn
+**Architect:** Grand Admiral Gandalf
 **Status:** 📋 Planned
 **Baseline:** 656 tests, 22K+ lines, zero clippy warnings
 **Predecessor:** Iteration 2 (Hybrid Log + CRUD + Storage)

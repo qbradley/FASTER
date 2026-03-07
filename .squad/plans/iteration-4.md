@@ -1,6 +1,6 @@
 # MVP Iteration 4 — Log Compaction, C FFI, Async Adapters, io_uring
 
-**Architect:** Grand Admiral Thrawn
+**Architect:** Grand Admiral Gandalf
 **Status:** 📋 Planned
 **Baseline:** 1,158 tests, ~30K lines, zero clippy warnings, miri/loom clean
 **Predecessor:** Iteration 3 (Checkpoint/Recovery, Grow, Performance Hardening)
@@ -326,12 +326,12 @@ Wave 6 (Perf):        H1 → P1 → P2 → P3 ←─────┘
 | Track | Primary Agent(s) | Rationale |
 |-------|-------------------|-----------|
 | Compaction (K) | Boba Fett (reverse eng) + Sabine (Rust) | Compaction requires deep understanding of log internals + record layout |
-| Read Cache (RC) | Tarkin (storage) + Sabine (Rust) | Storage-layer expertise + read path optimization |
-| C FFI (F) | Ahsoka (C++) + Sabine (Rust) | Cross-language FFI requires both C and Rust expertise |
+| Read Cache (RC) | Gimli (storage) + Sabine (Rust) | Storage-layer expertise + read path optimization |
+| C FFI (F) | Legolas (C++) + Sabine (Rust) | Cross-language FFI requires both C and Rust expertise |
 | Async/Tokio (T) | Hera (Tokio) + Sabine (Rust) | Tokio-specific expertise critical for correct bridge design |
-| io_uring (U) | Tarkin (storage) + Vader (systems) | Low-level kernel I/O + systems programming |
-| Performance (P) | Maul (perf) + Vader (systems) | Profiling expertise + systems-level optimization |
-| Hardening (H) | Rex (QA) + Grievous (security) | QA thoroughness + security audit for ARM/FFI |
+| io_uring (U) | Gimli (storage) + Vader (systems) | Low-level kernel I/O + systems programming |
+| Performance (P) | Galadriel (perf) + Vader (systems) | Profiling expertise + systems-level optimization |
+| Hardening (H) | Boromir (QA) + Saruman (security) | QA thoroughness + security audit for ARM/FFI |
 
 ### Conflict-Free Module Ownership
 

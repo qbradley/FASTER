@@ -53,7 +53,7 @@ impl Drop for BatchContext<'_> {
 - Benchmark: `rust/crates/faster-core/benches/perf_analysis.rs`
 - UnsafeContext: `rust/crates/faster-core/src/store/session.rs:593`
 - Epoch table: `rust/crates/faster-core/src/epoch/table.rs:296` (try_drain)
-- Analysis: `.squad/decisions/inbox/ahsoka-perf-analysis-ai4.md`
+- Analysis: `.squad/decisions/inbox/legolas-perf-analysis-ai4.md`
 
 ## Profiling Command
 

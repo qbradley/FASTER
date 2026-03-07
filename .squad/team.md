@@ -12,19 +12,19 @@
 
 | Name | Role | Charter | Status |
 |------|------|---------|--------|
-| Thrawn | Lead / System Architect | `.squad/agents/thrawn/charter.md` | ✅ Active |
-| Grievous | C++ Expert | `.squad/agents/grievous/charter.md` | ✅ Active |
-| Dooku | C# Expert | `.squad/agents/dooku/charter.md` | ✅ Active |
-| Mando | Rust Expert | `.squad/agents/mando/charter.md` | ✅ Active |
-| Chirrut | Systems Programming Expert | `.squad/agents/chirrut/charter.md` | ✅ Active |
-| Cassian | Reverse Engineer | `.squad/agents/cassian/charter.md` | ✅ Active |
-| Tarkin | Database/Storage Expert | `.squad/agents/tarkin/charter.md` | ✅ Active |
-| Maul | Security Expert | `.squad/agents/maul/charter.md` | ✅ Active |
-| Ahsoka | Performance Guru | `.squad/agents/ahsoka/charter.md` | ✅ Active |
-| Rex | QA Engineer | `.squad/agents/rex/charter.md` | ✅ Active |
-| Jyn | Det. Simulation Testing Expert | `.squad/agents/jyn/charter.md` | ✅ Active |
-| Kenobi | Tokio/Async Expert | `.squad/agents/kenobi/charter.md` | ✅ Active |
-| Leia | Developer Advocate | `.squad/agents/leia/charter.md` | ✅ Active |
+| Gandalf | Lead / System Architect | `.squad/agents/gandalf/charter.md` | ✅ Active |
+| Saruman | C++ Expert | `.squad/agents/saruman/charter.md` | ✅ Active |
+| Faramir | C# Expert | `.squad/agents/faramir/charter.md` | ✅ Active |
+| Aragorn | Rust Expert | `.squad/agents/aragorn/charter.md` | ✅ Active |
+| Sam | Systems Programming Expert | `.squad/agents/sam/charter.md` | ✅ Active |
+| Frodo | Reverse Engineer | `.squad/agents/frodo/charter.md` | ✅ Active |
+| Gimli | Database/Storage Expert | `.squad/agents/gimli/charter.md` | ✅ Active |
+| Galadriel | Security Expert | `.squad/agents/galadriel/charter.md` | ✅ Active |
+| Legolas | Performance Guru | `.squad/agents/legolas/charter.md` | ✅ Active |
+| Boromir | QA Engineer | `.squad/agents/boromir/charter.md` | ✅ Active |
+| Éowyn | Det. Simulation Testing Expert | `.squad/agents/eowyn/charter.md` | ✅ Active |
+| Elrond | Tokio/Async Expert | `.squad/agents/elrond/charter.md` | ✅ Active |
+| Arwen | Developer Advocate | `.squad/agents/arwen/charter.md` | ✅ Active |
 | Scribe | Session Logger | `.squad/agents/scribe/charter.md` | 📋 Silent |
 | Ralph | Work Monitor | — | 🔄 Monitor |
 

@@ -3,11 +3,22 @@
 - **Owner:** qbradley
 - **Project:** Rust implementation of Microsoft FASTER — a high-performance durable hash map
 - **Stack:** Rust (primary), C++ (reference), C# (reference), C FFI
+- **Goal:** Production-grade, no async runtime required, seamless Tokio integration, idiomatic Rust API + C FFI interface. Quality bar: mission-critical cloud services at planetary scale.
 - **Created:** 2026-03-05
 
 ## Learnings
 
 <!-- Append new learnings below. Each entry is something lasting about the project. -->
+
+---
+
+## 2026-03-06: Quality Gate & Doc Conventions Documented (AI-2, AI-3, AI-6)
+
+**What:** Created `rust/CONTRIBUTING.md` with quality gate (nextest + doctests + clippy + fmt), doc example rules (public API only, no internal test types), and documentation timing convention (inline doc-comments with code, user-facing docs after stabilization). Updated `rust/README.md` to reference the contributing guide.
+
+**Key insight:** `cargo nextest` does not run doctests — an explicit `cargo test --doc` step is essential. Without it, broken doc examples go unnoticed.
+
+**Existing docs:** `rust/TESTING.md` already covers test categories, time budgets, and tooling in depth. CONTRIBUTING.md complements it with the contributor-facing quality gate and conventions.
 
 ---
 
