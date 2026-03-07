@@ -33,6 +33,31 @@
 //! and uses [`Key::eq_from_bytes`] for zero-copy key comparison during
 //! version chain walks. This handles both fixed-size and variable-length
 //! key/value types uniformly.
+//!
+//! ## Variable-stride scanning
+//!
+//! Unlike fixed-size records (where the scanner can advance by a constant
+//! stride), variable-length records require **per-record size discovery**.
+//! The scanner reads length prefixes from raw page bytes to compute each
+//! record's total size, then advances by that amount. For fixed-size types
+//! the compiler const-folds `serialized_size_from_bytes` so the stride
+//! collapses to a compile-time constant with zero overhead.
+//!
+//! ## Corruption abort and recovery
+//!
+//! If [`record_size_from_bytes`](crate::record::record_size_from_bytes)
+//! detects a corrupted length prefix (e.g., a value length exceeding the
+//! remaining page space), the scanner returns
+//! [`RecordSizeError::CorruptedRecord`] and **aborts the entire compaction
+//! cycle**. This is a deliberate safety decision: partial compaction on a
+//! corrupted region could silently drop live data.
+//!
+//! **Recovery strategy**: The original log region is left untouched — no
+//! records are moved and the begin-address is not advanced. The caller
+//! (typically [`FasterKv::compact()`](crate::store::FasterKv::compact))
+//! surfaces the error so the application can take corrective action
+//! (e.g., skip the corrupted segment, run a consistency check, or
+//! restore from a checkpoint).
 
 use crate::address::{LogicalAddress, OFFSET_BITS, Offset, Page};
 use crate::hash::index::HashIndex;

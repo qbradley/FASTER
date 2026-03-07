@@ -51,8 +51,8 @@ pub struct LiveRecord {
 
 /// Results of scanning a log region for compaction.
 ///
-/// A `CompactionPlan` tells the copier (future work) which records must
-/// be preserved and how much space can be reclaimed.
+/// A `CompactionPlan` tells the [`RecordCopier`](copier::RecordCopier)
+/// which records must be preserved and how much space can be reclaimed.
 ///
 /// # Invariants
 ///

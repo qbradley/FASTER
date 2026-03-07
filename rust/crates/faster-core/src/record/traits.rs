@@ -13,6 +13,66 @@
 //! Variable-length types (`Vec<u8>`, `String`) use length-prefixed
 //! serialization: a 4-byte little-endian `u32` length followed by the data
 //! bytes.
+//!
+//! # Compaction contract — `serialized_size_from_bytes` and `eq_from_bytes`
+//!
+//! The compaction scanner reads raw log pages and must compute record sizes
+//! and compare keys **without fully deserializing** them. Two trait methods
+//! enable this:
+//!
+//! - [`Key::serialized_size_from_bytes`] / [`Value::serialized_size_from_bytes`]
+//!   — compute the on-disk size by reading only the length prefix (for
+//!   variable-length types) or returning a compile-time constant (for
+//!   fixed-size types). The compaction scanner calls
+//!   [`record_size_from_bytes`](crate::record::record_size_from_bytes) which
+//!   delegates to these methods.
+//!
+//! - [`Key::eq_from_bytes`] — compare an in-memory key against a serialized
+//!   key in a page buffer without allocating. Used during version chain
+//!   walks to determine which record is the current version.
+//!
+//! ## Override patterns
+//!
+//! The default implementations deserialize first, which is correct but slow.
+//! Override both methods for any custom type used in performance-critical
+//! workloads:
+//!
+//! ```rust
+//! # use faster_core::record::{Key, Value, LENGTH_PREFIX_SIZE};
+//! # use faster_core::hash::{Hashable, KeyHash};
+//! #[derive(Clone, PartialEq, Eq, Hash)]
+//! struct MyKey(Vec<u8>);
+//!
+//! # impl Hashable for MyKey {
+//! #     fn hash(&self) -> KeyHash { KeyHash::new(0) }
+//! # }
+//! impl Key for MyKey {
+//!     fn serialized_size(&self) -> usize { LENGTH_PREFIX_SIZE + self.0.len() }
+//!     fn serialize(&self, buf: &mut [u8]) -> usize {
+//!         let len = self.0.len() as u32;
+//!         buf[..4].copy_from_slice(&len.to_le_bytes());
+//!         buf[4..4 + self.0.len()].copy_from_slice(&self.0);
+//!         4 + self.0.len()
+//!     }
+//!     fn deserialize(buf: &[u8]) -> Self {
+//!         let len = u32::from_le_bytes(buf[..4].try_into().unwrap()) as usize;
+//!         MyKey(buf[4..4 + len].to_vec())
+//!     }
+//!
+//!     // Override: read only the 4-byte length prefix instead of deserializing.
+//!     fn serialized_size_from_bytes(buf: &[u8]) -> usize {
+//!         let len = u32::from_le_bytes(buf[..4].try_into().unwrap()) as usize;
+//!         LENGTH_PREFIX_SIZE + len
+//!     }
+//!
+//!     // Override: compare in-place without allocating a new Vec.
+//!     fn eq_from_bytes(&self, buf: &[u8]) -> bool {
+//!         if buf.len() < 4 { return false; }
+//!         let len = u32::from_le_bytes(buf[..4].try_into().unwrap()) as usize;
+//!         len == self.0.len() && buf[4..4 + len] == self.0[..]
+//!     }
+//! }
+//! ```
 
 use crate::hash::Hashable;
 
@@ -52,21 +112,34 @@ pub trait Key: Hashable + Eq + Clone + Send + Sync + 'static {
 
     /// Returns the serialized size of a key by inspecting raw bytes.
     ///
-    /// The default implementation deserializes the key and queries its size.
-    /// Override this for performance-critical paths (e.g., compaction scanning)
-    /// to avoid full deserialization.
+    /// Used by the compaction scanner to discover record boundaries without
+    /// full deserialization. For fixed-size types, this should return a
+    /// compile-time constant so LLVM can const-fold it away (zero overhead).
+    /// For variable-length types, read only the length prefix.
     ///
-    /// # Invariant
+    /// # Contract
     ///
-    /// The result must equal `Self::deserialize(buf).serialized_size()`.
+    /// - The result **must** equal `Self::deserialize(buf).serialized_size()`.
+    /// - `buf` contains at least the bytes needed to determine the size
+    ///   (e.g., the 4-byte length prefix for length-prefixed types).
+    /// - The default implementation deserializes fully — override for
+    ///   performance in compaction-heavy workloads.
     fn serialized_size_from_bytes(buf: &[u8]) -> usize {
         Self::deserialize(buf).serialized_size()
     }
 
     /// Compares `self` against a key serialized in `buf` without deserializing.
     ///
-    /// The default implementation deserializes and compares. Override for
-    /// zero-copy comparison in hot paths (e.g., version chain walking).
+    /// Used by the compaction scanner during version chain walks to check
+    /// whether a record's key matches the lookup key. Override for zero-copy
+    /// comparison that avoids heap allocation.
+    ///
+    /// # Contract
+    ///
+    /// - Must return `true` iff `*self == Self::deserialize(buf)`.
+    /// - `buf` contains at least `Self::serialized_size_from_bytes(buf)` bytes.
+    /// - The default implementation deserializes and compares — override
+    ///   for performance.
     fn eq_from_bytes(&self, buf: &[u8]) -> bool {
         *self == Self::deserialize(buf)
     }
@@ -106,12 +179,15 @@ pub trait Value: Clone + Default + Send + Sync + 'static {
 
     /// Returns the serialized size of a value by inspecting raw bytes.
     ///
-    /// The default implementation deserializes the value and queries its size.
-    /// Override for performance-critical paths to avoid full deserialization.
+    /// Used by the compaction scanner to compute full record sizes.
+    /// For fixed-size types, returns a compile-time constant. For
+    /// variable-length types, reads only the length prefix.
     ///
-    /// # Invariant
+    /// # Contract
     ///
-    /// The result must equal `Self::deserialize(buf).serialized_size()`.
+    /// - The result **must** equal `Self::deserialize(buf).serialized_size()`.
+    /// - The default implementation deserializes fully — override for
+    ///   performance in compaction-heavy workloads.
     fn serialized_size_from_bytes(buf: &[u8]) -> usize {
         Self::deserialize(buf).serialized_size()
     }
