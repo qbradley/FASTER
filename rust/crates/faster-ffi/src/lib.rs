@@ -52,6 +52,7 @@ pub mod handle;
 pub mod session;
 
 use std::cell::UnsafeCell;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -157,12 +158,15 @@ fn to_ffi_status(status: OperationStatus) -> FasterStatus {
 /// The returned handle is safe to use from any thread.
 #[unsafe(no_mangle)]
 pub extern "C" fn faster_open() -> FasterHandle {
-    let store = FfiStore::new(
-        FasterKvConfig::default(),
-        ByteSliceFunctions,
-        NullDevice::new(),
-    );
-    store_handles().insert(store)
+    panic::catch_unwind(|| {
+        let store = FfiStore::new(
+            FasterKvConfig::default(),
+            ByteSliceFunctions,
+            NullDevice::new(),
+        );
+        store_handles().insert(store)
+    })
+    .unwrap_or(INVALID_HANDLE)
 }
 
 /// Create a new FASTER key-value store backed by files in `path`.
@@ -193,13 +197,18 @@ pub unsafe extern "C" fn faster_open_with_path(path_ptr: *const u8, path_len: u3
         Err(_) => return INVALID_HANDLE,
     };
 
-    let device = match SyncFileDevice::new(path_str, "log.", 512, 1 << 30, 1) {
-        Ok(d) => d,
-        Err(_) => return INVALID_HANDLE,
-    };
+    // catch_unwind protects against panics from device/store creation.
+    let path_owned = path_str.to_owned();
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        let device = match SyncFileDevice::new(&path_owned, "log.", 512, 1 << 30, 1) {
+            Ok(d) => d,
+            Err(_) => return INVALID_HANDLE,
+        };
 
-    let store = FfiStore::new(FasterKvConfig::default(), ByteSliceFunctions, device);
-    store_handles().insert(store)
+        let store = FfiStore::new(FasterKvConfig::default(), ByteSliceFunctions, device);
+        store_handles().insert(store)
+    }))
+    .unwrap_or(INVALID_HANDLE)
 }
 
 /// Destroy a FASTER store and release all resources.
@@ -213,10 +222,13 @@ pub unsafe extern "C" fn faster_open_with_path(path_ptr: *const u8, path_len: u3
 /// session handle after its store has been closed is undefined behavior.
 #[unsafe(no_mangle)]
 pub extern "C" fn faster_close(store: FasterHandle) -> FasterStatus {
-    match store_handles().remove::<FfiStore>(store) {
-        Some(_) => FasterStatus::Ok,
-        None => FasterStatus::InvalidHandle,
-    }
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        match store_handles().remove::<FfiStore>(store) {
+            Some(_) => FasterStatus::Ok,
+            None => FasterStatus::InvalidHandle,
+        }
+    }))
+    .unwrap_or(FasterStatus::InternalError)
 }
 
 // ── Session lifecycle ───────────────────────────────────────────────
@@ -232,12 +244,15 @@ pub extern "C" fn faster_close(store: FasterHandle) -> FasterStatus {
 /// Passing it to another thread is undefined behavior.
 #[unsafe(no_mangle)]
 pub extern "C" fn faster_session_start(store: FasterHandle) -> FasterHandle {
-    let result = store_handles().with::<FfiStore, _>(store, |kv| {
-        let session = kv.new_session();
-        let cell = SessionCell(UnsafeCell::new(session));
-        session_handles().insert(cell)
-    });
-    result.unwrap_or(INVALID_HANDLE)
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        let result = store_handles().with::<FfiStore, _>(store, |kv| {
+            let session = kv.new_session();
+            let cell = SessionCell(UnsafeCell::new(session));
+            session_handles().insert(cell)
+        });
+        result.unwrap_or(INVALID_HANDLE)
+    }))
+    .unwrap_or(INVALID_HANDLE)
 }
 
 /// End and dispose a session.
@@ -254,25 +269,28 @@ pub extern "C" fn faster_session_end(
     store: FasterHandle,
     session_handle: FasterHandle,
 ) -> FasterStatus {
-    // Remove the session from the handle table first.
-    let cell = match session_handles().remove::<SessionCell>(session_handle) {
-        Some(c) => c,
-        None => return FasterStatus::InvalidHandle,
-    };
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        // Remove the session from the handle table first.
+        let cell = match session_handles().remove::<SessionCell>(session_handle) {
+            Some(c) => c,
+            None => return FasterStatus::InvalidHandle,
+        };
 
-    // Dispose via the store (releases epoch thread resources).
-    let session = cell.0.into_inner();
-    let disposed = store_handles().with::<FfiStore, _>(store, |kv| {
-        kv.dispose_session(session);
-    });
-    match disposed {
-        Some(()) => FasterStatus::Ok,
-        None => {
-            // Store handle is invalid, but we already removed the session.
-            // The session will be dropped, which is acceptable.
-            FasterStatus::InvalidHandle
+        // Dispose via the store (releases epoch thread resources).
+        let session = cell.0.into_inner();
+        let disposed = store_handles().with::<FfiStore, _>(store, |kv| {
+            kv.dispose_session(session);
+        });
+        match disposed {
+            Some(()) => FasterStatus::Ok,
+            None => {
+                // Store handle is invalid, but we already removed the session.
+                // The session will be dropped, which is acceptable.
+                FasterStatus::InvalidHandle
+            }
         }
-    }
+    }))
+    .unwrap_or(FasterStatus::InternalError)
 }
 
 // ── Helper: run a closure with store + session ──────────────────────
@@ -351,10 +369,14 @@ pub unsafe extern "C" fn faster_upsert(
         Vec::new()
     };
 
-    match with_store_session(store, session, |kv, sess| kv.upsert(sess, &key, &val, ())) {
-        Ok(status) => to_ffi_status(status),
-        Err(e) => e,
-    }
+    // catch_unwind prevents panics from crossing the FFI boundary.
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        match with_store_session(store, session, |kv, sess| kv.upsert(sess, &key, &val, ())) {
+            Ok(status) => to_ffi_status(status),
+            Err(e) => e,
+        }
+    }))
+    .unwrap_or(FasterStatus::InternalError)
 }
 
 /// Read the value for a key into a caller-provided buffer.
@@ -411,13 +433,21 @@ pub unsafe extern "C" fn faster_read(
         Vec::new()
     };
 
-    let result = with_store_session(store, session, |kv, sess| {
-        let mut output: Option<Vec<u8>> = None;
-        let status = kv.read(sess, &key, &Vec::new(), &mut output, ());
-        (status, output)
-    });
+    // catch_unwind prevents panics from crossing the FFI boundary.
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        with_store_session(store, session, |kv, sess| {
+            let mut output: Option<Vec<u8>> = None;
+            let status = kv.read(sess, &key, &Vec::new(), &mut output, ());
+            (status, output)
+        })
+    }));
 
-    let (status, output) = match result {
+    let inner = match result {
+        Ok(inner) => inner,
+        Err(_) => return FasterStatus::InternalError,
+    };
+
+    let (status, output) = match inner {
         Ok(pair) => pair,
         Err(e) => return e,
     };
@@ -502,10 +532,14 @@ pub unsafe extern "C" fn faster_delete(
         Vec::new()
     };
 
-    match with_store_session(store, session, |kv, sess| kv.delete(sess, &key, ())) {
-        Ok(status) => to_ffi_status(status),
-        Err(e) => e,
-    }
+    // catch_unwind prevents panics from crossing the FFI boundary.
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        match with_store_session(store, session, |kv, sess| kv.delete(sess, &key, ())) {
+            Ok(status) => to_ffi_status(status),
+            Err(e) => e,
+        }
+    }))
+    .unwrap_or(FasterStatus::InternalError)
 }
 
 /// Read-modify-write: atomically read and replace the value for a key.
@@ -559,13 +593,17 @@ pub unsafe extern "C" fn faster_rmw(
         Vec::new()
     };
 
-    match with_store_session(store, session, |kv, sess| {
-        let mut output: Option<Vec<u8>> = None;
-        kv.rmw(sess, &key, &input, &mut output, ())
-    }) {
-        Ok(status) => to_ffi_status(status),
-        Err(e) => e,
-    }
+    // catch_unwind prevents panics from crossing the FFI boundary.
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        match with_store_session(store, session, |kv, sess| {
+            let mut output: Option<Vec<u8>> = None;
+            kv.rmw(sess, &key, &input, &mut output, ())
+        }) {
+            Ok(status) => to_ffi_status(status),
+            Err(e) => e,
+        }
+    }))
+    .unwrap_or(FasterStatus::InternalError)
 }
 
 /// Drain completed asynchronous I/O operations for a session.
@@ -587,16 +625,22 @@ pub unsafe extern "C" fn faster_complete_pending(
         return FasterStatus::InvalidArgument;
     }
 
-    match with_store_session(store, session, |kv, sess| {
-        let results = kv.complete_pending(sess);
-        results.len() as u32
-    }) {
-        Ok(count) => {
+    // catch_unwind prevents panics from crossing the FFI boundary.
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        with_store_session(store, session, |kv, sess| {
+            let results = kv.complete_pending(sess);
+            results.len() as u32
+        })
+    }));
+
+    match result {
+        Ok(Ok(count)) => {
             // SAFETY: completed_out validated non-null above.
             unsafe { completed_out.write(count) };
             FasterStatus::Ok
         }
-        Err(e) => e,
+        Ok(Err(e)) => e,
+        Err(_) => FasterStatus::InternalError,
     }
 }
 
@@ -651,13 +695,18 @@ pub unsafe extern "C" fn faster_checkpoint(
         Ok(s) => s,
         Err(_) => return FasterStatus::InvalidArgument,
     };
-    let dir_path = Path::new(dir_str);
+
+    let dir_owned = dir_str.to_owned();
     let ct = checkpoint_type.to_core();
 
-    let result = store_handles().with::<FfiStore, _>(store, |kv| kv.checkpoint(dir_path, ct));
+    // catch_unwind prevents panics from crossing the FFI boundary.
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        let dir_path = Path::new(&dir_owned);
+        store_handles().with::<FfiStore, _>(store, |kv| kv.checkpoint(dir_path, ct))
+    }));
 
     match result {
-        Some(Ok(token)) => {
+        Ok(Some(Ok(token))) => {
             let raw = token.as_u128();
             // SAFETY: Pointers validated non-null above.
             unsafe {
@@ -666,8 +715,9 @@ pub unsafe extern "C" fn faster_checkpoint(
             }
             FasterStatus::Ok
         }
-        Some(Err(_)) => FasterStatus::CheckpointError,
-        None => FasterStatus::InvalidHandle,
+        Ok(Some(Err(_))) => FasterStatus::CheckpointError,
+        Ok(None) => FasterStatus::InvalidHandle,
+        Err(_) => FasterStatus::InternalError,
     }
 }
 
@@ -717,8 +767,8 @@ pub unsafe extern "C" fn faster_recover(
         Ok(s) => s,
         Err(_) => return FasterStatus::InvalidArgument,
     };
-    let dir_path = Path::new(dir_str);
 
+    let dir_owned = dir_str.to_owned();
     let token = if token_high == 0 && token_low == 0 {
         None
     } else {
@@ -727,12 +777,17 @@ pub unsafe extern "C" fn faster_recover(
         ))
     };
 
-    let result = store_handles().with_mut::<FfiStore, _>(store, |kv| kv.recover(dir_path, token));
+    // catch_unwind prevents panics from crossing the FFI boundary.
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        let dir_path = Path::new(&dir_owned);
+        store_handles().with_mut::<FfiStore, _>(store, |kv| kv.recover(dir_path, token))
+    }));
 
     match result {
-        Some(Ok(_)) => FasterStatus::Ok,
-        Some(Err(_)) => FasterStatus::CheckpointError,
-        None => FasterStatus::InvalidHandle,
+        Ok(Some(Ok(_))) => FasterStatus::Ok,
+        Ok(Some(Err(_))) => FasterStatus::CheckpointError,
+        Ok(None) => FasterStatus::InvalidHandle,
+        Err(_) => FasterStatus::InternalError,
     }
 }
 

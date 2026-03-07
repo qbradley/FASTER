@@ -8,6 +8,9 @@ members = [
     "crates/faster-tokio",
     "crates/faster-uring",
     "crates/samples/read-cache-sim",
+    "crates/samples/cross-impl-bench",
+    "crates/samples/tokio-kv-server",
+    "crates/samples/uring-stress",
 ]
 resolver = "3"
 
