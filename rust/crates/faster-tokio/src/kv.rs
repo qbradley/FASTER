@@ -28,8 +28,8 @@
 //! ```
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use faster_core::checkpoint::{CheckpointError, CheckpointToken, CheckpointType};
@@ -109,8 +109,7 @@ impl<F: Functions> AsyncFasterKv<F> {
                     break;
                 }
                 let store = bg_store.clone();
-                let _ =
-                    tokio::task::spawn_blocking(move || store.maintenance()).await;
+                let _ = tokio::task::spawn_blocking(move || store.maintenance()).await;
             }
         });
 
@@ -123,11 +122,7 @@ impl<F: Functions> AsyncFasterKv<F> {
 
     /// Create a new async-managed store with the
     /// [`DEFAULT_MAINTENANCE_INTERVAL`] (50 ms).
-    pub fn with_defaults(
-        config: FasterKvConfig,
-        functions: F,
-        device: impl Device,
-    ) -> Self {
+    pub fn with_defaults(config: FasterKvConfig, functions: F, device: impl Device) -> Self {
         Self::new(config, functions, device, DEFAULT_MAINTENANCE_INTERVAL)
     }
 
@@ -186,8 +181,7 @@ impl<F: Functions> AsyncFasterKv<F> {
     /// regular background interval.
     pub async fn maintenance(&self) {
         let store = self.store.clone();
-        let _ =
-            tokio::task::spawn_blocking(move || store.maintenance()).await;
+        let _ = tokio::task::spawn_blocking(move || store.maintenance()).await;
     }
 
     // ── Shutdown ────────────────────────────────────────────────────
@@ -238,8 +232,8 @@ impl<F: Functions> Drop for AsyncFasterKv<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use faster_core::store::SimpleFunctions;
     use faster_core::NullDevice;
+    use faster_core::store::SimpleFunctions;
 
     type TestFns = SimpleFunctions<u64, u64>;
 
@@ -302,8 +296,7 @@ mod tests {
         drop(session);
 
         let dir = tempfile::tempdir().unwrap();
-        let result =
-            kv.checkpoint(dir.path(), CheckpointType::FoldOver).await;
+        let result = kv.checkpoint(dir.path(), CheckpointType::FoldOver).await;
         assert!(result.is_ok(), "checkpoint failed: {result:?}");
     }
 
@@ -379,8 +372,7 @@ mod tests {
             SimpleFunctions::<u64, u64>::default(),
             NullDevice::new(),
         ));
-        let mut kv =
-            AsyncFasterKv::from_store(store.clone(), Duration::from_millis(10));
+        let mut kv = AsyncFasterKv::from_store(store.clone(), Duration::from_millis(10));
 
         let mut session = kv.new_session();
         let _ = session.upsert_simple(&5u64, &50u64);
@@ -418,11 +410,7 @@ mod tests {
         }
 
         for i in 0u64..100 {
-            assert_eq!(
-                session.read_simple(&i),
-                Some(i * 10),
-                "mismatch at key {i}"
-            );
+            assert_eq!(session.read_simple(&i), Some(i * 10), "mismatch at key {i}");
         }
     }
 

@@ -68,34 +68,55 @@ if [[ "$SKIP_TESTS" == true ]]; then
 fi
 
 run_gate "cargo fmt (check)" \
-    cargo fmt -p faster-core -- --check || {
-    echo -e "\n${RED}💡 Fix: run 'cargo fmt -p faster-core' then retry.${RESET}" >&2
+    cargo fmt --all -- --check || {
+    echo -e "\n${RED}💡 Fix: run 'cargo fmt --all' then retry.${RESET}" >&2
     exit 1
 }
 
-run_gate "cargo clippy" \
-    cargo clippy -p faster-core --all-targets -- -D warnings || {
-    echo -e "\n${RED}💡 Fix: address the clippy warnings above then retry.${RESET}" >&2
-    exit 1
-}
+# ── Discover workspace crates to gate ───────────────────────────────────────
+# Gate all library/binary crates in the workspace (skip samples for speed)
+GATE_CRATES=()
+for crate_dir in crates/faster-core crates/faster-ffi crates/faster-tokio crates/faster-uring crates/faster-dst; do
+    if [[ -f "$crate_dir/Cargo.toml" ]]; then
+        crate_name="$(basename "$crate_dir")"
+        GATE_CRATES+=("$crate_name")
+    fi
+done
 
-if [[ "$SKIP_TESTS" == false ]]; then
-    run_gate "cargo test --doc" \
-        cargo test --doc -p faster-core || {
-        echo -e "\n${RED}💡 Fix: repair the failing doctests above then retry.${RESET}" >&2
+if [[ ${#GATE_CRATES[@]} -eq 0 ]]; then
+    echo -e "${RED}❌ No workspace crates found to gate.${RESET}" >&2
+    exit 1
+fi
+
+echo -e "${BOLD}  Gating crates: ${GATE_CRATES[*]}${RESET}"
+
+for crate in "${GATE_CRATES[@]}"; do
+    run_gate "cargo clippy ($crate)" \
+        cargo clippy -p "$crate" --all-targets -- -D warnings || {
+        echo -e "\n${RED}💡 Fix: address the clippy warnings in $crate above then retry.${RESET}" >&2
         exit 1
     }
+done
+
+if [[ "$SKIP_TESTS" == false ]]; then
+    for crate in "${GATE_CRATES[@]}"; do
+        run_gate "cargo test --doc ($crate)" \
+            cargo test --doc -p "$crate" || {
+            echo -e "\n${RED}💡 Fix: repair the failing doctests in $crate above then retry.${RESET}" >&2
+            exit 1
+        }
+    done
 
     if command -v cargo-nextest &>/dev/null || cargo nextest --version &>/dev/null 2>&1; then
-        run_gate "cargo nextest run" \
-            cargo nextest run -p faster-core || {
+        run_gate "cargo nextest run (workspace)" \
+            cargo nextest run --workspace || {
             echo -e "\n${RED}💡 Fix: repair the failing tests above then retry.${RESET}" >&2
             exit 1
         }
     else
         echo -e "${YELLOW}  ⚠ nextest not found — falling back to cargo test${RESET}"
-        run_gate "cargo test" \
-            cargo test -p faster-core || {
+        run_gate "cargo test (workspace)" \
+            cargo test --workspace || {
             echo -e "\n${RED}💡 Fix: repair the failing tests above then retry.${RESET}" >&2
             exit 1
         }
