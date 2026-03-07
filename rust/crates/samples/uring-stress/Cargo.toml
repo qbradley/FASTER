@@ -1,0 +1,15 @@
+[package]
+name = "uring-stress"
+version = "0.1.0"
+description = "io_uring stress test and comparison benchmark for FASTER"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+faster-core = { path = "../../faster-core" }
+faster-uring = { path = "../../faster-uring" }
+clap = { version = "4", features = ["derive"] }
+rand = "0.9"
