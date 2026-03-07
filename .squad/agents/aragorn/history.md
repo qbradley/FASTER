@@ -540,3 +540,15 @@ Created `rust/crates/faster-core/examples/cache_store.rs` — a Rust port of the
 - `store::functions` module is private; use re-exports from `store` module (`SimpleFunctions`, `FasterKv`, etc.)
 - Hash tag computation for u64 keys: no collisions for keys 0..50 with 1024 buckets (verified)
 - `FasterKv` upsert in read-only region creates copy-to-tail but does NOT mark old record invalid — scanner must check hash index to detect dead records
+
+---
+
+### Cross-Agent Update (2026-03-07T0245)
+
+**From Quality Fanout Session:**
+
+- **Galadriel (Security Audit):** FFI panic-safety wrappers now mandatory on all `extern "C"` functions. Your core changes must ensure no unsafe FFI additions without `catch_unwind`. Reference SECURITY-AUDIT.md for unsafe code review guidelines.
+
+- **Legolas (Performance):** Rust FASTER baseline established at 59.77M ops/sec (Workload C, 16T). Any core changes to Hash Table or record layout must not regress below 60M ops/sec. Cross-impl benchmark suite is the single source of truth for performance claims.
+
+- **Gimli (Storage):** UringDevice async read semantics validated. io_uring reads beyond EOF return short reads (0 bytes), not zero-fills. If checkpoint recovery depends on zero-initialized regions, handle explicitly at higher level. Behavior is correct per Device trait contract.

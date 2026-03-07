@@ -258,3 +258,15 @@
 - `rust/crates/faster-ffi/src/error.rs` — FasterStatus enum + 6 tests
 - `rust/crates/faster-ffi/src/lib.rs` — Module structure
 
+
+---
+
+### Cross-Agent Update (2026-03-07T0245)
+
+**From Quality Fanout Session:**
+
+- **Legolas (Performance):** Benchmark baseline established — 59.77M ops/sec at 16T. Allocator performance is locked in as part of the overall throughput. Any allocator changes must maintain this baseline.
+
+- **Gimli (Storage):** io_uring async read semantics documented. Allocator integration with UringDevice validated through 10 new battle tests. Async read behavior is well-understood and accounted for in recovery path.
+
+- **Galadriel (Security):** Allocator FFI layer (if exposed) must follow panic-safety rule. All unsafe code in allocator has been audited; reference SECURITY-AUDIT.md.
