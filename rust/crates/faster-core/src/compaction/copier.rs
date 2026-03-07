@@ -71,6 +71,7 @@ impl core::fmt::Display for CopyError {
 
 /// Maps a record's original address to its new address after compaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct AddressMapping {
     /// Address of the record before compaction.
     pub old_address: LogicalAddress,

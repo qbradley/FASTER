@@ -63,6 +63,7 @@ pub struct CompactionResult {
 
 /// Errors that can occur during a compaction cycle.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum CompactionError {
     /// The compaction region is empty (begin >= until).
     EmptyRegion {

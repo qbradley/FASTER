@@ -124,6 +124,14 @@ pub trait Key: Hashable + Eq + Clone + Send + Sync + 'static {
     ///   (e.g., the 4-byte length prefix for length-prefixed types).
     /// - The default implementation deserializes fully — override for
     ///   performance in compaction-heavy workloads.
+    ///
+    /// # Panics
+    ///
+    /// The default implementation calls [`deserialize`](Self::deserialize),
+    /// which may panic on corrupted or truncated input. Types used in
+    /// compaction-eligible stores **should** override this with a
+    /// corruption-safe implementation that validates buffer length before
+    /// reading.
     fn serialized_size_from_bytes(buf: &[u8]) -> usize {
         Self::deserialize(buf).serialized_size()
     }
@@ -140,6 +148,14 @@ pub trait Key: Hashable + Eq + Clone + Send + Sync + 'static {
     /// - `buf` contains at least `Self::serialized_size_from_bytes(buf)` bytes.
     /// - The default implementation deserializes and compares — override
     ///   for performance.
+    ///
+    /// # Panics
+    ///
+    /// The default implementation calls [`deserialize`](Self::deserialize),
+    /// which may panic on corrupted or truncated input. Types used in
+    /// compaction-eligible stores **should** override this with a
+    /// corruption-safe implementation that validates buffer length before
+    /// reading.
     fn eq_from_bytes(&self, buf: &[u8]) -> bool {
         *self == Self::deserialize(buf)
     }
@@ -188,6 +204,14 @@ pub trait Value: Clone + Default + Send + Sync + 'static {
     /// - The result **must** equal `Self::deserialize(buf).serialized_size()`.
     /// - The default implementation deserializes fully — override for
     ///   performance in compaction-heavy workloads.
+    ///
+    /// # Panics
+    ///
+    /// The default implementation calls [`deserialize`](Self::deserialize),
+    /// which may panic on corrupted or truncated input. Types used in
+    /// compaction-eligible stores **should** override this with a
+    /// corruption-safe implementation that validates buffer length before
+    /// reading.
     fn serialized_size_from_bytes(buf: &[u8]) -> usize {
         Self::deserialize(buf).serialized_size()
     }
