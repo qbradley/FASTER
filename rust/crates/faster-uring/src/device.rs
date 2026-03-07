@@ -1904,4 +1904,415 @@ mod tests {
             eprintln!("{label}: {num_pages} writes in {elapsed:?} ({mbps:.1} MiB/s)");
         }
     }
+
+    // ── Stress: 100K+ operations ────────────────────────────────────
+
+    #[test]
+    fn stress_100k_operations() {
+        let dir = TempDir::new().unwrap();
+        let dev = Arc::new(make_device(dir.path()));
+        let page_size = SECTOR as usize;
+        let num_ops = 100_000;
+        let num_threads = 8usize;
+        let ops_per_thread = num_ops / num_threads;
+
+        let handles: Vec<_> = (0..num_threads)
+            .map(|t| {
+                let dev = Arc::clone(&dev);
+                thread::spawn(move || {
+                    for i in 0..ops_per_thread {
+                        let global_idx = t * ops_per_thread + i;
+                        let mut page = vec![0u8; page_size];
+                        let tag = (global_idx as u32).to_le_bytes();
+                        page[..4].copy_from_slice(&tag);
+                        page[4..8].fill((global_idx % 256) as u8);
+
+                        let offset = (global_idx * page_size) as u64;
+
+                        // Write
+                        let (w_state, w_ctx) = make_callback();
+                        // SAFETY: page valid until callback fires.
+                        unsafe {
+                            let r = dev.write_async(
+                                page.as_ptr(),
+                                offset,
+                                page_size as u32,
+                                test_callback,
+                                w_ctx,
+                            );
+                            assert!(matches!(r, IoRequestResult::Submitted));
+                        }
+                        w_state.wait(Duration::from_secs(60));
+                        w_state.assert_success(page_size as u32);
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Verify a random sample (first, middle, last ops per thread).
+        for t in 0..num_threads {
+            for &i in &[0, ops_per_thread / 2, ops_per_thread - 1] {
+                let global_idx = t * ops_per_thread + i;
+                let offset = (global_idx * page_size) as u64;
+                let mut rbuf = vec![0u8; page_size];
+                let (r_state, r_ctx) = make_callback();
+                // SAFETY: rbuf valid until callback fires.
+                unsafe {
+                    let r = dev.read_async(
+                        offset,
+                        rbuf.as_mut_ptr(),
+                        page_size as u32,
+                        test_callback,
+                        r_ctx,
+                    );
+                    assert!(matches!(r, IoRequestResult::Submitted));
+                }
+                r_state.wait(Duration::from_secs(10));
+                r_state.assert_success(page_size as u32);
+                let expected = (global_idx as u32).to_le_bytes();
+                assert_eq!(
+                    &rbuf[..4],
+                    &expected,
+                    "tag mismatch at global_idx {global_idx}"
+                );
+            }
+        }
+    }
+
+    // ── Large value test: 4KB+ values with alignment ────────────────
+
+    #[test]
+    fn large_value_sizes() {
+        let dir = TempDir::new().unwrap();
+        let dev = make_device(dir.path());
+
+        // Test a range of aligned sizes: 4KB, 8KB, 16KB, 32KB, 64KB
+        for &size in &[4096, 8192, 16384, 32768, 65536] {
+            let mut data = vec![0u8; size];
+            for (i, byte) in data.iter_mut().enumerate() {
+                *byte = ((i ^ size) % 256) as u8;
+            }
+
+            let offset = 0u64;
+
+            // Write
+            let (w_state, w_ctx) = make_callback();
+            // SAFETY: data valid for `size` bytes.
+            unsafe {
+                dev.write_async(data.as_ptr(), offset, size as u32, test_callback, w_ctx);
+            }
+            w_state.wait(TIMEOUT);
+            w_state.assert_success(size as u32);
+
+            // Read back
+            let mut rbuf = vec![0u8; size];
+            let (r_state, r_ctx) = make_callback();
+            // SAFETY: rbuf valid for `size` bytes.
+            unsafe {
+                dev.read_async(offset, rbuf.as_mut_ptr(), size as u32, test_callback, r_ctx);
+            }
+            r_state.wait(TIMEOUT);
+            r_state.assert_success(size as u32);
+
+            assert_eq!(rbuf, data, "data mismatch for value size {size}");
+        }
+    }
+
+    // ── Concurrent multi-thread sessions ────────────────────────────
+
+    #[test]
+    fn concurrent_multi_thread_16() {
+        let dir = TempDir::new().unwrap();
+        let dev = Arc::new(make_device(dir.path()));
+        let page_size = SECTOR as usize;
+        let num_threads = 16usize;
+        let ops_per_thread = 100;
+
+        let handles: Vec<_> = (0..num_threads)
+            .map(|t| {
+                let dev = Arc::clone(&dev);
+                thread::spawn(move || {
+                    for i in 0..ops_per_thread {
+                        let global_idx = t * ops_per_thread + i;
+                        let mut page = vec![0u8; page_size];
+                        let tag = (global_idx as u32).to_le_bytes();
+                        page[..4].copy_from_slice(&tag);
+                        page[4..].fill((t % 256) as u8);
+
+                        let offset = (global_idx * page_size) as u64;
+
+                        // Write
+                        let (w_state, w_ctx) = make_callback();
+                        // SAFETY: page valid until callback fires.
+                        unsafe {
+                            dev.write_async(
+                                page.as_ptr(),
+                                offset,
+                                page_size as u32,
+                                test_callback,
+                                w_ctx,
+                            );
+                        }
+                        w_state.wait(TIMEOUT);
+                        w_state.assert_success(page_size as u32);
+
+                        // Read back immediately
+                        let mut rbuf = vec![0u8; page_size];
+                        let (r_state, r_ctx) = make_callback();
+                        // SAFETY: rbuf valid until callback fires.
+                        unsafe {
+                            dev.read_async(
+                                offset,
+                                rbuf.as_mut_ptr(),
+                                page_size as u32,
+                                test_callback,
+                                r_ctx,
+                            );
+                        }
+                        r_state.wait(TIMEOUT);
+                        r_state.assert_success(page_size as u32);
+
+                        assert_eq!(&rbuf[..4], &tag, "tag mismatch thread={t} op={i}");
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
+
+    // ── Recovery test: write, drop, reopen, verify ──────────────────
+
+    #[test]
+    fn recovery_write_drop_reopen_verify() {
+        let dir = TempDir::new().unwrap();
+        let page_size = SECTOR as usize;
+        let num_pages = 50;
+        let mut expected_data: Vec<Vec<u8>> = Vec::new();
+
+        // Phase 1: Write data
+        {
+            let dev = make_device(dir.path());
+            for i in 0..num_pages {
+                let mut page = vec![0u8; page_size];
+                let tag = (i as u32).to_le_bytes();
+                page[..4].copy_from_slice(&tag);
+                for byte in &mut page[4..] {
+                    *byte = ((i * 7 + 3) % 256) as u8;
+                }
+                expected_data.push(page.clone());
+
+                let offset = (i * page_size) as u64;
+                dev.write_sync(offset, &page).expect("write_sync");
+            }
+            // Drop device — closes file handles
+        }
+
+        // Phase 2: Reopen and verify through sync reads
+        {
+            let dev = make_device(dir.path());
+            for (i, expected) in expected_data.iter().enumerate() {
+                let offset = (i * page_size) as u64;
+                let mut rbuf = vec![0u8; page_size];
+                dev.read_sync(offset, &mut rbuf).expect("read_sync");
+                assert_eq!(rbuf, *expected, "data mismatch after recovery at page {i}");
+            }
+        }
+
+        // Phase 3: Reopen and verify through async reads
+        {
+            let dev = make_device(dir.path());
+            for (i, expected) in expected_data.iter().enumerate() {
+                let offset = (i * page_size) as u64;
+                let mut rbuf = vec![0u8; page_size];
+                let (r_state, r_ctx) = make_callback();
+                // SAFETY: rbuf valid until callback fires.
+                unsafe {
+                    dev.read_async(
+                        offset,
+                        rbuf.as_mut_ptr(),
+                        page_size as u32,
+                        test_callback,
+                        r_ctx,
+                    );
+                }
+                r_state.wait(TIMEOUT);
+                r_state.assert_success(page_size as u32);
+                assert_eq!(
+                    rbuf, *expected,
+                    "async data mismatch after recovery at page {i}"
+                );
+            }
+        }
+    }
+
+    // ── Edge cases ──────────────────────────────────────────────────
+
+    #[test]
+    fn read_from_unwritten_offset_sync_returns_zeros() {
+        let dir = TempDir::new().unwrap();
+        let dev = make_device(dir.path());
+
+        // Write at offset 0 to create segment file
+        let data = vec![0xFFu8; SECTOR as usize];
+        dev.write_sync(0, &data).unwrap();
+
+        // Sync read at a higher offset within the same segment (beyond what
+        // was written) — read_complete_at zero-fills on early EOF.
+        let mut rbuf = vec![0xAA; SECTOR as usize];
+        dev.read_sync(SECTOR as u64 * 10, &mut rbuf).unwrap();
+        assert_eq!(
+            rbuf,
+            vec![0u8; SECTOR as usize],
+            "unwritten area should be zeros (sync)"
+        );
+    }
+
+    #[test]
+    fn max_queue_depth_saturation() {
+        // Use a small queue depth and submit more operations than the
+        // ring can hold, relying on the submit_with_retry mechanism.
+        let dir = TempDir::new().unwrap();
+        let dev = UringDevice::new(UringDeviceConfig {
+            base_path: dir.path().to_path_buf(),
+            prefix: "qdepth.".to_string(),
+            sector_size: SECTOR,
+            segment_size: SEGMENT,
+            ring_config: UringConfig {
+                queue_depth: 4, // Very small ring
+                sq_poll: false,
+                direct_io: false,
+            },
+            batch_policy: BatchPolicy::immediate(),
+        })
+        .expect("create device");
+
+        let page_size = SECTOR as usize;
+        let num_ops = 64; // 16x the queue depth
+
+        let data = vec![0xCCu8; page_size];
+        let mut states: Vec<Arc<CallbackState>> = Vec::with_capacity(num_ops);
+
+        for i in 0..num_ops {
+            let (state, ctx) = make_callback();
+            states.push(state);
+            let offset = (i * page_size) as u64;
+            // SAFETY: data valid for page_size bytes.
+            unsafe {
+                dev.write_async(data.as_ptr(), offset, page_size as u32, test_callback, ctx);
+            }
+        }
+
+        for (i, s) in states.iter().enumerate() {
+            s.wait(Duration::from_secs(30));
+            s.assert_success(page_size as u32);
+            let _ = i;
+        }
+    }
+
+    #[test]
+    fn boundary_crossing_multi_segment() {
+        // Write that crosses 3 segment boundaries.
+        let dir = TempDir::new().unwrap();
+        let dev = UringDevice::new(UringDeviceConfig {
+            base_path: dir.path().to_path_buf(),
+            prefix: "bnd.".to_string(),
+            sector_size: SECTOR,
+            segment_size: SECTOR as u64 * 2, // 2 pages per segment
+            ring_config: UringConfig::default(),
+            batch_policy: BatchPolicy::default(),
+        })
+        .expect("create device");
+
+        // Write 5 pages starting from page 1, crossing segments:
+        // Seg 0: pages [0, 1], Seg 1: pages [2, 3], Seg 2: pages [4, 5]
+        // Write spans pages 1..6, crossing seg 0→1 and seg 1→2.
+        let page_size = SECTOR as usize;
+        let total_len = page_size * 5;
+        let mut data = vec![0u8; total_len];
+        for (i, byte) in data.iter_mut().enumerate() {
+            *byte = (i % 251) as u8;
+        }
+
+        let offset = page_size as u64; // Start at page 1
+
+        let (w_state, w_ctx) = make_callback();
+        // SAFETY: data valid for total_len bytes.
+        unsafe {
+            dev.write_async(
+                data.as_ptr(),
+                offset,
+                total_len as u32,
+                test_callback,
+                w_ctx,
+            );
+        }
+        w_state.wait(Duration::from_secs(10));
+        w_state.assert_success(total_len as u32);
+
+        // Read it back
+        let mut rbuf = vec![0u8; total_len];
+        let (r_state, r_ctx) = make_callback();
+        // SAFETY: rbuf valid for total_len bytes.
+        unsafe {
+            dev.read_async(
+                offset,
+                rbuf.as_mut_ptr(),
+                total_len as u32,
+                test_callback,
+                r_ctx,
+            );
+        }
+        r_state.wait(Duration::from_secs(10));
+        r_state.assert_success(total_len as u32);
+
+        assert_eq!(rbuf, data, "boundary-crossing data mismatch");
+    }
+
+    #[test]
+    fn mixed_sync_async_interleaved() {
+        let dir = TempDir::new().unwrap();
+        let dev = make_device(dir.path());
+        let page_size = SECTOR as usize;
+
+        // Write via sync, read via async
+        let data_sync = vec![0x11u8; page_size];
+        dev.write_sync(0, &data_sync).unwrap();
+
+        let mut rbuf = vec![0u8; page_size];
+        let (r_state, r_ctx) = make_callback();
+        // SAFETY: rbuf valid for page_size bytes.
+        unsafe {
+            dev.read_async(0, rbuf.as_mut_ptr(), SECTOR, test_callback, r_ctx);
+        }
+        r_state.wait(TIMEOUT);
+        r_state.assert_success(SECTOR);
+        assert_eq!(rbuf, data_sync);
+
+        // Write via async, read via sync
+        let data_async = vec![0x22u8; page_size];
+        let (w_state, w_ctx) = make_callback();
+        // SAFETY: data_async valid for page_size bytes.
+        unsafe {
+            dev.write_async(
+                data_async.as_ptr(),
+                SECTOR as u64,
+                SECTOR,
+                test_callback,
+                w_ctx,
+            );
+        }
+        w_state.wait(TIMEOUT);
+        w_state.assert_success(SECTOR);
+
+        let mut rbuf2 = vec![0u8; page_size];
+        dev.read_sync(SECTOR as u64, &mut rbuf2).unwrap();
+        assert_eq!(rbuf2, data_async);
+    }
 }
