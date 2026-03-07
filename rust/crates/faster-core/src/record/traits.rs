@@ -49,6 +49,27 @@ pub trait Key: Hashable + Eq + Clone + Send + Sync + 'static {
 
     /// Deserializes a key from the start of `buf`.
     fn deserialize(buf: &[u8]) -> Self;
+
+    /// Returns the serialized size of a key by inspecting raw bytes.
+    ///
+    /// The default implementation deserializes the key and queries its size.
+    /// Override this for performance-critical paths (e.g., compaction scanning)
+    /// to avoid full deserialization.
+    ///
+    /// # Invariant
+    ///
+    /// The result must equal `Self::deserialize(buf).serialized_size()`.
+    fn serialized_size_from_bytes(buf: &[u8]) -> usize {
+        Self::deserialize(buf).serialized_size()
+    }
+
+    /// Compares `self` against a key serialized in `buf` without deserializing.
+    ///
+    /// The default implementation deserializes and compares. Override for
+    /// zero-copy comparison in hot paths (e.g., version chain walking).
+    fn eq_from_bytes(&self, buf: &[u8]) -> bool {
+        *self == Self::deserialize(buf)
+    }
 }
 
 /// Trait for types that can be used as FASTER values.
@@ -82,6 +103,18 @@ pub trait Value: Clone + Default + Send + Sync + 'static {
 
     /// Deserializes a value from the start of `buf`.
     fn deserialize(buf: &[u8]) -> Self;
+
+    /// Returns the serialized size of a value by inspecting raw bytes.
+    ///
+    /// The default implementation deserializes the value and queries its size.
+    /// Override for performance-critical paths to avoid full deserialization.
+    ///
+    /// # Invariant
+    ///
+    /// The result must equal `Self::deserialize(buf).serialized_size()`.
+    fn serialized_size_from_bytes(buf: &[u8]) -> usize {
+        Self::deserialize(buf).serialized_size()
+    }
 }
 
 /// Marker trait for keys with a compile-time known serialized size.
@@ -127,6 +160,16 @@ macro_rules! impl_key_value_for_numeric {
                         .expect("buffer too short for numeric Key::deserialize"),
                 )
             }
+
+            #[inline]
+            fn serialized_size_from_bytes(_buf: &[u8]) -> usize {
+                core::mem::size_of::<$t>()
+            }
+
+            #[inline]
+            fn eq_from_bytes(&self, buf: &[u8]) -> bool {
+                buf[..core::mem::size_of::<$t>()] == self.to_le_bytes()
+            }
         }
 
         impl FixedSizeKey for $t {
@@ -154,6 +197,11 @@ macro_rules! impl_key_value_for_numeric {
                         .expect("buffer too short for numeric Value::deserialize"),
                 )
             }
+
+            #[inline]
+            fn serialized_size_from_bytes(_buf: &[u8]) -> usize {
+                core::mem::size_of::<$t>()
+            }
         }
 
         impl FixedSizeValue for $t {
@@ -168,7 +216,7 @@ impl_key_value_for_numeric!(u32, u64, i32, i64);
 // ── Vec<u8> — variable-length, length-prefixed ──────────────────────
 
 /// Length prefix size for variable-length types (4 bytes = u32).
-const LENGTH_PREFIX_SIZE: usize = 4;
+pub const LENGTH_PREFIX_SIZE: usize = 4;
 
 impl Key for Vec<u8> {
     #[inline]
@@ -190,6 +238,27 @@ impl Key for Vec<u8> {
                 .expect("buffer too short for Vec<u8> length prefix"),
         ) as usize;
         buf[LENGTH_PREFIX_SIZE..LENGTH_PREFIX_SIZE + len].to_vec()
+    }
+
+    #[inline]
+    fn serialized_size_from_bytes(buf: &[u8]) -> usize {
+        let len = u32::from_le_bytes(
+            buf[..LENGTH_PREFIX_SIZE]
+                .try_into()
+                .expect("buffer too short for Vec<u8> length prefix"),
+        ) as usize;
+        LENGTH_PREFIX_SIZE + len
+    }
+
+    #[inline]
+    fn eq_from_bytes(&self, buf: &[u8]) -> bool {
+        if buf.len() < LENGTH_PREFIX_SIZE {
+            return false;
+        }
+        let len = u32::from_le_bytes(buf[..LENGTH_PREFIX_SIZE].try_into().unwrap()) as usize;
+        len == self.len()
+            && buf.len() >= LENGTH_PREFIX_SIZE + len
+            && buf[LENGTH_PREFIX_SIZE..LENGTH_PREFIX_SIZE + len] == self[..]
     }
 }
 
@@ -213,6 +282,16 @@ impl Value for Vec<u8> {
                 .expect("buffer too short for Vec<u8> length prefix"),
         ) as usize;
         buf[LENGTH_PREFIX_SIZE..LENGTH_PREFIX_SIZE + len].to_vec()
+    }
+
+    #[inline]
+    fn serialized_size_from_bytes(buf: &[u8]) -> usize {
+        let len = u32::from_le_bytes(
+            buf[..LENGTH_PREFIX_SIZE]
+                .try_into()
+                .expect("buffer too short for Vec<u8> length prefix"),
+        ) as usize;
+        LENGTH_PREFIX_SIZE + len
     }
 }
 
@@ -240,6 +319,27 @@ impl Key for String {
         String::from_utf8(buf[LENGTH_PREFIX_SIZE..LENGTH_PREFIX_SIZE + len].to_vec())
             .expect("invalid UTF-8 in deserialized String")
     }
+
+    #[inline]
+    fn serialized_size_from_bytes(buf: &[u8]) -> usize {
+        let len = u32::from_le_bytes(
+            buf[..LENGTH_PREFIX_SIZE]
+                .try_into()
+                .expect("buffer too short for String length prefix"),
+        ) as usize;
+        LENGTH_PREFIX_SIZE + len
+    }
+
+    #[inline]
+    fn eq_from_bytes(&self, buf: &[u8]) -> bool {
+        if buf.len() < LENGTH_PREFIX_SIZE {
+            return false;
+        }
+        let len = u32::from_le_bytes(buf[..LENGTH_PREFIX_SIZE].try_into().unwrap()) as usize;
+        len == self.len()
+            && buf.len() >= LENGTH_PREFIX_SIZE + len
+            && buf[LENGTH_PREFIX_SIZE..LENGTH_PREFIX_SIZE + len] == *self.as_bytes()
+    }
 }
 
 impl Value for String {
@@ -263,6 +363,16 @@ impl Value for String {
         ) as usize;
         String::from_utf8(buf[LENGTH_PREFIX_SIZE..LENGTH_PREFIX_SIZE + len].to_vec())
             .expect("invalid UTF-8 in deserialized String")
+    }
+
+    #[inline]
+    fn serialized_size_from_bytes(buf: &[u8]) -> usize {
+        let len = u32::from_le_bytes(
+            buf[..LENGTH_PREFIX_SIZE]
+                .try_into()
+                .expect("buffer too short for String length prefix"),
+        ) as usize;
+        LENGTH_PREFIX_SIZE + len
     }
 }
 
@@ -444,6 +554,216 @@ mod tests {
     }
 
     // ── Property tests ──────────────────────────────────────────────
+
+    // ── serialized_size_from_bytes tests ────────────────────────────
+
+    #[test]
+    fn serialized_size_from_bytes_u32() {
+        let key: u32 = 42;
+        let mut buf = vec![0u8; 4];
+        Key::serialize(&key, &mut buf);
+        assert_eq!(<u32 as Key>::serialized_size_from_bytes(&buf), 4);
+        assert_eq!(<u32 as Value>::serialized_size_from_bytes(&buf), 4);
+    }
+
+    #[test]
+    fn serialized_size_from_bytes_u64() {
+        let key: u64 = 42;
+        let mut buf = vec![0u8; 8];
+        Key::serialize(&key, &mut buf);
+        assert_eq!(<u64 as Key>::serialized_size_from_bytes(&buf), 8);
+        assert_eq!(<u64 as Value>::serialized_size_from_bytes(&buf), 8);
+    }
+
+    #[test]
+    fn serialized_size_from_bytes_i32() {
+        let key: i32 = -1;
+        let mut buf = vec![0u8; 4];
+        Key::serialize(&key, &mut buf);
+        assert_eq!(<i32 as Key>::serialized_size_from_bytes(&buf), 4);
+        assert_eq!(<i32 as Value>::serialized_size_from_bytes(&buf), 4);
+    }
+
+    #[test]
+    fn serialized_size_from_bytes_i64() {
+        let key: i64 = -1;
+        let mut buf = vec![0u8; 8];
+        Key::serialize(&key, &mut buf);
+        assert_eq!(<i64 as Key>::serialized_size_from_bytes(&buf), 8);
+        assert_eq!(<i64 as Value>::serialized_size_from_bytes(&buf), 8);
+    }
+
+    #[test]
+    fn serialized_size_from_bytes_vec_u8() {
+        let v: Vec<u8> = vec![1, 2, 3, 4, 5];
+        let mut buf = vec![0u8; Key::serialized_size(&v)];
+        Key::serialize(&v, &mut buf);
+        assert_eq!(<Vec<u8> as Key>::serialized_size_from_bytes(&buf), 4 + 5);
+        assert_eq!(<Vec<u8> as Value>::serialized_size_from_bytes(&buf), 4 + 5);
+    }
+
+    #[test]
+    fn serialized_size_from_bytes_vec_u8_empty() {
+        let v: Vec<u8> = vec![];
+        let mut buf = vec![0u8; Key::serialized_size(&v)];
+        Key::serialize(&v, &mut buf);
+        assert_eq!(<Vec<u8> as Key>::serialized_size_from_bytes(&buf), 4);
+    }
+
+    #[test]
+    fn serialized_size_from_bytes_string() {
+        let s = String::from("hello");
+        let mut buf = vec![0u8; Key::serialized_size(&s)];
+        Key::serialize(&s, &mut buf);
+        assert_eq!(<String as Key>::serialized_size_from_bytes(&buf), 4 + 5);
+        assert_eq!(<String as Value>::serialized_size_from_bytes(&buf), 4 + 5);
+    }
+
+    #[test]
+    fn serialized_size_from_bytes_string_empty() {
+        let s = String::new();
+        let mut buf = vec![0u8; Key::serialized_size(&s)];
+        Key::serialize(&s, &mut buf);
+        assert_eq!(<String as Key>::serialized_size_from_bytes(&buf), 4);
+    }
+
+    #[test]
+    fn serialized_size_from_bytes_matches_serialized_size() {
+        // Verify invariant: serialized_size_from_bytes(buf) == deserialize(buf).serialized_size()
+        let v: Vec<u8> = vec![10; 100];
+        let mut buf = vec![0u8; Key::serialized_size(&v)];
+        Key::serialize(&v, &mut buf);
+        let deserialized = <Vec<u8> as Key>::deserialize(&buf);
+        assert_eq!(
+            <Vec<u8> as Key>::serialized_size_from_bytes(&buf),
+            Key::serialized_size(&deserialized),
+        );
+    }
+
+    // ── eq_from_bytes tests ────────────────────────────────────────
+
+    #[test]
+    fn eq_from_bytes_u32_match() {
+        let key: u32 = 0xDEAD_BEEF;
+        let mut buf = vec![0u8; 4];
+        Key::serialize(&key, &mut buf);
+        assert!(key.eq_from_bytes(&buf));
+    }
+
+    #[test]
+    fn eq_from_bytes_u32_mismatch() {
+        let key: u32 = 42;
+        let other: u32 = 43;
+        let mut buf = vec![0u8; 4];
+        Key::serialize(&other, &mut buf);
+        assert!(!key.eq_from_bytes(&buf));
+    }
+
+    #[test]
+    fn eq_from_bytes_u64_match() {
+        let key: u64 = 0xCAFE_BABE_DEAD_BEEF;
+        let mut buf = vec![0u8; 8];
+        Key::serialize(&key, &mut buf);
+        assert!(key.eq_from_bytes(&buf));
+    }
+
+    #[test]
+    fn eq_from_bytes_i32_match() {
+        let key: i32 = -12345;
+        let mut buf = vec![0u8; 4];
+        Key::serialize(&key, &mut buf);
+        assert!(key.eq_from_bytes(&buf));
+    }
+
+    #[test]
+    fn eq_from_bytes_i64_match() {
+        let key: i64 = i64::MIN;
+        let mut buf = vec![0u8; 8];
+        Key::serialize(&key, &mut buf);
+        assert!(key.eq_from_bytes(&buf));
+    }
+
+    #[test]
+    fn eq_from_bytes_vec_u8_match() {
+        let key: Vec<u8> = vec![1, 2, 3, 4, 5];
+        let mut buf = vec![0u8; Key::serialized_size(&key)];
+        Key::serialize(&key, &mut buf);
+        assert!(key.eq_from_bytes(&buf));
+    }
+
+    #[test]
+    fn eq_from_bytes_vec_u8_mismatch_data() {
+        let key: Vec<u8> = vec![1, 2, 3];
+        let other: Vec<u8> = vec![1, 2, 4];
+        let mut buf = vec![0u8; Key::serialized_size(&other)];
+        Key::serialize(&other, &mut buf);
+        assert!(!key.eq_from_bytes(&buf));
+    }
+
+    #[test]
+    fn eq_from_bytes_vec_u8_mismatch_length() {
+        let key: Vec<u8> = vec![1, 2, 3];
+        let other: Vec<u8> = vec![1, 2, 3, 4];
+        let mut buf = vec![0u8; Key::serialized_size(&other)];
+        Key::serialize(&other, &mut buf);
+        assert!(!key.eq_from_bytes(&buf));
+    }
+
+    #[test]
+    fn eq_from_bytes_vec_u8_empty() {
+        let key: Vec<u8> = vec![];
+        let mut buf = vec![0u8; Key::serialized_size(&key)];
+        Key::serialize(&key, &mut buf);
+        assert!(key.eq_from_bytes(&buf));
+    }
+
+    #[test]
+    fn eq_from_bytes_vec_u8_short_buf() {
+        let key: Vec<u8> = vec![1, 2, 3];
+        // Buffer too short for even the length prefix
+        let buf = vec![0u8; 2];
+        assert!(!key.eq_from_bytes(&buf));
+    }
+
+    #[test]
+    fn eq_from_bytes_string_match() {
+        let key = String::from("hello world");
+        let mut buf = vec![0u8; Key::serialized_size(&key)];
+        Key::serialize(&key, &mut buf);
+        assert!(key.eq_from_bytes(&buf));
+    }
+
+    #[test]
+    fn eq_from_bytes_string_mismatch() {
+        let key = String::from("hello");
+        let other = String::from("world");
+        let mut buf = vec![0u8; Key::serialized_size(&other)];
+        Key::serialize(&other, &mut buf);
+        assert!(!key.eq_from_bytes(&buf));
+    }
+
+    #[test]
+    fn eq_from_bytes_string_empty() {
+        let key = String::new();
+        let mut buf = vec![0u8; Key::serialized_size(&key)];
+        Key::serialize(&key, &mut buf);
+        assert!(key.eq_from_bytes(&buf));
+    }
+
+    #[test]
+    fn eq_from_bytes_string_unicode() {
+        let key = String::from("日本語テスト 🎉");
+        let mut buf = vec![0u8; Key::serialized_size(&key)];
+        Key::serialize(&key, &mut buf);
+        assert!(key.eq_from_bytes(&buf));
+    }
+
+    #[test]
+    fn eq_from_bytes_string_short_buf() {
+        let key = String::from("test");
+        let buf = vec![0u8; 2];
+        assert!(!key.eq_from_bytes(&buf));
+    }
 
     mod proptests {
         use super::*;
