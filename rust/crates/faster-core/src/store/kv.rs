@@ -52,7 +52,7 @@ use crate::hybrid_log::eviction::{EvictionPolicy, PageEvictor};
 use crate::hybrid_log::flush::PageFlusher;
 use crate::hybrid_log::log_allocator::HybridLogAllocator;
 use crate::hybrid_log::page::PageState;
-use crate::record::{FixedSizeKey, FixedSizeValue, RecordInfo, read_record_info, read_value};
+use crate::record::{Key, RecordInfo, Value, read_record_info, read_value};
 use crate::recovery::index_recovery::IndexRecoveryEngine;
 use crate::recovery::log_recovery::LogRecoveryEngine;
 use crate::recovery::{RecoveryError, RecoveryManager};
@@ -1404,9 +1404,7 @@ impl<F: Functions> FasterKv<F> {
     /// let _ = store.compact::<u64, u64>();
     /// store.dispose_session(session);
     /// ```
-    pub fn compact<K: FixedSizeKey, V: FixedSizeValue>(
-        &self,
-    ) -> Result<CompactionResult, CompactionError> {
+    pub fn compact<K: Key, V: Value>(&self) -> Result<CompactionResult, CompactionError> {
         // Serialize concurrent compaction attempts.
         let _lock = self
             .compaction_lock
@@ -1476,7 +1474,7 @@ impl<F: Functions> FasterKv<F> {
     /// the policy does not recommend compaction.
     ///
     /// Returns `Some(result)` if compaction ran, `None` otherwise.
-    pub fn maybe_compact<K: FixedSizeKey, V: FixedSizeValue>(
+    pub fn maybe_compact<K: Key, V: Value>(
         &self,
     ) -> Option<Result<CompactionResult, CompactionError>> {
         if !self.config.auto_compact {

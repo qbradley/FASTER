@@ -265,3 +265,434 @@ fn maybe_compact_disabled_by_default() {
     let result = store.maybe_compact::<u64, u64>();
     assert!(result.is_none(), "auto_compact is off by default");
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Variable-length compaction integration tests (Phase 4)
+// ═══════════════════════════════════════════════════════════════════
+
+use faster_core::InMemoryDevice;
+use faster_core::status::OperationStatus;
+use faster_core::store::{Functions, RmwInPlaceResult};
+
+/// Functions implementation for variable-length keys and values.
+struct VarLenFunctions;
+
+impl Functions for VarLenFunctions {
+    type Key = Vec<u8>;
+    type Value = Vec<u8>;
+    type Input = Vec<u8>;
+    type Output = Option<Vec<u8>>;
+    type Context = ();
+
+    fn read(
+        &self,
+        _key: &Vec<u8>,
+        value: &Vec<u8>,
+        _input: &Vec<u8>,
+        output: &mut Option<Vec<u8>>,
+    ) {
+        *output = Some(value.clone());
+    }
+
+    fn upsert(
+        &self,
+        _key: &Vec<u8>,
+        value: &mut Vec<u8>,
+        input: &Vec<u8>,
+        _old_value: Option<&Vec<u8>>,
+        _output: &mut Option<Vec<u8>>,
+    ) {
+        *value = input.clone();
+    }
+
+    fn rmw_initial(
+        &self,
+        _key: &Vec<u8>,
+        input: &Vec<u8>,
+        value: &mut Vec<u8>,
+        _output: &mut Option<Vec<u8>>,
+    ) {
+        *value = input.clone();
+    }
+
+    fn rmw_in_place(
+        &self,
+        _key: &Vec<u8>,
+        _input: &Vec<u8>,
+        _value: &mut Vec<u8>,
+        _output: &mut Option<Vec<u8>>,
+    ) -> RmwInPlaceResult {
+        RmwInPlaceResult::NeedsNewRecord
+    }
+
+    fn rmw_copy_update(
+        &self,
+        _key: &Vec<u8>,
+        input: &Vec<u8>,
+        old_value: &Vec<u8>,
+        new_value: &mut Vec<u8>,
+        output: &mut Option<Vec<u8>>,
+    ) {
+        let mut merged = old_value.clone();
+        merged.extend_from_slice(input);
+        *new_value = merged.clone();
+        *output = Some(merged);
+    }
+}
+
+/// Functions implementation with u64 keys and Vec<u8> variable-length values.
+struct MixedKeyFunctions;
+
+impl Functions for MixedKeyFunctions {
+    type Key = u64;
+    type Value = Vec<u8>;
+    type Input = Vec<u8>;
+    type Output = Option<Vec<u8>>;
+    type Context = ();
+
+    fn read(&self, _key: &u64, value: &Vec<u8>, _input: &Vec<u8>, output: &mut Option<Vec<u8>>) {
+        *output = Some(value.clone());
+    }
+
+    fn upsert(
+        &self,
+        _key: &u64,
+        value: &mut Vec<u8>,
+        input: &Vec<u8>,
+        _old_value: Option<&Vec<u8>>,
+        _output: &mut Option<Vec<u8>>,
+    ) {
+        *value = input.clone();
+    }
+
+    fn rmw_initial(
+        &self,
+        _key: &u64,
+        input: &Vec<u8>,
+        value: &mut Vec<u8>,
+        _output: &mut Option<Vec<u8>>,
+    ) {
+        *value = input.clone();
+    }
+
+    fn rmw_in_place(
+        &self,
+        _key: &u64,
+        _input: &Vec<u8>,
+        _value: &mut Vec<u8>,
+        _output: &mut Option<Vec<u8>>,
+    ) -> RmwInPlaceResult {
+        RmwInPlaceResult::NeedsNewRecord
+    }
+
+    fn rmw_copy_update(
+        &self,
+        _key: &u64,
+        input: &Vec<u8>,
+        old_value: &Vec<u8>,
+        new_value: &mut Vec<u8>,
+        output: &mut Option<Vec<u8>>,
+    ) {
+        let mut merged = old_value.clone();
+        merged.extend_from_slice(input);
+        *new_value = merged.clone();
+        *output = Some(merged);
+    }
+}
+
+fn varlen_store() -> FasterKv<VarLenFunctions> {
+    let config = FasterKvConfig {
+        hash_index_size_log2: 10,
+        buffer_size_pages: 8,
+        mutable_fraction: 0.9,
+        sector_size: 512,
+        eviction_policy: EvictionPolicy::default(),
+        grow_config: GrowConfig::default(),
+        auto_compact: false,
+    };
+    FasterKv::new(config, VarLenFunctions, InMemoryDevice::new())
+}
+
+fn mixed_key_store() -> FasterKv<MixedKeyFunctions> {
+    let config = FasterKvConfig {
+        hash_index_size_log2: 10,
+        buffer_size_pages: 8,
+        mutable_fraction: 0.9,
+        sector_size: 512,
+        eviction_policy: EvictionPolicy::default(),
+        grow_config: GrowConfig::default(),
+        auto_compact: false,
+    };
+    FasterKv::new(config, MixedKeyFunctions, InMemoryDevice::new())
+}
+
+/// Generate a deterministic byte vector of given length.
+fn make_value(key: u64, len: usize) -> Vec<u8> {
+    let mut v = Vec::with_capacity(len);
+    for i in 0..len {
+        v.push(((key.wrapping_mul(31).wrapping_add(i as u64)) & 0xFF) as u8);
+    }
+    v
+}
+
+/// Make a variable-length key from an integer.
+fn make_key(id: u64) -> Vec<u8> {
+    format!("key-{id:06}").into_bytes()
+}
+
+// ── SC-7: Variable-length CRUD → compact → verify ──────────────────
+
+#[test]
+fn compact_variable_length_crud_roundtrip() {
+    let store = varlen_store();
+    let mut session = store.new_session();
+
+    let n = 50u64;
+    // Insert variable-length records with different sizes.
+    for i in 0..n {
+        let key = make_key(i);
+        let val = make_value(i, 10 + (i as usize % 50));
+        let status = store.upsert(&mut session, &key, &val, ());
+        assert!(status.is_success(), "upsert key {i} failed: {status:?}");
+    }
+
+    store.dispose_session(session);
+
+    // Compact with variable-length types.
+    let result = store.compact::<Vec<u8>, Vec<u8>>();
+    match result {
+        Ok(cr) => {
+            assert!(
+                cr.truncation.advanced || cr.plan.live_records.is_empty(),
+                "should advance or have no live records in region"
+            );
+        }
+        Err(faster_core::compaction::orchestrator::CompactionError::EmptyRegion { .. }) => {
+            // All data still mutable — nothing to compact.
+        }
+        Err(e) => panic!("unexpected compaction error: {e}"),
+    }
+
+    // Verify all records still readable after compaction.
+    let mut session = store.new_session();
+    for i in 0..n {
+        let key = make_key(i);
+        let expected = make_value(i, 10 + (i as usize % 50));
+        let mut out: Option<Vec<u8>> = None;
+        let status = store.read(&mut session, &key, &vec![], &mut out, ());
+        assert_eq!(status, OperationStatus::Ok, "read key {i} failed");
+        assert_eq!(
+            out.as_deref(),
+            Some(expected.as_slice()),
+            "value mismatch at key {i}"
+        );
+    }
+    store.dispose_session(session);
+}
+
+// ── SC-8: Mixed-size records → compact → verify ────────────────────
+
+#[test]
+fn compact_mixed_size_records() {
+    let store = mixed_key_store();
+    let mut session = store.new_session();
+
+    // Insert records with varying value sizes: 1 byte to 100 bytes.
+    let n = 40u64;
+    for i in 0..n {
+        let val = make_value(i, 1 + (i as usize * 3) % 100);
+        let status = store.upsert(&mut session, &i, &val, ());
+        assert!(status.is_success(), "upsert key {i} failed: {status:?}");
+    }
+
+    store.dispose_session(session);
+
+    // Compact with u64 key, Vec<u8> value.
+    let result = store.compact::<u64, Vec<u8>>();
+    match result {
+        Ok(_) | Err(faster_core::compaction::orchestrator::CompactionError::EmptyRegion { .. }) => {
+        }
+        Err(e) => panic!("unexpected compaction error: {e}"),
+    }
+
+    // Verify all data intact.
+    let mut session = store.new_session();
+    for i in 0..n {
+        let expected = make_value(i, 1 + (i as usize * 3) % 100);
+        let mut out: Option<Vec<u8>> = None;
+        let status = store.read(&mut session, &i, &vec![], &mut out, ());
+        assert_eq!(status, OperationStatus::Ok, "read key {i} failed");
+        assert_eq!(
+            out.as_deref(),
+            Some(expected.as_slice()),
+            "value mismatch at key {i}"
+        );
+    }
+    store.dispose_session(session);
+}
+
+// ── SC-9: Tombstones with variable-length → compact → verify ───────
+
+#[test]
+fn compact_variable_length_tombstones() {
+    let store = mixed_key_store();
+    let mut session = store.new_session();
+
+    let n = 60u64;
+    for i in 0..n {
+        let val = make_value(i, 20 + (i as usize % 30));
+        let status = store.upsert(&mut session, &i, &val, ());
+        assert!(status.is_success(), "upsert key {i} failed");
+    }
+
+    // Delete half the records.
+    for i in 0..n / 2 {
+        let _ = store.delete(&mut session, &i, ());
+    }
+
+    store.dispose_session(session);
+
+    // Compact — tombstones should be cleaned up.
+    let result = store.compact::<u64, Vec<u8>>();
+    match result {
+        Ok(cr) => {
+            // Verify truncation happened or region was all-mutable.
+            assert!(
+                cr.truncation.advanced || cr.plan.live_records.is_empty(),
+                "should advance or have no live in region"
+            );
+        }
+        Err(faster_core::compaction::orchestrator::CompactionError::EmptyRegion { .. }) => {}
+        Err(e) => panic!("unexpected compaction error: {e}"),
+    }
+
+    // Surviving records still readable.
+    let mut session = store.new_session();
+    for i in n / 2..n {
+        let expected = make_value(i, 20 + (i as usize % 30));
+        let mut out: Option<Vec<u8>> = None;
+        let status = store.read(&mut session, &i, &vec![], &mut out, ());
+        assert_eq!(status, OperationStatus::Ok, "read key {i} failed");
+        assert_eq!(
+            out.as_deref(),
+            Some(expected.as_slice()),
+            "value mismatch at surviving key {i}"
+        );
+    }
+    store.dispose_session(session);
+}
+
+// ── SC-10: Concurrent reads during variable-length compaction ───────
+
+#[test]
+fn compact_variable_length_concurrent_reads() {
+    let store = Arc::new(mixed_key_store());
+    let n = 50u64;
+
+    // Write initial data.
+    {
+        let mut session = store.new_session();
+        for i in 0..n {
+            let val = make_value(i, 15 + (i as usize % 40));
+            let _ = store.upsert(&mut session, &i, &val, ());
+        }
+        store.dispose_session(session);
+    }
+
+    // Spawn reader threads that continuously read while compaction runs.
+    let store_r = Arc::clone(&store);
+    let reader = std::thread::spawn(move || {
+        let mut session = store_r.new_session();
+        for _ in 0..3 {
+            for i in 0..n {
+                let mut out: Option<Vec<u8>> = None;
+                let _ = store_r.read(&mut session, &i, &vec![], &mut out, ());
+                // We don't assert Ok here because compaction may move records,
+                // but the data should never be corrupted if returned.
+                if let Some(ref data) = out {
+                    let expected = make_value(i, 15 + (i as usize % 40));
+                    assert_eq!(
+                        data.as_slice(),
+                        expected.as_slice(),
+                        "corrupted read for key {i} during concurrent compaction"
+                    );
+                }
+            }
+        }
+        store_r.dispose_session(session);
+    });
+
+    // Compact on main thread.
+    let _ = store.compact::<u64, Vec<u8>>();
+
+    reader.join().expect("reader thread panicked");
+
+    // Final verification: all data readable.
+    let mut session = store.new_session();
+    for i in 0..n {
+        let expected = make_value(i, 15 + (i as usize % 40));
+        let mut out: Option<Vec<u8>> = None;
+        let status = store.read(&mut session, &i, &vec![], &mut out, ());
+        assert_eq!(status, OperationStatus::Ok, "post-compact read key {i}");
+        assert_eq!(
+            out.as_deref(),
+            Some(expected.as_slice()),
+            "post-compact value mismatch at key {i}"
+        );
+    }
+    store.dispose_session(session);
+}
+
+// ── SC-11: Hash-collision chains with different key sizes ───────────
+
+#[test]
+fn compact_variable_length_hash_collisions() {
+    let store = varlen_store();
+    let mut session = store.new_session();
+
+    // Use keys that are likely to collide in a small hash table (1024 buckets).
+    // Different key sizes exercise variable-length key handling in the scanner
+    // and address updater's chain-walking logic.
+    let keys_and_values: Vec<(Vec<u8>, Vec<u8>)> = (0u64..80)
+        .map(|i| {
+            // Vary key sizes: short keys (3 bytes) and long keys (20+ bytes)
+            let key = if i % 2 == 0 {
+                format!("k{i}").into_bytes()
+            } else {
+                format!("long-variable-key-{i:010}").into_bytes()
+            };
+            let val = make_value(i, 5 + (i as usize % 60));
+            (key, val)
+        })
+        .collect();
+
+    for (key, val) in &keys_and_values {
+        let status = store.upsert(&mut session, key, val, ());
+        assert!(status.is_success(), "upsert failed for key {:?}", key);
+    }
+
+    store.dispose_session(session);
+
+    // Compact.
+    let result = store.compact::<Vec<u8>, Vec<u8>>();
+    match result {
+        Ok(_) | Err(faster_core::compaction::orchestrator::CompactionError::EmptyRegion { .. }) => {
+        }
+        Err(e) => panic!("unexpected compaction error: {e}"),
+    }
+
+    // Verify all data intact — every key/value pair must survive.
+    let mut session = store.new_session();
+    for (key, expected_val) in &keys_and_values {
+        let mut out: Option<Vec<u8>> = None;
+        let status = store.read(&mut session, key, &vec![], &mut out, ());
+        assert_eq!(status, OperationStatus::Ok, "read failed for key {:?}", key);
+        assert_eq!(
+            out.as_deref(),
+            Some(expected_val.as_slice()),
+            "value mismatch for key {:?}",
+            key
+        );
+    }
+    store.dispose_session(session);
+}
