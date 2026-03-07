@@ -159,9 +159,6 @@ impl<'a> CompactionOrchestrator<'a> {
             return Err(CompactionError::EmptyRegion { begin, until });
         }
 
-        let key_size = K::SIZE;
-        let value_size = V::SIZE;
-
         // Register a dedicated epoch thread for this compaction cycle.
         let mut epoch_thread = self
             .epoch_table
@@ -194,7 +191,7 @@ impl<'a> CompactionOrchestrator<'a> {
 
                 // Phase 3: Pointer swing.
                 let updater = AddressUpdater::new(self.hash_index, self.allocator);
-                let stats = updater.swing::<K>(&copy_result, &[], key_size, value_size);
+                let stats = updater.swing::<K, V>(&copy_result, &plan);
 
                 (plan, Some((records_copied, bytes_copied)), Some(stats))
             }
