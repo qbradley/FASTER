@@ -35,3 +35,13 @@ Remote: origin
 Artifact Lifecycle: commit-and-clean
 Artifact Paths: auto-derived
 Additional Inputs: none
+
+## Workflow Progress
+- [x] Spec (Spec.md created)
+- [x] Code Research (CodeResearch.md created)
+- [x] Planning (ImplementationPlan.md created)
+- [ ] Planning Docs Review (SoT debate)
+- [ ] Implementation
+- [ ] Implementation Review
+- [ ] Final Review (SoT debate)
+- [ ] PR
