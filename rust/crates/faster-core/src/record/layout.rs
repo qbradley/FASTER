@@ -330,7 +330,11 @@ pub fn record_size_from_bytes<K: Key, V: Value>(
     let value_offset = pad_alignment(key_offset + key_size, RECORD_ALIGNMENT);
 
     // Validate that the key didn't push us past the page boundary.
-    if value_offset > remaining {
+    // We need at least LENGTH_PREFIX_SIZE bytes after value_offset for
+    // variable-length types to read the value length prefix safely.
+    // For fixed-size types this is conservative (they ignore the buffer),
+    // but keeps the check type-agnostic.
+    if value_offset + LENGTH_PREFIX_SIZE > remaining {
         return Err(RecordSizeError::CorruptedRecord { offset });
     }
 
@@ -766,6 +770,45 @@ mod tests {
         let result = record_size_from_bytes::<u64, u64>(&page, offset, page_size);
         // u64 key_size=8, value_offset=pad(8+8,8)=16, 16>12 → CorruptedRecord
         assert_eq!(result, Err(RecordSizeError::CorruptedRecord { offset }));
+    }
+
+    /// Regression test for MF-1: off-by-one in value_offset boundary check.
+    ///
+    /// A corrupted key length prefix can make `value_offset == remaining`,
+    /// leaving zero bytes for the value length prefix read. Before the fix,
+    /// `value_offset > remaining` passed, and `serialized_size_from_bytes`
+    /// would panic on an out-of-bounds slice.
+    #[test]
+    fn record_size_from_bytes_corrupted_key_value_offset_eq_remaining() {
+        // Page has exactly 24 bytes. key_offset=8. We write a key length
+        // prefix that makes key_size = 8, so value_offset = pad(8+8, 8) = 16.
+        // remaining = 24, value_offset(16) + LENGTH_PREFIX_SIZE(4) = 20 <= 24
+        // → still valid. Now shrink the page so remaining = 16:
+        // value_offset(16) + LENGTH_PREFIX_SIZE(4) = 20 > 16 → CorruptedRecord.
+        let page_size = 24;
+        let mut page = vec![0u8; page_size];
+        // At key_offset (8), write a key length prefix of 8 bytes of data.
+        // For Vec<u8>, serialized_size_from_bytes reads 4-byte LE prefix.
+        let key_data_len: u32 = 8;
+        page[8..12].copy_from_slice(&key_data_len.to_le_bytes());
+
+        // With offset=8, remaining = 24-8 = 16.
+        // key_size = 4+8 = 12, value_offset = pad(8+12, 8) = 24, but
+        // that exceeds remaining(16). Let's try offset=0, remaining=16:
+        // Actually, set page_size=16, offset=0 → remaining=16.
+        // key_data_len=0 → key_size=4, value_offset=pad(8+4,8)=16.
+        // value_offset(16) == remaining(16), so value_offset+4 = 20 > 16.
+        let page_size = 16;
+        let mut page = vec![0u8; page_size];
+        let key_data_len: u32 = 0;
+        page[8..12].copy_from_slice(&key_data_len.to_le_bytes());
+
+        let result = record_size_from_bytes::<Vec<u8>, Vec<u8>>(&page, 0, page_size);
+        assert_eq!(
+            result,
+            Err(RecordSizeError::CorruptedRecord { offset: 0 }),
+            "value_offset == remaining should be caught (no room for value length prefix)"
+        );
     }
 
     mod proptests {
