@@ -49,7 +49,3 @@ harness = false
 [[bench]]
 name = "ycsb"
 harness = false
-
-[[bench]]
-name = "perf_analysis"
-harness = false
