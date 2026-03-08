@@ -14,6 +14,9 @@ use std::io;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(debug_assertions)]
+use std::sync::atomic::AtomicU64 as GenerationCounter;
+
 // ---------------------------------------------------------------------------
 // Callback & status types
 // ---------------------------------------------------------------------------
@@ -55,8 +58,17 @@ pub enum IoRequestResult {
 }
 
 // ---------------------------------------------------------------------------
-// TypedIoContext — safe wrapper for callback context lifecycle
+// TypedIoContext — safe wrapper for callback context lifecycle (CORE-03)
 // ---------------------------------------------------------------------------
+
+/// Global generation counter for `TypedIoContext` instances.
+///
+/// In debug builds, each context is tagged with a unique generation number
+/// at allocation time. When the callback reconstructs the context via
+/// [`from_raw`](TypedIoContext::from_raw), the generation is validated to
+/// detect use-after-free (context pointer reuse after the original was freed).
+#[cfg(debug_assertions)]
+static IO_CONTEXT_GENERATION: GenerationCounter = GenerationCounter::new(0);
 
 /// Type-safe wrapper for I/O completion callback contexts.
 ///
@@ -72,6 +84,12 @@ pub enum IoRequestResult {
 ///    [`reclaim()`](TypedIoContext::reclaim) safely recovers the allocation
 ///    without any `unsafe` at the call site.
 ///
+/// # Lifetime Contract
+///
+/// The `context` pointer passed to [`Device::read_async`] / [`Device::write_async`]
+/// **must** remain valid until the completion callback fires. In debug builds,
+/// a generation counter detects violations.
+///
 /// # No `Drop` implementation
 ///
 /// This type intentionally has **no** `Drop` impl. On the success path the
@@ -81,13 +99,41 @@ pub enum IoRequestResult {
 /// elsewhere).
 pub struct TypedIoContext<T> {
     ptr: *mut T,
+    /// Generation tag stamped at allocation time (debug builds only).
+    #[cfg(debug_assertions)]
+    generation: u64,
+}
+
+/// Debug-mode wrapper for generation counter validation at callback time.
+#[cfg(debug_assertions)]
+struct ContextEnvelope<T> {
+    generation: u64,
+    data: T,
 }
 
 impl<T> TypedIoContext<T> {
     /// Heap-allocate an I/O context.
+    ///
+    /// In debug builds, stamps the context with a monotonic generation counter
+    /// for use-after-free detection at callback time.
     pub fn new(data: T) -> Self {
-        Self {
-            ptr: Box::into_raw(Box::new(data)),
+        #[cfg(debug_assertions)]
+        {
+            let gen_id = IO_CONTEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
+            let envelope = ContextEnvelope {
+                generation: gen_id,
+                data,
+            };
+            Self {
+                ptr: Box::into_raw(Box::new(envelope)) as *mut T,
+                generation: gen_id,
+            }
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            Self {
+                ptr: Box::into_raw(Box::new(data)),
+            }
         }
     }
 
@@ -105,10 +151,21 @@ impl<T> TypedIoContext<T> {
     /// `QueueFull` or `Error`) and the completion callback will **not** fire.
     /// Consumes `self` and returns the owned data.
     pub fn reclaim(self) -> T {
-        // SAFETY: `ptr` was created by `Box::into_raw` in `new()` and has not
-        // been consumed by a callback — the caller guarantees the I/O was never
-        // submitted.
-        *unsafe { Box::from_raw(self.ptr) }
+        #[cfg(debug_assertions)]
+        {
+            // SAFETY: `ptr` was created by `Box::into_raw` in `new()`.
+            let envelope = *unsafe { Box::from_raw(self.ptr as *mut ContextEnvelope<T>) };
+            debug_assert_eq!(
+                envelope.generation, self.generation,
+                "TypedIoContext generation mismatch on reclaim"
+            );
+            envelope.data
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            // SAFETY: `ptr` was created by `Box::into_raw` in `new()`.
+            *unsafe { Box::from_raw(self.ptr) }
+        }
     }
 
     /// Reconstruct the `Box<T>` from a raw callback pointer.
@@ -117,10 +174,23 @@ impl<T> TypedIoContext<T> {
     ///
     /// - `ptr` must have originated from [`TypedIoContext::<T>::as_raw`].
     /// - Must be called **exactly once** per context (double-free otherwise).
+    /// - The context must not have been reclaimed via [`reclaim`](Self::reclaim).
     pub unsafe fn from_raw(ptr: *mut u8) -> Box<T> {
-        // SAFETY: Caller guarantees `ptr` is a valid `*mut T` produced by
-        // `Box::into_raw`.
-        unsafe { Box::from_raw(ptr as *mut T) }
+        #[cfg(debug_assertions)]
+        {
+            // SAFETY: Caller guarantees `ptr` is a valid `ContextEnvelope<T>`.
+            let envelope = unsafe { Box::from_raw(ptr as *mut ContextEnvelope<T>) };
+            debug_assert!(
+                envelope.generation <= IO_CONTEXT_GENERATION.load(Ordering::Relaxed),
+                "TypedIoContext: corrupted context pointer (generation overflow)"
+            );
+            Box::new(envelope.data)
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            // SAFETY: Caller guarantees `ptr` is a valid `*mut T`.
+            unsafe { Box::from_raw(ptr as *mut T) }
+        }
     }
 }
 
@@ -138,6 +208,13 @@ impl<T> TypedIoContext<T> {
 ///   [`sector_size()`](Device::sector_size).
 /// - **Segmented storage** — the device may map a single linear address space
 ///   onto multiple underlying files/segments.
+///
+/// # Lifetime Contract (CORE-03)
+///
+/// The `context` pointer passed to [`read_async`](Device::read_async) and
+/// [`write_async`](Device::write_async) **must remain valid** until the
+/// completion callback fires. Buffer pointers must also remain valid.
+/// See [`TypedIoContext`] documentation for details.
 ///
 /// # Thread Safety
 ///

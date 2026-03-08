@@ -389,6 +389,14 @@ impl<F: Functions> FasterSession<F> {
     ///
     /// For structured pending-completion that actually processes I/O results,
     /// use [`FasterKv::try_complete_pending`](super::FasterKv::try_complete_pending).
+    /// # Safety (CORE-04)
+    ///
+    /// After calling this method, any device callbacks that reference the
+    /// discarded contexts will write through dangling pointers. This is
+    /// acceptable **only** when:
+    /// - The device guarantees all callbacks have already fired, **or**
+    /// - The session is being torn down and the callbacks write into
+    ///   `Arc`-shared atomics that remain valid independently.
     pub fn clear_pending(&mut self) {
         self.pending_ops.clear();
         self.io_contexts.clear();
@@ -498,8 +506,19 @@ impl<F: Functions> Drop for FasterSession<F> {
         if self.in_epoch {
             self.end_unsafe();
         }
-        // Drop in-flight I/O contexts. The device callbacks write into Arc-shared
-        // atomics, which is harmless after the session is gone.
+        // CORE-04: In debug builds, assert that all I/O contexts have completed
+        // before the session is dropped. Dropping with in-flight contexts creates
+        // dangling pointers that device callbacks may later dereference.
+        // Use `clear_pending()` to explicitly discard incomplete contexts.
+        debug_assert!(
+            self.io_contexts.iter().all(|ctx| ctx.is_completed()),
+            "FasterSession dropped with {} incomplete I/O context(s). \
+             Call clear_pending() before drop to acknowledge the risk.",
+            self.io_contexts
+                .iter()
+                .filter(|ctx| !ctx.is_completed())
+                .count()
+        );
         self.io_contexts.clear();
     }
 }
@@ -1204,6 +1223,7 @@ mod tests {
         assert_eq!(session.pending_count(), 2);
         assert!(session.has_pending());
         assert_eq!(session.io_pending_count(), 1);
+        session.clear_pending();
     }
 
     // ── 13. take_completed_io filters correctly ─────────────────────
@@ -1243,6 +1263,7 @@ mod tests {
         let done = session.take_completed_io();
         assert_eq!(done.len(), 1);
         assert_eq!(session.io_pending_count(), 1); // one still in-flight
+        session.clear_pending();
     }
 
     // ── L4: Timeout & Cancellation ──────────────────────────────────
@@ -1266,6 +1287,7 @@ mod tests {
         );
         session.enqueue_io_context(ctx);
         assert_eq!(session.expired_pending_count(), 0);
+        session.clear_pending();
     }
 
     #[test]
@@ -1295,6 +1317,7 @@ mod tests {
         session.enqueue_io_context(fresh_ctx);
         assert_eq!(session.expired_pending_count(), 1);
         assert_eq!(session.io_pending_count(), 2);
+        session.clear_pending();
     }
 
     #[test]
@@ -1314,6 +1337,7 @@ mod tests {
         assert_eq!(session.io_pending_count(), 1);
         assert!(session.cancel_pending(ctx_id).is_ok());
         assert_eq!(session.io_pending_count(), 0);
+        session.clear_pending();
     }
 
     #[test]
@@ -1353,6 +1377,7 @@ mod tests {
         session.enqueue_io_context(ctx2);
         session.cancel_pending(id1).unwrap();
         assert_eq!(session.io_pending_count(), 1);
+        session.clear_pending();
     }
 
     #[test]
@@ -1396,6 +1421,7 @@ mod tests {
         assert_eq!(cancelled.len(), 2);
         assert_eq!(session.io_pending_count(), 1);
         assert_eq!(session.expired_pending_count(), 0);
+        session.clear_pending();
     }
 
     #[test]
@@ -1414,6 +1440,7 @@ mod tests {
         let cancelled = session.cancel_all_expired();
         assert!(cancelled.is_empty());
         assert_eq!(session.io_pending_count(), 1);
+        session.clear_pending();
     }
 
     #[test]
@@ -1443,6 +1470,7 @@ mod tests {
         assert!(done.is_empty());
         assert_eq!(session.io_pending_count(), 1);
         assert_eq!(session.expired_pending_count(), 1);
+        session.clear_pending();
     }
 
     #[test]
@@ -1485,6 +1513,7 @@ mod tests {
         assert_eq!(expired.len(), 1);
         assert_eq!(session.io_pending_count(), 1);
         assert_eq!(session.expired_pending_count(), 0);
+        session.clear_pending();
     }
 
     // ── A2: SessionStats ────────────────────────────────────────────

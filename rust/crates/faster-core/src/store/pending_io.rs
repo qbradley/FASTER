@@ -790,17 +790,18 @@ mod tests {
         let io_status = Arc::new(Mutex::new(None));
         let bytes_transferred = Arc::new(AtomicU32::new(0));
 
-        let cb_ctx = Box::new(ReadCallbackContext {
+        let typed_ctx = TypedIoContext::new(ReadCallbackContext {
             completed: Arc::clone(&completed),
             io_status: Arc::clone(&io_status),
             bytes_transferred: Arc::clone(&bytes_transferred),
         });
+        let io_context = typed_ctx.as_raw();
 
         // Simulate the callback.
-        // SAFETY: cb_ctx was just created via Box::new and we convert to raw
-        // pointer for the callback, which reconstructs and drops the Box.
+        // SAFETY: io_context was created via TypedIoContext::new and the
+        // callback reconstructs it via TypedIoContext::from_raw.
         unsafe {
-            read_completion_callback(Box::into_raw(cb_ctx) as *mut u8, IoStatus::Success, 4096);
+            read_completion_callback(io_context, IoStatus::Success, 4096);
         }
 
         assert!(completed.load(Ordering::Acquire));
