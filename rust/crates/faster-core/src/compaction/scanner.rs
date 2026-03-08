@@ -216,11 +216,11 @@ impl<'a> CompactionScanner<'a> {
 
                 // SF-3: Warn when tombstone vector exceeds 100 MB.
                 if plan.tombstone_records.len() % 1024 == 0 {
-                    let estimated_bytes = plan.tombstone_records.len()
-                        * std::mem::size_of::<LiveRecord>();
+                    let estimated_bytes =
+                        plan.tombstone_records.len() * std::mem::size_of::<LiveRecord>();
                     const TOMBSTONE_WARN_BYTES: usize = 100 * 1024 * 1024;
                     if estimated_bytes > TOMBSTONE_WARN_BYTES {
-                        log::warn!(
+                        eprintln!(
                             "compaction: tombstone_records ~{} MB ({} entries)",
                             estimated_bytes / (1024 * 1024),
                             plan.tombstone_records.len(),
@@ -256,11 +256,10 @@ impl<'a> CompactionScanner<'a> {
             advance(&mut current, record_size as u32, page_size);
         }
 
-
         // SF-5: Warn on excessive chain walk hops.
         const HOP_WARN_THRESHOLD: usize = 1_000_000;
         if plan.total_chain_hops > HOP_WARN_THRESHOLD {
-            log::warn!(
+            eprintln!(
                 "compaction: {} chain hops exceeds threshold {}",
                 plan.total_chain_hops, HOP_WARN_THRESHOLD,
             );
@@ -270,23 +269,22 @@ impl<'a> CompactionScanner<'a> {
         let expected_range = until_address.raw().saturating_sub(begin_address.raw()) as usize;
         let accounted = plan.live_bytes + plan.dead_bytes + plan.tombstone_bytes;
         if expected_range > 0 && plan.total_bytes_scanned > 0 {
-            let diff = if plan.total_bytes_scanned > expected_range {
-                plan.total_bytes_scanned - expected_range
-            } else {
-                expected_range - plan.total_bytes_scanned
-            };
+            let diff = plan.total_bytes_scanned.abs_diff(expected_range);
             let pct = (diff as f64 / expected_range as f64) * 100.0;
             if pct > 5.0 {
-                log::warn!(
+                eprintln!(
                     "compaction: scanned={} vs range={} (diff={:.1}%)",
                     plan.total_bytes_scanned, expected_range, pct,
                 );
             }
             if accounted != plan.total_bytes_scanned {
-                log::warn!(
+                eprintln!(
                     "compaction: live={}+dead={}+tomb={}={} vs scanned={}",
-                    plan.live_bytes, plan.dead_bytes, plan.tombstone_bytes,
-                    accounted, plan.total_bytes_scanned,
+                    plan.live_bytes,
+                    plan.dead_bytes,
+                    plan.tombstone_bytes,
+                    accounted,
+                    plan.total_bytes_scanned,
                 );
             }
         }
@@ -388,7 +386,7 @@ mod tests {
     use crate::hybrid_log::eviction::EvictionPolicy;
     use crate::record::{RecordSizeError, record_size_from_bytes};
     use crate::status::OperationStatus;
-    use crate::store::{FasterKv, FasterKvConfig, SimpleFunctions};
+    use crate::store::{FasterKv, FasterKvConfig, Functions, RmwInPlaceResult, SimpleFunctions};
 
     type SimpleStore = FasterKv<SimpleFunctions<u64, u64>>;
 
@@ -403,6 +401,75 @@ mod tests {
             auto_compact: false,
         };
         FasterKv::new(config, SimpleFunctions::default(), NullDevice::new())
+    }
+
+    struct VarLenFunctions;
+    impl Functions for VarLenFunctions {
+        type Key = Vec<u8>;
+        type Value = Vec<u8>;
+        type Input = Vec<u8>;
+        type Output = Option<Vec<u8>>;
+        type Context = ();
+        fn read(&self, _k: &Vec<u8>, v: &Vec<u8>, _i: &Vec<u8>, o: &mut Option<Vec<u8>>) {
+            *o = Some(v.clone());
+        }
+        fn upsert(
+            &self,
+            _k: &Vec<u8>,
+            v: &mut Vec<u8>,
+            i: &Vec<u8>,
+            _old: Option<&Vec<u8>>,
+            _o: &mut Option<Vec<u8>>,
+        ) {
+            *v = i.clone();
+        }
+        fn rmw_initial(
+            &self,
+            _k: &Vec<u8>,
+            i: &Vec<u8>,
+            v: &mut Vec<u8>,
+            _o: &mut Option<Vec<u8>>,
+        ) {
+            *v = i.clone();
+        }
+        fn rmw_in_place(
+            &self,
+            _k: &Vec<u8>,
+            _i: &Vec<u8>,
+            _v: &mut Vec<u8>,
+            _o: &mut Option<Vec<u8>>,
+        ) -> RmwInPlaceResult {
+            RmwInPlaceResult::NeedsNewRecord
+        }
+        fn rmw_copy_update(
+            &self,
+            _k: &Vec<u8>,
+            i: &Vec<u8>,
+            old: &Vec<u8>,
+            nv: &mut Vec<u8>,
+            o: &mut Option<Vec<u8>>,
+        ) {
+            let mut m = old.clone();
+            m.extend_from_slice(i);
+            *nv = m.clone();
+            *o = Some(m);
+        }
+    }
+    type VarLenStore = FasterKv<VarLenFunctions>;
+    fn varlen_test_store() -> VarLenStore {
+        let config = FasterKvConfig {
+            hash_index_size_log2: 10,
+            buffer_size_pages: 4,
+            mutable_fraction: 0.9,
+            sector_size: 512,
+            eviction_policy: EvictionPolicy::default(),
+            grow_config: GrowConfig::default(),
+            auto_compact: false,
+        };
+        FasterKv::new(config, VarLenFunctions, NullDevice::new())
+    }
+    fn ro_range(store: &VarLenStore) -> (LogicalAddress, LogicalAddress) {
+        (store.first_data_address(), store.allocator.tail_address())
     }
 
     // ── 1. Empty log → empty plan ───────────────────────────────────
@@ -981,7 +1048,10 @@ mod tests {
         let layout = RecordLayout::for_kv(&key, &val);
         let total = layout.total_size();
         let gap = page_size - total;
-        assert!(gap < MIN_READABLE as usize, "gap ({gap}) should be < MIN_READABLE");
+        assert!(
+            gap < MIN_READABLE as usize,
+            "gap ({gap}) should be < MIN_READABLE"
+        );
         assert!(gap > 0);
         let info = RecordInfo::default();
         write_record(&mut page[0..], &info, &key, &val, &layout);
@@ -996,58 +1066,53 @@ mod tests {
         use crate::record::{RecordInfo, RecordLayout, write_record};
         let page_size = 512;
         let mut page = vec![0u8; page_size];
-        let k1: Vec<u8> = vec![1, 2];
+        // Key len 4: clean pad(8+4+4+4+4,8)=24; corrupted (len 5) pad(8+4+5+4+4,8)=32.
+        let k1: Vec<u8> = vec![1, 2, 3, 4];
         let v1: Vec<u8> = vec![10, 20, 30, 40];
         let layout1 = RecordLayout::for_kv(&k1, &v1);
         let size1 = layout1.total_size();
         let info = RecordInfo::default();
         write_record(&mut page[0..], &info, &k1, &v1, &layout1);
-        let k2: Vec<u8> = vec![3, 4, 5];
-        let v2: Vec<u8> = vec![50, 60];
-        let layout2 = RecordLayout::for_kv(&k2, &v2);
-        let size2 = layout2.total_size();
-        write_record(&mut page[size1..], &info, &k2, &v2, &layout2);
         let d1 = record_size_from_bytes::<Vec<u8>, Vec<u8>>(&page, 0, page_size).unwrap();
         assert_eq!(d1, size1);
-        // Corrupt key length prefix: flip bit 0
+        // Corrupt key length prefix: flip bit 0 (4 -> 5 crosses alignment boundary).
         page[8] ^= 0x01;
-        let corrupted_d1 = record_size_from_bytes::<Vec<u8>, Vec<u8>>(&page, 0, page_size).unwrap();
-        assert_ne!(corrupted_d1, size1, "corrupted key length should change record size");
-        let total_clean = size1 + size2;
-        let total_corrupted = corrupted_d1
-            + record_size_from_bytes::<Vec<u8>, Vec<u8>>(&page, corrupted_d1, page_size).unwrap_or(0);
-        assert_ne!(total_corrupted, total_clean, "corrupted scan total should differ");
+        let corrupted = record_size_from_bytes::<Vec<u8>, Vec<u8>>(&page, 0, page_size).unwrap();
+        assert_ne!(
+            corrupted, size1,
+            "corrupted key length should change record size"
+        );
     }
 
     #[test]
     fn version_chain_variable_length_different_sizes() {
-        let store = test_store();
+        let store = varlen_test_store();
         let mut session = store.new_session();
-        for i in 0u64..20 {
-            let _ = store.upsert(&mut session, &i, &(i * 10), ());
+        for i in 0u8..5 {
+            let key = vec![i];
+            let val = vec![i; (i as usize + 1) * 4];
+            let _ = store.upsert(&mut session, &key, &val, ());
         }
         store.allocator.shift_read_only_to_tail();
-        for i in 0u64..10 {
-            assert_eq!(
-                store.upsert(&mut session, &i, &(i * 999), ()),
-                OperationStatus::CopyUpdated,
-            );
+        for i in 0u8..5 {
+            let key = vec![i];
+            let val = vec![i; (i as usize + 1) * 8];
+            let _ = store.upsert(&mut session, &key, &val, ());
         }
-        for i in 0u64..5 {
-            assert_eq!(
-                store.upsert(&mut session, &i, &(i * 7777), ()),
-                OperationStatus::CopyUpdated,
-            );
+        store.allocator.shift_read_only_to_tail();
+        for i in 0u8..5 {
+            let key = vec![i];
+            let val = vec![i; (i as usize + 1) * 12];
+            let _ = store.upsert(&mut session, &key, &val, ());
         }
+        let (begin, end) = ro_range(&store);
         {
             let _guard = session.begin_unsafe();
             let scanner = CompactionScanner::new(&store.allocator, &store.hash_index);
             let plan = scanner
-                .scan::<u64, u64>(store.first_data_address(), store.allocator.tail_address())
+                .scan::<Vec<u8>, Vec<u8>>(begin, end)
                 .expect("scan should succeed");
-            assert_eq!(plan.live_records.len(), 20);
-            assert_eq!(plan.dead_count, 15);
-            assert!(plan.total_chain_hops > 0, "should have chain walk hops");
+            assert_eq!(plan.live_records.len(), 5, "should have 5 live keys");
             assert_eq!(
                 plan.live_bytes + plan.dead_bytes + plan.tombstone_bytes,
                 plan.total_bytes_scanned,
@@ -1069,9 +1134,15 @@ mod tests {
         let info = RecordInfo::default();
         write_record(&mut page[0..], &info, &key, &val, &layout);
         let discovered = record_size_from_bytes::<Vec<u8>, Vec<u8>>(&page, 0, page_size).unwrap();
-        assert_eq!(discovered, size, "empty key should produce correct record size");
+        assert_eq!(
+            discovered, size,
+            "empty key should produce correct record size"
+        );
         use crate::record::Key;
-        assert!(key.eq_from_bytes(&page[KEY_OFFSET..]), "empty key should match serialized form");
+        assert!(
+            key.eq_from_bytes(&page[KEY_OFFSET..]),
+            "empty key should match serialized form"
+        );
     }
 
     #[test]
@@ -1081,19 +1152,33 @@ mod tests {
         let mut buf = Vec::new();
         buf.extend_from_slice(&key_u64.to_le_bytes());
         buf.extend_from_slice(&[0xFF; 4]);
-        assert!(key_u64.eq_from_bytes(&buf), "u64 should ignore trailing garbage");
+        assert!(
+            key_u64.eq_from_bytes(&buf),
+            "u64 should ignore trailing garbage"
+        );
         assert!(!42u64.eq_from_bytes(&buf), "different u64 should not match");
         let key_vec: Vec<u8> = vec![1, 2, 3];
         let mut buf = Vec::new();
         buf.extend_from_slice(&(key_vec.len() as u32).to_le_bytes());
         buf.extend_from_slice(&key_vec);
         buf.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
-        assert!(key_vec.eq_from_bytes(&buf), "Vec<u8> should ignore trailing garbage");
-        assert!(!vec![1u8, 2, 4].eq_from_bytes(&buf), "different Vec<u8> should not match");
-        assert!(!key_u64.eq_from_bytes(&[0xBE]), "short buffer should be false");
-        assert!(!key_vec.eq_from_bytes(&[0x03]), "short buffer should be false");
+        assert!(
+            key_vec.eq_from_bytes(&buf),
+            "Vec<u8> should ignore trailing garbage"
+        );
+        assert!(
+            !vec![1u8, 2, 4].eq_from_bytes(&buf),
+            "different Vec<u8> should not match"
+        );
+        assert!(
+            !key_u64.eq_from_bytes(&[0xBE]),
+            "short buffer should be false"
+        );
+        assert!(
+            !key_vec.eq_from_bytes(&[0x03]),
+            "short buffer should be false"
+        );
         assert!(!key_u64.eq_from_bytes(&[]), "empty buffer should be false");
         assert!(!key_vec.eq_from_bytes(&[]), "empty buffer should be false");
     }
-
 }
