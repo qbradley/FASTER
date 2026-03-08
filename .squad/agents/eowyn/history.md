@@ -12,6 +12,37 @@
 
 ---
 
+### 2026-03-09: CI Fuzz Integration Complete (Iteration 6 A7)
+
+**What:** Wired the 5 fuzz targets from Iteration 5 into CI with production-grade scripting, corpus management, and documentation.
+
+**Files Created/Modified:**
+- `rust/scripts/fuzz-ci` — CI-compatible runner with `--smoke` (10s/target for PR validation), `--target <name>` (single-target mode), and `FUZZ_DURATION` env var override. Saves crash artifacts to `rust/fuzz/artifacts/<target>/`.
+- `rust/scripts/fuzz-minimize` — Corpus minimization via `cargo fuzz cmin`, supports `--target` for single-target minimize.
+- `rust/fuzz/corpus/` — Checked-in seed corpus for all 5 targets (hand-crafted seeds + fuzzer-discovered inputs from smoke runs).
+- `rust/fuzz/README.md` — Full documentation: target descriptions, local/CI usage, crash investigation, corpus management, adding new targets.
+- `rust/.gitignore` — Updated to track corpus/ but ignore artifacts/.
+- `rust/fuzz/.gitignore` — Added artifacts/ and fuzz-*.log exclusions.
+
+**Verification:**
+- All 5 targets build and pass smoke tests (10s each, 0 crashes across ~30M+ iterations)
+- `--target record_parsing --smoke` single-target mode verified
+- Corpus loaded correctly from checked-in seed directories
+
+**Key Design Decisions:**
+- Smoke mode at 10s/target strikes balance between PR validation speed (~60s total) and meaningful coverage
+- Corpus is tracked in Git for reproducibility; artifacts/crashes are gitignored
+- Target shorthand supported: `--target hash` resolves to `fuzz_record_parsing` automatically
+- Scripts share the same ALL_TARGETS array pattern; adding a new target requires updating both scripts + Cargo.toml
+
+**What This Means:**
+- **Frodo:** `./scripts/fuzz-ci --smoke` is ready for PR validation pipeline integration
+- **Frodo:** `FUZZ_DURATION=300 ./scripts/fuzz-ci` is ready for nightly CI
+- **All agents:** When adding new code paths that handle untrusted data, add a fuzz target and update the scripts
+- **Éowyn:** Pre-existing clippy failures in faster-ffi (undocumented_unsafe_blocks) and faster-core (clone_on_copy) blocked precheckin; only fuzz-related files were committed
+
+---
+
 ### 2026-03-08: Fuzz Testing Infrastructure Established
 
 **What:** Created a complete cargo-fuzz testing framework for FASTER Rust with 5 high-value fuzz targets covering record parsing, record layout arithmetic, compaction record size discovery, hash functions, and store CRUD operations.
