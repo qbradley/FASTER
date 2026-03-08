@@ -1,0 +1,22 @@
+[package]
+name = "event-counter-tokio"
+version = "0.1.0"
+description = "Async/Tokio event counter (ad click aggregator) using FASTER — companion to the sync event-counter sample"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+faster-core = { path = "../../faster-core" }
+faster-tokio = { path = "../../faster-tokio" }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "signal",
+    "sync",
+    "time",
+] }
+clap = { version = "4", features = ["derive"] }
+rand = "0.9"
