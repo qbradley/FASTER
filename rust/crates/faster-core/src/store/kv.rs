@@ -506,34 +506,102 @@ impl<F: Functions> FasterKv<F> {
         UnsafeContext::new(session)
     }
 
-    // ── Two-Level Prefetch Batch Methods ────────────────────────────
 
-    /// Batch read with two-level prefetch.
-    pub fn batch_read(&self, session: &mut FasterSession<F>, keys: &[F::Key], outputs: &mut [F::Output]) -> super::batch::BatchResult
-    where F::Input: Default, F::Context: Default {
+    // -- Batch Methods --
+
+    /// Execute a batch of reads with hash-bucket prefetching.
+    ///
+    /// Creates an [`UnsafeContext`] (single epoch enter/exit for the entire
+    /// batch), prefetches all hash buckets, then reads each key.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `keys.len() != outputs.len()`.
+    pub fn batch_read(
+        &self,
+        session: &mut FasterSession<F>,
+        keys: &[F::Key],
+        outputs: &mut [F::Output],
+    ) -> super::batch::BatchResult
+    where
+        F::Input: Default,
+        F::Context: Default,
+    {
         let mut ctx = self.unsafe_context(session);
         ctx.batch_read(self, keys, outputs)
     }
 
-    /// Batch upsert with two-level prefetch.
-    pub fn batch_upsert(&self, session: &mut FasterSession<F>, keys: &[F::Key], inputs: &[F::Input]) -> super::batch::BatchResult
-    where F::Context: Default {
+    /// Execute a batch of upserts with hash-bucket prefetching.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `keys.len() != inputs.len()`.
+    pub fn batch_upsert(
+        &self,
+        session: &mut FasterSession<F>,
+        keys: &[F::Key],
+        inputs: &[F::Input],
+    ) -> super::batch::BatchResult
+    where
+        F::Context: Default,
+    {
         let mut ctx = self.unsafe_context(session);
         ctx.batch_upsert(self, keys, inputs)
     }
 
-    /// Batch RMW with two-level prefetch.
-    pub fn batch_rmw(&self, session: &mut FasterSession<F>, keys: &[F::Key], inputs: &[F::Input], outputs: &mut [F::Output]) -> super::batch::BatchResult
-    where F::Context: Default {
+    /// Execute a batch of read-modify-write operations with prefetching.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `keys.len() != inputs.len()` or `keys.len() != outputs.len()`.
+    pub fn batch_rmw(
+        &self,
+        session: &mut FasterSession<F>,
+        keys: &[F::Key],
+        inputs: &[F::Input],
+        outputs: &mut [F::Output],
+    ) -> super::batch::BatchResult
+    where
+        F::Context: Default,
+    {
         let mut ctx = self.unsafe_context(session);
         ctx.batch_rmw(self, keys, inputs, outputs)
     }
 
-    /// Batch delete with two-level prefetch.
-    pub fn batch_delete(&self, session: &mut FasterSession<F>, keys: &[F::Key]) -> super::batch::BatchResult
-    where F::Context: Default {
+    /// Execute a batch of deletes with hash-bucket prefetching.
+    pub fn batch_delete(
+        &self,
+        session: &mut FasterSession<F>,
+        keys: &[F::Key],
+    ) -> super::batch::BatchResult
+    where
+        F::Context: Default,
+    {
         let mut ctx = self.unsafe_context(session);
         ctx.batch_delete(self, keys)
+    }
+
+    /// Execute a mixed batch of heterogeneous operations.
+    ///
+    /// Each [`BatchOp`](super::batch::BatchOp) can be a read, upsert, RMW,
+    /// or delete. Results are returned positionally in the
+    /// [`BatchResult`](super::batch::BatchResult).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `ops.len() != outputs.len()`.
+    pub fn batch_execute(
+        &self,
+        session: &mut FasterSession<F>,
+        ops: &[super::batch::BatchOp<F::Key, F::Input>],
+        outputs: &mut [F::Output],
+    ) -> super::batch::BatchResult
+    where
+        F::Input: Default,
+        F::Context: Default,
+    {
+        let mut ctx = self.unsafe_context(session);
+        ctx.batch_execute(self, ops, outputs)
     }
 
     // ── Convenience Methods ─────────────────────────────────────────

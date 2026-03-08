@@ -12,14 +12,14 @@
 //!
 //! # API Styles
 //!
-//! - **Homogeneous batches** — `batch_read`, `batch_upsert`, `batch_rmw`,
+//! - **Homogeneous batches** \u2014 `batch_read`, `batch_upsert`, `batch_rmw`,
 //!   `batch_delete` on [`UnsafeContext`] accept parallel slices of keys/values.
-//! - **Mixed batches** — `batch_execute` accepts a slice of [`BatchOp`]
+//! - **Mixed batches** \u2014 `batch_execute` accepts a slice of [`BatchOp`]
 //!   entries, each carrying its own operation type, key, and input.
 //!
 //! # Partial Failure
 //!
-//! Batches never fail atomically — each operation independently succeeds,
+//! Batches never fail atomically \u2014 each operation independently succeeds,
 //! goes pending, or returns not-found. The [`BatchResult`] struct reports
 //! per-operation [`OperationStatus`] values and aggregate counts.
 //!
@@ -137,6 +137,7 @@ impl<K: Hashable, I> BatchOp<K, I> {
 
 // -- Batch methods on UnsafeContext --
 
+#[allow(clippy::needless_range_loop)]
 impl<'a, F: Functions> UnsafeContext<'a, F> {
     /// Execute a batch of reads under single-epoch protection.
     ///
