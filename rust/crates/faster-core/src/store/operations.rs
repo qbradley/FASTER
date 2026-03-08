@@ -47,7 +47,7 @@ use crate::hybrid_log::record_ops::{LogRecordReader, LogRecordWriter, MutableRec
 use crate::hybrid_log::regions::{AddressInfo, AddressRegion};
 use crate::record::{Key, RecordInfo, RecordLayout, Value};
 use crate::status::OperationStatus;
-use crate::store::functions::{Functions, RmwInPlaceResult};
+use crate::store::functions::{DeleteInfo, Functions, ReadInfo, RmwInfo, RmwInPlaceResult, UpsertInfo};
 use crate::store::session::{FasterSession, PendingOpType, PendingOperation};
 
 /// Maximum number of version chain hops before giving up.
@@ -242,7 +242,7 @@ pub(crate) fn internal_read<F: Functions>(
                         .get_record(_found_addr, safe_size)
                         .map(|acc| acc.value::<F::Value>(&layout))
                         .expect("value must be readable for in-memory record");
-                    functions.read(key, &value, input, output);
+                    functions.read(key, &value, input, output, &ReadInfo::new(0, _found_addr, ri));
                     OperationStatus::Ok
                 }
                 None => OperationStatus::NotFound,
@@ -302,7 +302,7 @@ pub(crate) fn internal_upsert<F: Functions>(
         // Let the callback initialise the value into a default-constructed slot.
         let mut value: F::Value = F::Value::default();
         let mut output = F::Output::default();
-        functions.upsert(key, &mut value, input, None, &mut output);
+        functions.upsert(key, &mut value, input, None, &mut output, &UpsertInfo::new(0, LogicalAddress::INVALID, RecordInfo::default()));
 
         let (new_addr, mut accessor) = match allocate_at_tail(ctx.allocator, key, &value) {
             Some(pair) => pair,
@@ -359,6 +359,21 @@ pub(crate) fn internal_upsert<F: Functions>(
                         );
                     }
 
+                    // Sealed records are write-protected: fall back to
+                    // copy-to-tail (RCU) instead of in-place mutation.
+                    if ri.is_sealed() {
+                        return upsert_copy_to_tail(
+                            ctx,
+                            functions,
+                            key,
+                            input,
+                            &layout,
+                            result.entry,
+                            result.slot,
+                            found_addr,
+                        );
+                    }
+
                     // In-place update via raw or standard path.
                     let ptr = ctx.allocator.get_physical_address(found_addr);
                     if let Some(ptr) = ptr {
@@ -388,6 +403,7 @@ pub(crate) fn internal_upsert<F: Functions>(
                                     value_len,
                                     input,
                                     &mut output,
+                                    &UpsertInfo::new(0, found_addr, ri),
                                 );
                             }
                         } else {
@@ -400,6 +416,7 @@ pub(crate) fn internal_upsert<F: Functions>(
                                 input,
                                 Some(&old_value),
                                 &mut output,
+                                &UpsertInfo::new(0, found_addr, ri),
                             );
                             // For variable-length values, check if the new
                             // value fits in the existing record's allocation.
@@ -490,7 +507,7 @@ fn upsert_copy_to_tail<F: Functions>(
     // Let the callback produce the final value.
     let mut new_val: F::Value = F::Value::default();
     let mut output = F::Output::default();
-    functions.upsert(key, &mut new_val, input, None, &mut output);
+    functions.upsert(key, &mut new_val, input, None, &mut output, &UpsertInfo::new(0, previous_addr, RecordInfo::default()));
 
     let (new_addr, mut accessor) = match allocate_at_tail(ctx.allocator, key, &new_val) {
         Some(pair) => pair,
@@ -544,7 +561,7 @@ pub(crate) fn internal_rmw<F: Functions>(
 
     if result.created {
         // ── Key not found — create initial value ───────────────────
-        if !functions.rmw_need_initial_update(key, input) {
+        if !functions.rmw_need_initial_update(key, input, &RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::default(), false)) {
             // User declined to create a new record — abort.
             let _ = ctx
                 .hash_index
@@ -554,7 +571,7 @@ pub(crate) fn internal_rmw<F: Functions>(
 
         // Create a default value and let the callback initialise it.
         let mut value = F::Value::default();
-        functions.rmw_initial(key, input, &mut value, output);
+        functions.rmw_initial(key, input, &mut value, output, &RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::default(), false));
 
         let (new_addr, mut accessor) = match allocate_at_tail(ctx.allocator, key, &value) {
             Some(pair) => pair,
@@ -607,6 +624,28 @@ pub(crate) fn internal_rmw<F: Functions>(
                         );
                     }
 
+                    // Sealed records are write-protected: read current
+                    // value then copy-to-tail (RCU).
+                    if ri.is_sealed() {
+                        let reader = LogRecordReader::new(ctx.allocator);
+                        let value: F::Value = match reader.read_value(found_addr, &layout) {
+                            Some(v) => v,
+                            None => return OperationStatus::Aborted,
+                        };
+                        return rmw_copy_to_tail(
+                            ctx,
+                            functions,
+                            key,
+                            input,
+                            &value,
+                            output,
+                            &layout,
+                            result.entry,
+                            result.slot,
+                            found_addr,
+                        );
+                    }
+
                     // Try in-place update.
                     let ptr = match ctx.allocator.get_physical_address(found_addr) {
                         Some(p) => p,
@@ -627,7 +666,7 @@ pub(crate) fn internal_rmw<F: Functions>(
                         let value_len = std::mem::size_of::<F::Value>();
                         // SAFETY: value_ptr in mutable-region page under epoch.
                         let rmw_result = unsafe {
-                            functions.rmw_in_place_raw(key, value_ptr, value_len, input, output)
+                            functions.rmw_in_place_raw(key, value_ptr, value_len, input, output, &RmwInfo::new(0, found_addr, ri, false))
                         };
                         match rmw_result {
                             RmwInPlaceResult::InPlaceOk => OperationStatus::InPlaceUpdated,
@@ -649,7 +688,7 @@ pub(crate) fn internal_rmw<F: Functions>(
                         }
                     } else {
                         let mut value: F::Value = accessor.value(&layout);
-                        let rmw_result = functions.rmw_in_place(key, input, &mut value, output);
+                        let rmw_result = functions.rmw_in_place(key, input, &mut value, output, &RmwInfo::new(0, found_addr, ri, false));
                         match rmw_result {
                             RmwInPlaceResult::InPlaceOk => {
                                 let write_layout = RecordLayout::for_kv(key, &value);
@@ -711,7 +750,7 @@ pub(crate) fn internal_rmw<F: Functions>(
                         .map(|acc| acc.value::<F::Value>(&layout))
                         .expect("readable in-memory record");
 
-                    if !functions.rmw_need_copy_update(key, input, &old_value) {
+                    if !functions.rmw_need_copy_update(key, input, &old_value, &RmwInfo::new(0, found_addr, ri, true)) {
                         return OperationStatus::Ok;
                     }
 
@@ -771,7 +810,7 @@ fn rmw_copy_to_tail<F: Functions>(
     previous_addr: LogicalAddress,
 ) -> OperationStatus {
     let mut new_value = old_value.clone();
-    functions.rmw_copy_update(key, input, old_value, &mut new_value, output);
+    functions.rmw_copy_update(key, input, old_value, &mut new_value, output, &RmwInfo::new(0, previous_addr, RecordInfo::default(), true));
 
     let (new_addr, mut accessor) = match allocate_at_tail(ctx.allocator, key, &new_value) {
         Some(pair) => pair,
@@ -802,12 +841,12 @@ fn rmw_create_at_tail<F: Functions>(
     slot: &crate::hash::bucket::AtomicHashBucketEntry,
     previous_addr: LogicalAddress,
 ) -> OperationStatus {
-    if !functions.rmw_need_initial_update(key, input) {
+    if !functions.rmw_need_initial_update(key, input, &RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::default(), false)) {
         return OperationStatus::NotFound;
     }
 
     let mut value = F::Value::default();
-    functions.rmw_initial(key, input, &mut value, output);
+    functions.rmw_initial(key, input, &mut value, output, &RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::default(), false));
 
     let (new_addr, mut accessor) = match allocate_at_tail(ctx.allocator, key, &value) {
         Some(pair) => pair,
@@ -882,7 +921,7 @@ pub(crate) fn internal_delete<F: Functions>(
 
                     // Invoke user callback for cleanup.
                     let mut value: F::Value = accessor.value(&layout);
-                    functions.delete(key, &mut value);
+                    functions.delete(key, &mut value, &DeleteInfo::new(0, found_addr, ri));
 
                     // Write the tombstone header.
                     let new_ri = ri.with_tombstone();

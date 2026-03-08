@@ -166,3 +166,33 @@
 
 **Next Steps:** Risk mitigation task force (Éowyn lead), unsafe audit planning (Galadriel lead), Phase 1 sprint (Frodo lead), async adapter spike (Elrond lead).
 
+---
+
+## 2026-03-07: C++ Wrapper Header over Rust FFI (W3-04)
+
+**What:** Built `faster_cpp.h`, a header-only C++17 wrapper over the Rust FASTER C FFI layer. Delivered on branch `saruman/cpp-wrapper`.
+
+**Files delivered:**
+- `rust/crates/faster-ffi/cpp/faster_cpp.h` — 725-line header-only wrapper
+- `rust/crates/faster-ffi/cpp/example.cpp` — 6-test, 23-check verification suite
+- `rust/crates/faster-ffi/cpp/Makefile` — builds against `libfaster_ffi.so` / `.a`
+
+**Architecture decisions:**
+1. **Self-contained C FFI redeclaration** — The header redeclares the FFI surface with proper C++ types instead of including `faster.h`. The cbindgen-generated header renders `Option<extern "C" fn(...)>` as opaque `struct Option_*Fn` types that cannot be constructed from C/C++. Since the Rust ABI guarantees these are nullable function pointers, we declare them as such.
+2. **RAII all the way** — `FasterKv` owns the store handle (calls `faster_close` on destroy), `Session` owns the session handle (calls `faster_session_end` on destroy). Both are move-only.
+3. **Serializer<T> trait** — Defaults to `memcpy` for trivially-copyable types; specialized for `std::string` and `std::vector<uint8_t>`. Users can specialize for custom types.
+4. **Callbacks via C function pointers** — `RmwWithCallbacks()`, `UpsertWithCallbacks()`, `ReadWithCallbacks()` accept raw `extern "C"` function pointers, matching the `_ex()` FFI surface. C++ lambdas cannot be used directly (no captures), but stateless lambdas decay to function pointers.
+
+**Key findings:**
+- Checkpoint and recovery must use the **same directory** as the store path. The Rust implementation writes checkpoint files to `{dir}/checkpoints/{token}/`.
+- The Rust target directory uses a platform-specific triple (`x86_64-unknown-linux-gnu`) in the path — the Makefile handles this with a fallback.
+- Merge conflicts in the FFI source files (from `sam/sealed-bit-p03` branch) had to be resolved before building.
+
+**Verification results:** 23/23 checks pass:
+- Test 1: Basic CRUD (upsert, read, delete, RMW replacement)
+- Test 2: Custom RMW callbacks (sum-store pattern: 10+5+3=18)
+- Test 3: Bulk operations (1000 records)
+- Test 4: Checkpoint and recovery (FoldOver)
+- Test 5: String keys and values
+- Test 6: Move semantics (Session + FasterKv)
+

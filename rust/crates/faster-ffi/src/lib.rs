@@ -1152,13 +1152,13 @@ pub unsafe extern "C" fn faster_continue_session(
     serial_out: *mut u64,
 ) -> FasterHandle {
     panic::catch_unwind(AssertUnwindSafe(|| {
-        let store_lock = STORE_TABLE.read();
+        let store_lock = store_handles().read();
         let kv = match store_lock.get(store) {
             Some(s) => s,
             None => return INVALID_HANDLE,
         };
         let session = kv.start_session();
-        let handle = SESSION_TABLE.write().insert(SessionCell::new(session));
+        let handle = session_handles().write().insert(SessionCell::new(session));
 
         if !serial_out.is_null() {
             // SAFETY: Caller guarantees serial_out is valid and writable.

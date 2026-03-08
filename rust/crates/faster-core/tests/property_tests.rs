@@ -39,9 +39,9 @@ fn tag_strategy() -> impl Strategy<Value = u16> {
     0..=0x3FFFu16
 }
 
-/// Strategy for 13-bit checkpoint versions (0..8191).
+/// Strategy for 12-bit checkpoint versions (0..4095).
 fn version_strategy() -> impl Strategy<Value = u16> {
-    0..=8191u16
+    0..=4095u16
 }
 
 /// Strategy for variable-length byte vectors (0..256 bytes).
