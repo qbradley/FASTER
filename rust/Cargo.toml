@@ -8,6 +8,7 @@ members = [
     "crates/faster-tokio",
     "crates/faster-uring",
     "crates/samples/read-cache-sim",
+    "crates/samples/read-cache-sim-tokio",
     "crates/samples/cross-impl-bench",
     "crates/samples/tokio-kv-server",
     "crates/samples/uring-stress",
