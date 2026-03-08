@@ -20,10 +20,10 @@ use std::thread::ThreadId;
 
 use faster_core::FasterSession;
 
-use crate::functions::ByteSliceFunctions;
+use crate::callbacks::CallbackFunctions;
 
 /// Type alias for our concrete session type.
-pub type FfiSession = FasterSession<ByteSliceFunctions>;
+pub type FfiSession = FasterSession<CallbackFunctions>;
 
 /// A `Send + Sync` wrapper around `UnsafeCell<FfiSession>` with runtime
 /// thread-affinity enforcement.

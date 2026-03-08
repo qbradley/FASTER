@@ -15,6 +15,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/handle.rs");
     println!("cargo:rerun-if-changed=src/session.rs");
     println!("cargo:rerun-if-changed=src/functions.rs");
+    println!("cargo:rerun-if-changed=src/callbacks.rs");
     println!("cargo:rerun-if-changed=cbindgen.toml");
 
     let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
