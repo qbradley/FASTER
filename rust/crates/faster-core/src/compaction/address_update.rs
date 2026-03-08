@@ -292,6 +292,9 @@ mod tests {
             tombstone_count: 0,
             total_bytes_scanned: 0,
             live_bytes: 0,
+            dead_bytes: 0,
+            tombstone_bytes: 0,
+            total_chain_hops: 0,
         }
     }
 

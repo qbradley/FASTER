@@ -77,6 +77,12 @@ pub struct CompactionPlan {
     pub total_bytes_scanned: usize,
     /// Total bytes of live data that must be preserved.
     pub live_bytes: usize,
+    /// Total bytes occupied by dead (superseded) records.
+    pub dead_bytes: usize,
+    /// Total bytes occupied by tombstone records.
+    pub tombstone_bytes: usize,
+    /// Cumulative hash-chain hops during index lookups.
+    pub total_chain_hops: usize,
 }
 
 impl CompactionPlan {

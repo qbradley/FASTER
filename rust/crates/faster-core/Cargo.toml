@@ -20,6 +20,7 @@ undocumented_unsafe_blocks = "deny"
 [dependencies]
 crossbeam-utils = { workspace = true }
 cfg-if = { workspace = true }
+log = { workspace = true }
 serde = { workspace = true }
 loom = { version = "0.7", optional = true }
 tracing = { version = "0.1", optional = true }

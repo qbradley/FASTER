@@ -29,6 +29,7 @@ categories = ["data-structures", "concurrency", "database-implementations"]
 # Core dependencies (minimal footprint)
 crossbeam-utils = "0.8"
 cfg-if = "1"
+log = "0.4"
 
 # Async adapter dependencies
 tokio = { version = "1", features = ["rt", "sync", "io-util"] }
