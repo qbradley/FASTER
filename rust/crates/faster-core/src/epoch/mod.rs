@@ -78,10 +78,11 @@ pub const MAX_THREADS: usize = 256;
 
 /// Number of checkpoint phase slots per entry.
 ///
-/// Reserved for future checkpoint phase coordination. Each entry has this
+/// Accommodates the unified [`Phase`](crate::state::Phase) enum which spans
+/// both checkpoint phases (1–7) and grow phases (8–15). Each entry has this
 /// many [`AtomicBool`](std::sync::atomic::AtomicBool) markers that other
 /// subsystems can use to track per-thread phase completion.
-pub(crate) const PHASE_COUNT: usize = 8;
+pub(crate) const PHASE_COUNT: usize = 16;
 
 /// Sentinel value indicating an inactive epoch entry.
 ///

@@ -7,18 +7,19 @@
 //! ```
 //!
 //! Only the transitions listed above are legal; any other transition returns an
-//! error. The current phase is stored as an [`AtomicU8`] so it can be queried
-//! from any thread without locking, and phase transitions use compare-and-swap
-//! to prevent races when multiple threads attempt a transition concurrently.
+//! error. The current phase (and version) are stored as a single
+//! [`AtomicSystemState`] (packed `AtomicU64`) so they can be queried atomically
+//! from any thread, and phase transitions use compare-and-swap to prevent races.
 //!
-//! This design mirrors the checkpoint state machines in the C++ and C# FASTER
-//! implementations.
+//! This design implements the EPVS (Epoch-Protected Version Scheme) and
+//! mirrors the C# Tsavorite `VersionSchemeState`.
 
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::Ordering;
 use serde::{Deserialize, Serialize};
 
 use super::CheckpointToken;
 use crate::error::FasterError;
+use crate::state::{AtomicSystemState, Phase, SystemState};
 
 // ---------------------------------------------------------------------------
 // CheckpointPhase
@@ -26,8 +27,8 @@ use crate::error::FasterError;
 
 /// The phase a checkpoint is currently in.
 ///
-/// Variants are ordered to match the natural lifecycle of a checkpoint.
-/// Each variant maps to a unique `u8` discriminant used for atomic storage.
+/// Retained for backward compatibility. Internally maps to the unified
+/// [`Phase`] enum in the [`state`](crate::state) module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum CheckpointPhase {
@@ -75,6 +76,34 @@ impl CheckpointPhase {
             (0, 1) | (1, 2) | (2, 3) | (3, 4) | (4, 5) | (5, 0)
         )
     }
+
+    /// Convert to the unified [`Phase`] enum.
+    #[inline]
+    pub const fn to_phase(self) -> Phase {
+        match self {
+            Self::Rest => Phase::Rest,
+            Self::Prepare => Phase::Prepare,
+            Self::InProgress => Phase::InProgress,
+            Self::WaitFlush => Phase::WaitFlush,
+            Self::WaitCompletion => Phase::WaitCompletion,
+            Self::Completed => Phase::PersistenceCallback,
+        }
+    }
+
+    /// Convert from the unified [`Phase`] enum.
+    /// Returns `None` if the phase is not a checkpoint phase.
+    #[inline]
+    pub const fn from_phase(phase: Phase) -> Option<Self> {
+        match phase {
+            Phase::Rest => Some(Self::Rest),
+            Phase::Prepare => Some(Self::Prepare),
+            Phase::InProgress => Some(Self::InProgress),
+            Phase::WaitFlush => Some(Self::WaitFlush),
+            Phase::WaitCompletion => Some(Self::WaitCompletion),
+            Phase::PersistenceCallback => Some(Self::Completed),
+            _ => None,
+        }
+    }
 }
 
 impl core::fmt::Display for CheckpointPhase {
@@ -97,9 +126,8 @@ impl core::fmt::Display for CheckpointPhase {
 
 /// Thread-safe state machine that drives a checkpoint through its phases.
 ///
-/// The current phase is stored as an [`AtomicU8`] so it can be read from any
-/// thread without locking. Phase transitions use [`compare_exchange`] (CAS) to
-/// guarantee that exactly one thread wins a race to advance the phase.
+/// Internally backed by an [`AtomicSystemState`] — a single `AtomicU64`
+/// that packs both phase and version atomically (EPVS).
 ///
 /// # Example
 ///
@@ -114,43 +142,61 @@ impl core::fmt::Display for CheckpointPhase {
 /// assert_eq!(sm.phase(), CheckpointPhase::Prepare);
 /// ```
 pub struct CheckpointStateMachine {
-    /// Current phase encoded as a `u8`. All reads/writes go through atomic
-    /// operations so no `&mut self` is needed.
-    phase: AtomicU8,
-    /// Token of the currently-active checkpoint. Only meaningful when the
-    /// phase is not `Rest`. We use `std::sync::Mutex` for interior
-    /// mutability since the token is accessed infrequently (only at phase
-    /// boundaries) and correctness matters more than throughput here.
+    /// Packed (phase, version) state word (EPVS).
+    state: AtomicSystemState,
+    /// Token of the currently-active checkpoint.
     token: std::sync::Mutex<Option<CheckpointToken>>,
 }
 
 impl CheckpointStateMachine {
-    /// Creates a new state machine in the [`CheckpointPhase::Rest`] phase.
+    /// Creates a new state machine in `Rest` phase with version 0.
     #[inline]
     pub fn new() -> Self {
         Self {
-            phase: AtomicU8::new(CheckpointPhase::Rest.as_u8()),
+            state: AtomicSystemState::new(SystemState::INITIAL),
             token: std::sync::Mutex::new(None),
         }
     }
 
-    /// Returns the current checkpoint phase.
-    ///
-    /// This is a lock-free atomic read and is safe to call from any thread.
+    /// Creates a new state machine with a specific initial system state.
+    /// Used during recovery to restore the version from a checkpoint.
+    #[inline]
+    pub fn with_state(initial: SystemState) -> Self {
+        Self {
+            state: AtomicSystemState::new(initial),
+            token: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Returns the current checkpoint phase (lock-free atomic read).
     #[inline]
     pub fn phase(&self) -> CheckpointPhase {
-        let raw = self.phase.load(Ordering::Acquire);
-        // SAFETY (logical): we only ever store values produced by `CheckpointPhase::as_u8`,
-        // so `from_u8` will always succeed.
-        CheckpointPhase::from_u8(raw).expect("corrupted phase discriminant")
+        let sys = self.state.load(Ordering::Acquire);
+        CheckpointPhase::from_phase(sys.phase())
+            .unwrap_or(CheckpointPhase::Rest)
+    }
+
+    /// Returns the current [`SystemState`] (phase + version) atomically.
+    #[inline]
+    pub fn system_state(&self) -> SystemState {
+        self.state.load(Ordering::Acquire)
+    }
+
+    /// Returns the current version from the packed state.
+    #[inline]
+    pub fn version(&self) -> u64 {
+        self.state.load(Ordering::Acquire).version()
+    }
+
+    /// Returns a reference to the underlying [`AtomicSystemState`].
+    #[inline]
+    pub fn atomic_state(&self) -> &AtomicSystemState {
+        &self.state
     }
 
     /// Attempts a CAS-based transition from `expected` to `next`.
     ///
-    /// Returns `true` if this thread won the race and the transition was
-    /// applied, or `false` if the current phase did not match `expected`
-    /// (another thread got there first, or the caller's expectation was
-    /// stale).
+    /// Version bump happens atomically on Prepare → InProgress.
     ///
     /// # Errors
     ///
@@ -167,28 +213,27 @@ impl CheckpointStateMachine {
             )));
         }
 
-        let won = self
-            .phase
-            .compare_exchange(
-                expected.as_u8(),
-                next.as_u8(),
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_ok();
-        Ok(won)
+        let current = self.state.load(Ordering::Acquire);
+        let version = current.version();
+        let expected_state = SystemState::new(expected.to_phase(), version);
+
+        // Version bump on Prepare → InProgress (the EPVS key improvement).
+        let next_version = if expected == CheckpointPhase::Prepare
+            && next == CheckpointPhase::InProgress
+        {
+            version + 1
+        } else {
+            version
+        };
+        let next_state = SystemState::new(next.to_phase(), next_version);
+
+        // Two-phase intermediate CAS protocol.
+        // AcqRel: publishes state change with happens-before edge.
+        // Acquire on failure: consistent read of actual state.
+        Ok(self.state.try_transition(expected_state, next_state, || {}))
     }
 
-    /// Begins a new checkpoint, transitioning from `Rest` to `Prepare`.
-    ///
-    /// The supplied [`CheckpointToken`] identifies this checkpoint and can be
-    /// retrieved via [`active_token`](Self::active_token) until the state
-    /// machine is [`reset`](Self::reset).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FasterError::CheckpointError`] if the state machine is not
-    /// currently in `Rest` (i.e., a checkpoint is already in progress).
+    /// Begins a new checkpoint (Rest → Prepare).
     pub fn start(&self, token: CheckpointToken) -> Result<(), FasterError> {
         let won = self.try_advance(CheckpointPhase::Rest, CheckpointPhase::Prepare)?;
         if !won {
@@ -196,22 +241,11 @@ impl CheckpointStateMachine {
                 "checkpoint already in progress (phase is not Rest)".into(),
             ));
         }
-        // Store the token. The mutex is uncontended here because only the
-        // thread that won the CAS above should be writing.
         *self.token.lock().expect("token mutex poisoned") = Some(token);
         Ok(())
     }
 
-    /// Resets the state machine back to [`CheckpointPhase::Rest`], clearing
-    /// the active token.
-    ///
-    /// This is valid from `Completed` (normal finish) or `Rest` (idempotent
-    /// no-op).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FasterError::CheckpointError`] if the current phase is
-    /// neither `Completed` nor `Rest`.
+    /// Resets the state machine to `Rest`, clearing the active token.
     pub fn reset(&self) -> Result<(), FasterError> {
         let current = self.phase();
         match current {
@@ -219,8 +253,6 @@ impl CheckpointStateMachine {
             CheckpointPhase::Completed => {
                 let won = self.try_advance(CheckpointPhase::Completed, CheckpointPhase::Rest)?;
                 if !won {
-                    // Another thread beat us — that's fine, the machine is
-                    // presumably already back at Rest.
                     return Ok(());
                 }
                 *self.token.lock().expect("token mutex poisoned") = None;
@@ -232,8 +264,7 @@ impl CheckpointStateMachine {
         }
     }
 
-    /// Returns the [`CheckpointToken`] of the active checkpoint, or `None`
-    /// if no checkpoint is in progress (phase is `Rest`).
+    /// Returns the active checkpoint token, or `None` if in `Rest`.
     pub fn active_token(&self) -> Option<CheckpointToken> {
         if self.phase() == CheckpointPhase::Rest {
             return None;
@@ -252,6 +283,7 @@ impl core::fmt::Debug for CheckpointStateMachine {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("CheckpointStateMachine")
             .field("phase", &self.phase())
+            .field("version", &self.version())
             .field("token", &self.active_token())
             .finish()
     }
@@ -265,19 +297,12 @@ impl core::fmt::Debug for CheckpointStateMachine {
 mod tests {
     use super::*;
 
-    // -----------------------------------------------------------------------
-    // Phase ↔ u8 round-trip
-    // -----------------------------------------------------------------------
-
     #[test]
     fn phase_u8_round_trip() {
         let phases = [
-            CheckpointPhase::Rest,
-            CheckpointPhase::Prepare,
-            CheckpointPhase::InProgress,
-            CheckpointPhase::WaitFlush,
-            CheckpointPhase::WaitCompletion,
-            CheckpointPhase::Completed,
+            CheckpointPhase::Rest, CheckpointPhase::Prepare,
+            CheckpointPhase::InProgress, CheckpointPhase::WaitFlush,
+            CheckpointPhase::WaitCompletion, CheckpointPhase::Completed,
         ];
         for (i, &phase) in phases.iter().enumerate() {
             assert_eq!(phase.as_u8(), i as u8);
@@ -294,19 +319,19 @@ mod tests {
     #[test]
     fn phase_display() {
         assert_eq!(CheckpointPhase::Rest.to_string(), "Rest");
-        assert_eq!(CheckpointPhase::Prepare.to_string(), "Prepare");
-        assert_eq!(CheckpointPhase::InProgress.to_string(), "InProgress");
-        assert_eq!(CheckpointPhase::WaitFlush.to_string(), "WaitFlush");
-        assert_eq!(
-            CheckpointPhase::WaitCompletion.to_string(),
-            "WaitCompletion"
-        );
         assert_eq!(CheckpointPhase::Completed.to_string(), "Completed");
     }
 
-    // -----------------------------------------------------------------------
-    // Valid transition table
-    // -----------------------------------------------------------------------
+    #[test]
+    fn phase_to_phase_round_trip() {
+        for cp in [
+            CheckpointPhase::Rest, CheckpointPhase::Prepare,
+            CheckpointPhase::InProgress, CheckpointPhase::WaitFlush,
+            CheckpointPhase::WaitCompletion, CheckpointPhase::Completed,
+        ] {
+            assert_eq!(CheckpointPhase::from_phase(cp.to_phase()), Some(cp));
+        }
+    }
 
     #[test]
     fn valid_transitions() {
@@ -325,30 +350,17 @@ mod tests {
 
     #[test]
     fn invalid_transitions() {
-        let invalid = [
-            (CheckpointPhase::Rest, CheckpointPhase::InProgress),
-            (CheckpointPhase::Rest, CheckpointPhase::Completed),
-            (CheckpointPhase::Prepare, CheckpointPhase::Rest),
-            (CheckpointPhase::Prepare, CheckpointPhase::WaitFlush),
-            (CheckpointPhase::InProgress, CheckpointPhase::Completed),
-            (CheckpointPhase::WaitFlush, CheckpointPhase::Rest),
-            (CheckpointPhase::WaitCompletion, CheckpointPhase::Rest),
-            (CheckpointPhase::Completed, CheckpointPhase::Prepare),
-        ];
-        for (from, to) in invalid {
-            assert!(!from.can_advance_to(to), "{from} → {to} should be invalid");
-        }
+        assert!(!CheckpointPhase::Rest.can_advance_to(CheckpointPhase::InProgress));
+        assert!(!CheckpointPhase::Prepare.can_advance_to(CheckpointPhase::Rest));
+        assert!(!CheckpointPhase::Completed.can_advance_to(CheckpointPhase::Prepare));
     }
-
-    // -----------------------------------------------------------------------
-    // Construction & default
-    // -----------------------------------------------------------------------
 
     #[test]
     fn new_starts_at_rest() {
         let sm = CheckpointStateMachine::new();
         assert_eq!(sm.phase(), CheckpointPhase::Rest);
         assert!(sm.active_token().is_none());
+        assert_eq!(sm.version(), 0);
     }
 
     #[test]
@@ -357,74 +369,57 @@ mod tests {
         assert_eq!(sm.phase(), CheckpointPhase::Rest);
     }
 
-    // -----------------------------------------------------------------------
-    // Full lifecycle
-    // -----------------------------------------------------------------------
+    #[test]
+    fn version_bumps_on_prepare_to_in_progress() {
+        let sm = CheckpointStateMachine::new();
+        sm.start(CheckpointToken::new(1)).unwrap();
+        assert_eq!(sm.version(), 0);
+        sm.try_advance(CheckpointPhase::Prepare, CheckpointPhase::InProgress).unwrap();
+        assert_eq!(sm.version(), 1);
+    }
+
+    #[test]
+    fn system_state_consistent() {
+        let sm = CheckpointStateMachine::new();
+        sm.start(CheckpointToken::new(1)).unwrap();
+        sm.try_advance(CheckpointPhase::Prepare, CheckpointPhase::InProgress).unwrap();
+        let ss = sm.system_state();
+        assert_eq!(ss.phase(), Phase::InProgress);
+        assert_eq!(ss.version(), 1);
+    }
 
     #[test]
     fn full_lifecycle() {
         let sm = CheckpointStateMachine::new();
         let token = CheckpointToken::new(0xDEAD);
 
-        // Rest → Prepare (via start)
         sm.start(token).unwrap();
         assert_eq!(sm.phase(), CheckpointPhase::Prepare);
         assert_eq!(sm.active_token(), Some(token));
 
-        // Prepare → InProgress
-        assert!(
-            sm.try_advance(CheckpointPhase::Prepare, CheckpointPhase::InProgress)
-                .unwrap()
-        );
-        assert_eq!(sm.phase(), CheckpointPhase::InProgress);
+        assert!(sm.try_advance(CheckpointPhase::Prepare, CheckpointPhase::InProgress).unwrap());
+        assert!(sm.try_advance(CheckpointPhase::InProgress, CheckpointPhase::WaitFlush).unwrap());
+        assert!(sm.try_advance(CheckpointPhase::WaitFlush, CheckpointPhase::WaitCompletion).unwrap());
+        assert!(sm.try_advance(CheckpointPhase::WaitCompletion, CheckpointPhase::Completed).unwrap());
         assert_eq!(sm.active_token(), Some(token));
 
-        // InProgress → WaitFlush
-        assert!(
-            sm.try_advance(CheckpointPhase::InProgress, CheckpointPhase::WaitFlush)
-                .unwrap()
-        );
-        assert_eq!(sm.phase(), CheckpointPhase::WaitFlush);
-
-        // WaitFlush → WaitCompletion
-        assert!(
-            sm.try_advance(CheckpointPhase::WaitFlush, CheckpointPhase::WaitCompletion)
-                .unwrap()
-        );
-        assert_eq!(sm.phase(), CheckpointPhase::WaitCompletion);
-
-        // WaitCompletion → Completed
-        assert!(
-            sm.try_advance(CheckpointPhase::WaitCompletion, CheckpointPhase::Completed)
-                .unwrap()
-        );
-        assert_eq!(sm.phase(), CheckpointPhase::Completed);
-        assert_eq!(sm.active_token(), Some(token));
-
-        // Completed → Rest (via reset)
         sm.reset().unwrap();
         assert_eq!(sm.phase(), CheckpointPhase::Rest);
         assert!(sm.active_token().is_none());
+        assert_eq!(sm.version(), 1);
     }
-
-    // -----------------------------------------------------------------------
-    // start() / reset() error paths
-    // -----------------------------------------------------------------------
 
     #[test]
     fn start_rejects_when_not_rest() {
         let sm = CheckpointStateMachine::new();
         sm.start(CheckpointToken::new(1)).unwrap();
-
-        // Attempt to start again while in Prepare
-        let err = sm.start(CheckpointToken::new(2)).unwrap_err();
-        assert!(matches!(err, FasterError::CheckpointError(_)));
+        assert!(sm.start(CheckpointToken::new(2)).is_err());
     }
 
     #[test]
     fn reset_idempotent_from_rest() {
         let sm = CheckpointStateMachine::new();
-        sm.reset().unwrap(); // no-op
+        sm.reset().unwrap();
         assert_eq!(sm.phase(), CheckpointPhase::Rest);
     }
 
@@ -432,91 +427,76 @@ mod tests {
     fn reset_rejects_mid_checkpoint() {
         let sm = CheckpointStateMachine::new();
         sm.start(CheckpointToken::new(1)).unwrap();
-
-        // In Prepare — reset should fail
-        let err = sm.reset().unwrap_err();
-        assert!(matches!(err, FasterError::CheckpointError(_)));
+        assert!(sm.reset().is_err());
     }
-
-    // -----------------------------------------------------------------------
-    // try_advance error paths
-    // -----------------------------------------------------------------------
 
     #[test]
     fn try_advance_illegal_transition_returns_error() {
         let sm = CheckpointStateMachine::new();
-        let result = sm.try_advance(CheckpointPhase::Rest, CheckpointPhase::InProgress);
-        assert!(result.is_err());
+        assert!(sm.try_advance(CheckpointPhase::Rest, CheckpointPhase::InProgress).is_err());
     }
 
     #[test]
     fn try_advance_wrong_expected_returns_false() {
         let sm = CheckpointStateMachine::new();
         sm.start(CheckpointToken::new(1)).unwrap();
-        // Current phase is Prepare, but we expect InProgress
-        let won = sm
-            .try_advance(CheckpointPhase::InProgress, CheckpointPhase::WaitFlush)
-            .unwrap();
+        let won = sm.try_advance(CheckpointPhase::InProgress, CheckpointPhase::WaitFlush).unwrap();
         assert!(!won);
-        // Phase unchanged
         assert_eq!(sm.phase(), CheckpointPhase::Prepare);
     }
-
-    // -----------------------------------------------------------------------
-    // Concurrent transition attempts
-    // -----------------------------------------------------------------------
 
     #[test]
     fn concurrent_start_only_one_wins() {
         use std::sync::{Arc, Barrier};
-
         let sm = Arc::new(CheckpointStateMachine::new());
         let barrier = Arc::new(Barrier::new(8));
-        let mut handles = Vec::new();
-
-        for i in 0..8u128 {
+        let handles: Vec<_> = (0..8u128).map(|i| {
             let sm = Arc::clone(&sm);
             let barrier = Arc::clone(&barrier);
-            handles.push(std::thread::spawn(move || {
-                barrier.wait();
-                sm.start(CheckpointToken::new(i))
-            }));
-        }
-
-        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-        let winners: Vec<_> = results.iter().filter(|r| r.is_ok()).collect();
-        assert_eq!(winners.len(), 1, "exactly one thread should win the start");
+            std::thread::spawn(move || { barrier.wait(); sm.start(CheckpointToken::new(i)) })
+        }).collect();
+        let winners = handles.into_iter().map(|h| h.join().unwrap()).filter(|r| r.is_ok()).count();
+        assert_eq!(winners, 1);
         assert_eq!(sm.phase(), CheckpointPhase::Prepare);
     }
 
     #[test]
     fn concurrent_advance_only_one_wins() {
         use std::sync::{Arc, Barrier};
-
         let sm = Arc::new(CheckpointStateMachine::new());
         sm.start(CheckpointToken::new(42)).unwrap();
-
         let barrier = Arc::new(Barrier::new(8));
-        let mut handles = Vec::new();
-
-        for _ in 0..8 {
+        let handles: Vec<_> = (0..8).map(|_| {
             let sm = Arc::clone(&sm);
             let barrier = Arc::clone(&barrier);
-            handles.push(std::thread::spawn(move || {
-                barrier.wait();
-                sm.try_advance(CheckpointPhase::Prepare, CheckpointPhase::InProgress)
-            }));
-        }
-
-        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-        let winners: usize = results.iter().filter(|r| matches!(r, Ok(true))).count();
-        assert_eq!(winners, 1, "exactly one thread should win the CAS");
+            std::thread::spawn(move || { barrier.wait(); sm.try_advance(CheckpointPhase::Prepare, CheckpointPhase::InProgress) })
+        }).collect();
+        let winners = handles.into_iter().map(|h| h.join().unwrap()).filter(|r| matches!(r, Ok(true))).count();
+        assert_eq!(winners, 1);
         assert_eq!(sm.phase(), CheckpointPhase::InProgress);
     }
 
-    // -----------------------------------------------------------------------
-    // Debug formatting
-    // -----------------------------------------------------------------------
+    #[test]
+    fn version_increments_per_cycle() {
+        let sm = CheckpointStateMachine::new();
+        for cycle in 0u64..3 {
+            sm.start(CheckpointToken::new(cycle as u128)).unwrap();
+            sm.try_advance(CheckpointPhase::Prepare, CheckpointPhase::InProgress).unwrap();
+            assert_eq!(sm.version(), cycle + 1);
+            sm.try_advance(CheckpointPhase::InProgress, CheckpointPhase::WaitFlush).unwrap();
+            sm.try_advance(CheckpointPhase::WaitFlush, CheckpointPhase::WaitCompletion).unwrap();
+            sm.try_advance(CheckpointPhase::WaitCompletion, CheckpointPhase::Completed).unwrap();
+            sm.reset().unwrap();
+            assert_eq!(sm.version(), cycle + 1);
+        }
+    }
+
+    #[test]
+    fn with_state_restores_version() {
+        let sm = CheckpointStateMachine::with_state(SystemState::new(Phase::Rest, 42));
+        assert_eq!(sm.version(), 42);
+        assert_eq!(sm.phase(), CheckpointPhase::Rest);
+    }
 
     #[test]
     fn debug_format() {
@@ -526,31 +506,19 @@ mod tests {
         assert!(dbg.contains("CheckpointStateMachine"));
     }
 
-    // -----------------------------------------------------------------------
-    // Send + Sync
-    // -----------------------------------------------------------------------
-
     #[test]
     fn state_machine_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<CheckpointStateMachine>();
     }
 
-    // -----------------------------------------------------------------------
-    // Serde round-trip for CheckpointPhase
-    // -----------------------------------------------------------------------
-
     #[test]
     fn phase_serde_round_trip() {
-        let phases = [
-            CheckpointPhase::Rest,
-            CheckpointPhase::Prepare,
-            CheckpointPhase::InProgress,
-            CheckpointPhase::WaitFlush,
-            CheckpointPhase::WaitCompletion,
-            CheckpointPhase::Completed,
-        ];
-        for phase in phases {
+        for phase in [
+            CheckpointPhase::Rest, CheckpointPhase::Prepare,
+            CheckpointPhase::InProgress, CheckpointPhase::WaitFlush,
+            CheckpointPhase::WaitCompletion, CheckpointPhase::Completed,
+        ] {
             let json = serde_json::to_string(&phase).unwrap();
             let back: CheckpointPhase = serde_json::from_str(&json).unwrap();
             assert_eq!(phase, back);

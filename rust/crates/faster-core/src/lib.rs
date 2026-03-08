@@ -151,6 +151,8 @@ pub mod hybrid_log;
 pub mod record;
 pub mod recovery;
 #[deny(unsafe_code)]
+pub mod state;
+#[deny(unsafe_code)]
 pub mod status;
 pub mod store;
 pub mod sync_file_device;

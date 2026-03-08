@@ -161,7 +161,8 @@ impl IndexCheckpointWriter {
         writer.flush()?;
 
         let info = IndexRecoveryInfo {
-            version,
+            format_version: crate::checkpoint::FORMAT_VERSION_CURRENT,
+            version: version as u64,
             table_size: num_buckets,
             num_ht_bytes: num_buckets * BUCKET_SIZE as u64,
             num_ofb_bytes: 0, // overflow buckets are not persisted in this format
@@ -243,6 +244,7 @@ impl IndexCheckpointReader {
     /// This is a cheap operation that does not read the body or verify the CRC.
     pub fn read_header(&self) -> IndexRecoveryInfo {
         IndexRecoveryInfo {
+            format_version: crate::checkpoint::FORMAT_VERSION_CURRENT,
             version: 0, // version is not stored in the file header; set by caller
             table_size: self.header.num_buckets,
             num_ht_bytes: self.header.num_buckets * BUCKET_SIZE as u64,

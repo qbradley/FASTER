@@ -439,5 +439,53 @@ mod tests {
         let result = f.rmw_in_place(&1u64, &5i64, &mut value, &mut output, &dummy_rmw_info());
         assert_eq!(result, RmwInPlaceResult::InPlaceOk);
         assert_eq!(value, 15);
+        assert_eq!(output, 15);
+    }
+
+    // ── Info struct tests ───────────────────────────────────────────
+
+    #[test]
+    fn read_info_fields() {
+        let addr = LogicalAddress::new(Page(3), Offset(128));
+        let ri = RecordInfo::from_raw(0xDEAD);
+        let info = ReadInfo::new(42, addr, ri);
+        assert_eq!(info.version, 42);
+        assert_eq!(info.address, addr);
+        assert_eq!(info.record_info.raw(), 0xDEAD);
+    }
+
+    #[test]
+    fn upsert_info_fields() {
+        let info = UpsertInfo::new(7, LogicalAddress::INVALID, RecordInfo::from_raw(0));
+        assert_eq!(info.version, 7);
+        assert_eq!(info.address, LogicalAddress::INVALID);
+    }
+
+    #[test]
+    fn rmw_info_copy_update_flag() {
+        let info_no = RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::from_raw(0), false);
+        assert!(!info_no.is_copy_update);
+
+        let info_yes = RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::from_raw(0), true);
+        assert!(info_yes.is_copy_update);
+    }
+
+    #[test]
+    fn delete_info_fields() {
+        let addr = LogicalAddress::new(Page(1), Offset(64));
+        let ri = RecordInfo::from_raw(0xBEEF);
+        let info = DeleteInfo::new(99, addr, ri);
+        assert_eq!(info.version, 99);
+        assert_eq!(info.address, addr);
+        assert_eq!(info.record_info.raw(), 0xBEEF);
+    }
+
+    #[test]
+    fn info_structs_are_copy_clone_debug() {
+        let ri = ReadInfo::new(0, LogicalAddress::INVALID, RecordInfo::from_raw(0));
+        let ri2 = ri; // Copy
+        let ri3 = ri; // Clone
+        let _ = format!("{:?}", ri2); // Debug
+        let _ = ri3;
     }
 }
