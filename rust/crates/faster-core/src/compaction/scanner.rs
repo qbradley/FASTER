@@ -386,7 +386,7 @@ mod tests {
     use crate::hybrid_log::eviction::EvictionPolicy;
     use crate::record::{RecordSizeError, record_size_from_bytes};
     use crate::status::OperationStatus;
-    use crate::store::{FasterKv, FasterKvConfig, Functions, RmwInPlaceResult, SimpleFunctions};
+    use crate::store::{FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, SimpleFunctions, UpsertInfo};
 
     type SimpleStore = FasterKv<SimpleFunctions<u64, u64>>;
 
@@ -410,7 +410,7 @@ mod tests {
         type Input = Vec<u8>;
         type Output = Option<Vec<u8>>;
         type Context = ();
-        fn read(&self, _k: &Vec<u8>, v: &Vec<u8>, _i: &Vec<u8>, o: &mut Option<Vec<u8>>) {
+        fn read(&self, _k: &Vec<u8>, v: &Vec<u8>, _i: &Vec<u8>, o: &mut Option<Vec<u8>>, _info: &ReadInfo) {
             *o = Some(v.clone());
         }
         fn upsert(
@@ -420,6 +420,7 @@ mod tests {
             i: &Vec<u8>,
             _old: Option<&Vec<u8>>,
             _o: &mut Option<Vec<u8>>,
+            _info: &UpsertInfo,
         ) {
             *v = i.clone();
         }
@@ -429,6 +430,7 @@ mod tests {
             i: &Vec<u8>,
             v: &mut Vec<u8>,
             _o: &mut Option<Vec<u8>>,
+            _info: &RmwInfo,
         ) {
             *v = i.clone();
         }
@@ -438,6 +440,7 @@ mod tests {
             _i: &Vec<u8>,
             _v: &mut Vec<u8>,
             _o: &mut Option<Vec<u8>>,
+            _info: &RmwInfo,
         ) -> RmwInPlaceResult {
             RmwInPlaceResult::NeedsNewRecord
         }
@@ -448,6 +451,7 @@ mod tests {
             old: &Vec<u8>,
             nv: &mut Vec<u8>,
             o: &mut Option<Vec<u8>>,
+            _info: &RmwInfo,
         ) {
             let mut m = old.clone();
             m.extend_from_slice(i);
