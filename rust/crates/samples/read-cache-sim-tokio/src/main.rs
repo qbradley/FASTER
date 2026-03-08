@@ -23,7 +23,7 @@ use clap::Parser;
 use faster_core::grow::GrowConfig;
 use faster_core::hybrid_log::eviction::EvictionPolicy;
 use faster_core::status::OperationStatus;
-use faster_core::store::{FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo};
+use faster_core::store::{FasterKv, FasterKvConfig, DeleteInfo, Functions, ReadInfo, RmwInfo, UpsertInfo, RmwInPlaceResult};
 use faster_tokio::TokioFileDevice;
 use rand::Rng;
 

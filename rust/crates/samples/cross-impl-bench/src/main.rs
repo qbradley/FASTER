@@ -33,7 +33,7 @@ use faster_core::NullDevice;
 use faster_core::hybrid_log::eviction::EvictionPolicy;
 use faster_core::record::Value;
 use faster_core::status::OperationStatus;
-use faster_core::store::{FasterKv, FasterKvConfig, Functions, DeleteInfo, ReadInfo, RmwInPlaceResult, RmwInfo, SimpleFunctions, UpsertInfo};
+use faster_core::store::{FasterKv, FasterKvConfig, DeleteInfo, Functions, ReadInfo, RmwInfo, UpsertInfo, RmwInPlaceResult, SimpleFunctions};
 
 use distribution::{Distribution, KeyGenerator};
 use report::{BenchmarkResult, Reporter};

@@ -106,6 +106,7 @@ impl CampaignStats {
     }
 
     /// Total events across all types (for summary reporting).
+    #[allow(dead_code)]
     pub fn total_events(&self) -> u64 {
         self.clicks + self.impressions + self.spend_cents
     }

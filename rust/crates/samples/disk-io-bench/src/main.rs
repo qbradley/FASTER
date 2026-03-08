@@ -25,7 +25,7 @@ use faster_core::SyncFileDevice;
 use faster_core::hybrid_log::eviction::EvictionPolicy;
 use faster_core::record::Value;
 use faster_core::status::OperationStatus;
-use faster_core::store::{FasterKv, FasterKvConfig, Functions, DeleteInfo, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo};
+use faster_core::store::{DeleteInfo, FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInfo, RmwInPlaceResult, UpsertInfo};
 use serde::Serialize;
 
 use distribution::{Distribution, KeyGenerator};

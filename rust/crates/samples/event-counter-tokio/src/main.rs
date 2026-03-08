@@ -153,7 +153,6 @@ fn default_threads() -> usize {
 ///
 /// This must match the page size used by `faster_core`. All memory
 /// accounting is in units of these pages.
-#[allow(dead_code)]
 const FASTER_PAGE_SIZE: usize = 1 << 25;
 
 // ── Async Stats Reporter ────────────────────────────────────────────────
@@ -291,7 +290,7 @@ async fn main() {
     // Size the hash index to ~2x the key space for low collision rate.
     let hash_index_log2 = ((args.campaigns as f64 * 2.0).log2().ceil() as usize).max(10);
     // Use enough pages to hold the working set in memory.
-    let buffer_size_pages = 16usize.next_power_of_two();
+    let buffer_size_pages = 16usize.max(4).next_power_of_two();
 
     let config = FasterKvConfig {
         hash_index_size_log2: hash_index_log2,
