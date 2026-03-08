@@ -12,6 +12,46 @@
 
 ---
 
+## 2026-03-08: Miri Test Expansion — Full Unsafe Coverage
+
+**What:** Expanded Miri test suite from 757 LOC (26 tests) to 1935 LOC (71 tests), covering all testable unsafe modules in faster-core.
+
+**New Test Modules Added (14):**
+- `miri_record_info` — RecordInfo bit-packing roundtrips, AtomicRecordInfo CAS
+- `miri_system_state` — EPVS Phase+Version packing, AtomicSystemState CAS
+- `miri_hash_table` — find_or_create_entry (get_unchecked paths), overflow chains, bucket_by_index
+- `miri_record_accessor` — Raw pointer construction with aligned buffers, write/read/zero/value_mut_ptr
+- `miri_log_record_ops` — LogRecordWriter/Reader full write-read cycle, raw allocation
+- `miri_log_scan` — LogScanIterator with tombstone filtering, address ordering
+- `miri_epoch_drain` — Deferred callbacks via EpochTable::defer/drain (indirect DrainList coverage)
+- `miri_compaction_scanner` — Live/dead/tombstone record classification
+- `miri_compaction_copier` — Record copy with old→new address mapping
+- `miri_compaction_address_update` — CAS-based pointer swing in hash index
+- `miri_store_operations` — Full CRUD via FasterKv+NullDevice (upsert/read/delete/overwrite)
+- `miri_prefetch` — Prefetch safe wrapper (no-op under Miri)
+
+**Key Technical Learnings:**
+1. `MutableRecordAccessor::new()` requires 8-byte aligned pointers — use `Vec<u64>` not `Vec<u8>` as backing store
+2. `KeyHash::new(0)` produces tag=0 which is treated as empty bucket entry — always use `Hashable::hash()` trait for proper hashes
+3. `DrainList` is `pub(crate)` — tested indirectly through `EpochTable::defer()` + epoch advancement
+4. Miri catches integer overflow in debug mode — use `wrapping_mul()` for hash mixing constants
+5. `HashTable::update_entry()` returns `bool`, not `Result`
+6. Compaction scanner classifies records based on hash index presence — unindexed records = dead
+
+**Modules NOT Testable Under Miri (with reasons):**
+- `recovery/index_recovery.rs` — Requires file I/O for checkpoint reading
+- `hybrid_log/flush.rs` — Device async I/O callbacks, threading
+- `store/pending_io.rs` — Async device callbacks
+- `sync_file_device.rs` — Real file system operations
+- `device.rs` (full path) — Already partially covered; full coverage needs file I/O
+
+**What This Means:**
+- **Aragorn:** All new unsafe code should have a corresponding Miri test before merge
+- **Éowyn:** Miri + Loom together cover both memory safety and concurrency correctness
+- **Frodo:** Pre-merge CI should run `cargo +nightly miri test -p faster-core --test miri_tests` (takes ~42s)
+
+---
+
 ## 2026-03-05T19:15: Comprehensive Unsafe Audit Completed
 
 **What:** Systematic security audit of all 90 unsafe sites in `rust/crates/faster-core/src/`. Categorized each into Eliminable (3%), Abstractable (24%), or Necessary (72%). Identified 44 missing SAFETY comments (49% gap).
