@@ -185,3 +185,32 @@
 - `cargo build --release -p disk-io-bench`
 - `./scripts/disk-io-bench-matrix.sh --data-dir /mnt/faster-bench`
 
+
+---
+
+### W2-01: Hash Index Software Prefetch (P-05) — Completed
+
+**Date:** 2026-03-07
+**Branch:** `legolas/hash-prefetch`
+**Commit:** `feat(hash): add software prefetch hints on bucket lookups (P-05)`
+
+**What was done:**
+- Created `hash/prefetch.rs` — cross-platform prefetch module (x86_64 `_mm_prefetch`/`_MM_HINT_T0`, aarch64 `PRFM PLDL1KEEP`, no-op fallback)
+- Added `HashTable::prefetch_bucket()` method mirroring `bucket()` safety invariants
+- Added overflow chain prefetch in `find_entry_in_bucket_chain()` — eagerly loads overflow address and prefetches next bucket while scanning current 7-entry bucket
+- Added `HashIndex::prefetch()` facade for store-level callers
+- Inserted prefetch calls in all 4 CRUD hot paths (read, upsert, RMW, delete) between hash/layout computation and index lookup for ~10-20 cycles latency cover
+- 11 new unit tests across prefetch.rs (4), table.rs (4), index.rs (3)
+- Clippy clean, all 1654 tests pass
+
+**Key design decisions:**
+- L1 prefetch (`_MM_HINT_T0`) because bucket accessed within ~10 instructions
+- Read-only prefetch — hash lookups are read-dominant, write prefetch would cause MESI invalidation traffic
+- Single cache line — 64B bucket fits exactly in one line
+- Overflow chain: moved overflow address load before entry scan to maximize prefetch lead time
+
+## Learnings
+
+- **Shared working directory hazard**: Multiple agents modify the same files concurrently. `git checkout -- <file>` restores to HEAD and wipes ALL uncommitted changes including yours. Always stage + commit immediately after editing.
+- **Atomic commit workflow**: In a multi-agent environment, the only safe workflow is: edit → stage → commit in rapid succession. Never leave changes unstaged.
+- **Unicode in Python string matching**: Box-drawing characters (──) and em-dashes (—) match fine when using proper Python Unicode escapes (\u2500, \u2014), not raw byte sequences.
