@@ -533,7 +533,7 @@ impl<F: Functions> Drop for FasterSession<F> {
 /// The lifetime `'a` ties this guard to the session borrow, preventing
 /// use-after-end_unsafe scenarios at compile time.
 pub struct SessionGuard<'a, F: Functions> {
-    session: &'a mut FasterSession<F>,
+    pub(super) session: &'a mut FasterSession<F>,
 }
 
 impl<'a, F: Functions> SessionGuard<'a, F> {
@@ -614,7 +614,7 @@ impl<F: Functions> Drop for SessionGuard<'_, F> {
 /// store.dispose_session(session);
 /// ```
 pub struct UnsafeContext<'a, F: Functions> {
-    session: &'a mut FasterSession<F>,
+    pub(super) session: &'a mut FasterSession<F>,
 }
 
 impl<'a, F: Functions> UnsafeContext<'a, F> {
