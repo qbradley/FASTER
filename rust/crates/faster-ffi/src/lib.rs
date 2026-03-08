@@ -9,7 +9,7 @@
 //!
 //! - [`handle`] — Opaque handle table (type-safe, thread-safe `u64` → Rust object mapping)
 //! - [`error`] — C-compatible `#[repr(C)]` status codes
-//! - [`functions`] — `ByteSliceFunctions` — `Vec<u8>` key/value `Functions` impl for FFI
+//! - [`functions`] — `CallbackFunctions` — `Vec<u8>` key/value `Functions` impl for FFI
 //! - [`session`] — Session wrapper types for the handle table
 //!
 //! ## FFI Functions
@@ -48,6 +48,7 @@
 
 pub mod error;
 pub mod functions;
+pub mod callbacks;
 pub mod handle;
 pub mod session;
 
@@ -60,12 +61,12 @@ use faster_core::status::OperationStatus;
 use faster_core::{FasterKv, FasterKvConfig, NullDevice, SyncFileDevice};
 
 use crate::error::FasterStatus;
-use crate::functions::ByteSliceFunctions;
+use crate::callbacks::CallbackFunctions;
 use crate::handle::{FasterHandle, HandleTable, INVALID_HANDLE};
 use crate::session::SessionCell;
 
 /// The concrete store type used by the FFI layer.
-type FfiStore = FasterKv<ByteSliceFunctions>;
+type FfiStore = FasterKv<CallbackFunctions>;
 
 /// Global handle table for **store** handles.
 ///
@@ -160,7 +161,7 @@ pub extern "C" fn faster_open() -> FasterHandle {
     panic::catch_unwind(|| {
         let store = FfiStore::new(
             FasterKvConfig::default(),
-            ByteSliceFunctions,
+            CallbackFunctions,
             NullDevice::new(),
         );
         store_handles().insert(store)
@@ -204,7 +205,7 @@ pub unsafe extern "C" fn faster_open_with_path(path_ptr: *const u8, path_len: u3
             Err(_) => return INVALID_HANDLE,
         };
 
-        let store = FfiStore::new(FasterKvConfig::default(), ByteSliceFunctions, device);
+        let store = FfiStore::new(FasterKvConfig::default(), CallbackFunctions, device);
         store_handles().insert(store)
     }))
     .unwrap_or(INVALID_HANDLE)
@@ -547,7 +548,7 @@ pub unsafe extern "C" fn faster_delete(
 
 /// Read-modify-write: atomically read and replace the value for a key.
 ///
-/// For [`ByteSliceFunctions`], RMW performs full-value replacement (the input
+/// For [`CallbackFunctions`], RMW performs full-value replacement (the input
 /// becomes the new value). If the key does not exist, it is created.
 ///
 /// # Parameters
@@ -883,6 +884,291 @@ pub unsafe extern "C" fn faster_wait_for_all_pending(
 // ══════════════════════════════════════════════════════════════════════
 // Tests
 // ══════════════════════════════════════════════════════════════════════
+
+// ══════════════════════════════════════════════════════════════════════
+// Extended operations with C callback function pointers
+// ══════════════════════════════════════════════════════════════════════
+
+/// Helper: extract a byte slice from an FFI pointer+length pair.
+///
+/// Returns an empty slice if `len == 0`, regardless of pointer value.
+///
+/// # Safety
+///
+/// `ptr` must be valid for reads of `len` bytes when `len > 0`.
+unsafe fn extract_bytes(ptr: *const u8, len: u32) -> Vec<u8> {
+    if len > 0 {
+        // SAFETY: Caller guarantees pointer validity.
+        unsafe { std::slice::from_raw_parts(ptr, len as usize) }.to_vec()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Read-modify-write with user-supplied C callback function pointers.
+///
+/// When callback pointers are non-null, they override the default
+/// byte-slice replacement semantics for this single RMW operation.
+/// Null callback pointers fall back to the standard behavior.
+///
+/// # Parameters
+///
+/// - `store` / `session` — Store and session handles.
+/// - `key_ptr` / `key_len` — Key bytes.
+/// - `input_ptr` / `input_len` — Input bytes (the modification delta).
+/// - `initial_cb` — Called to initialize a new value when the key is not found.
+/// - `copy_cb` — Called to create a new value by copying and modifying a read-only record.
+/// - `atomic_cb` — Called for in-place update in the mutable region.
+///
+/// # Returns
+///
+/// A [`FasterStatus`] indicating the outcome.
+///
+/// # Safety
+///
+/// Same pointer requirements as [`faster_rmw`], plus callback function
+/// pointers (if non-null) must be valid `extern "C"` functions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn faster_rmw_ex(
+    store: FasterHandle,
+    session: FasterHandle,
+    key_ptr: *const u8,
+    key_len: u32,
+    input_ptr: *const u8,
+    input_len: u32,
+    initial_cb: Option<crate::callbacks::FasterRmwInitialFn>,
+    copy_cb: Option<crate::callbacks::FasterRmwCopyFn>,
+    atomic_cb: Option<crate::callbacks::FasterRmwAtomicFn>,
+) -> FasterStatus {
+    if key_len > 0 && key_ptr.is_null() {
+        return FasterStatus::InvalidArgument;
+    }
+    if input_len > 0 && input_ptr.is_null() {
+        return FasterStatus::InvalidArgument;
+    }
+
+    // SAFETY: Caller guarantees pointer validity per doc contract.
+    let key = unsafe { extract_bytes(key_ptr, key_len) };
+    let input = unsafe { extract_bytes(input_ptr, input_len) };
+
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        // Install callbacks for this operation via RAII guard.
+        let _guard = crate::callbacks::RmwCallbackGuard::install(
+            crate::callbacks::RmwCallbackSet {
+                initial: initial_cb,
+                copy_update: copy_cb,
+                in_place: atomic_cb,
+            },
+        );
+
+        match with_store_session(store, session, |kv, sess| {
+            let mut output: Option<Vec<u8>> = None;
+            kv.rmw(sess, &key, &input, &mut output, ())
+        }) {
+            Ok(status) => to_ffi_status(status),
+            Err(e) => e,
+        }
+    }))
+    .unwrap_or(FasterStatus::InternalError)
+}
+
+/// Upsert with user-supplied C callback function pointers.
+///
+/// When callback pointers are non-null, they override the default
+/// byte-slice replacement semantics for this single Upsert operation.
+///
+/// # Parameters
+///
+/// - `store` / `session` — Store and session handles.
+/// - `key_ptr` / `key_len` — Key bytes.
+/// - `input_ptr` / `input_len` — Input bytes (the new value data).
+/// - `put_cb` — Called to write a new value.
+/// - `put_atomic_cb` — Called for in-place update in the mutable region.
+///
+/// # Safety
+///
+/// Same pointer requirements as [`faster_upsert`], plus callback function
+/// pointers (if non-null) must be valid `extern "C"` functions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn faster_upsert_ex(
+    store: FasterHandle,
+    session: FasterHandle,
+    key_ptr: *const u8,
+    key_len: u32,
+    input_ptr: *const u8,
+    input_len: u32,
+    put_cb: Option<crate::callbacks::FasterUpsertPutFn>,
+    put_atomic_cb: Option<crate::callbacks::FasterUpsertPutAtomicFn>,
+) -> FasterStatus {
+    if key_len > 0 && key_ptr.is_null() {
+        return FasterStatus::InvalidArgument;
+    }
+    if input_len > 0 && input_ptr.is_null() {
+        return FasterStatus::InvalidArgument;
+    }
+
+    // SAFETY: Caller guarantees pointer validity per doc contract.
+    let key = unsafe { extract_bytes(key_ptr, key_len) };
+    let input = unsafe { extract_bytes(input_ptr, input_len) };
+
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        let _guard = crate::callbacks::UpsertCallbackGuard::install(
+            crate::callbacks::UpsertCallbackSet {
+                put: put_cb,
+                put_atomic: put_atomic_cb,
+            },
+        );
+
+        match with_store_session(store, session, |kv, sess| {
+            kv.upsert(sess, &key, &input, ())
+        }) {
+            Ok(status) => to_ffi_status(status),
+            Err(e) => e,
+        }
+    }))
+    .unwrap_or(FasterStatus::InternalError)
+}
+
+/// Read with user-supplied C callback function pointers.
+///
+/// When callback pointers are non-null, they override the default
+/// behavior (copy value → output buffer) for this single Read operation.
+///
+/// # Parameters
+///
+/// - `store` / `session` — Store and session handles.
+/// - `key_ptr` / `key_len` — Key bytes.
+/// - `output_ptr` / `output_buf_len` — Output buffer and its capacity.
+/// - `output_len` — Written with the actual output length on success.
+/// - `get_cb` — Called to extract output from the read record.
+/// - `get_atomic_cb` — Called for reads from the mutable region.
+///
+/// # Safety
+///
+/// Same pointer requirements as [`faster_read`], plus callback function
+/// pointers (if non-null) must be valid `extern "C"` functions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn faster_read_ex(
+    store: FasterHandle,
+    session: FasterHandle,
+    key_ptr: *const u8,
+    key_len: u32,
+    output_ptr: *mut u8,
+    output_buf_len: u32,
+    output_len: *mut u32,
+    get_cb: Option<crate::callbacks::FasterReadGetFn>,
+    get_atomic_cb: Option<crate::callbacks::FasterReadGetAtomicFn>,
+) -> FasterStatus {
+    if key_len > 0 && key_ptr.is_null() {
+        return FasterStatus::InvalidArgument;
+    }
+    if output_buf_len > 0 && output_ptr.is_null() {
+        return FasterStatus::InvalidArgument;
+    }
+
+    // SAFETY: Caller guarantees pointer validity per doc contract.
+    let key = unsafe { extract_bytes(key_ptr, key_len) };
+
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        let _guard = crate::callbacks::ReadCallbackGuard::install(
+            crate::callbacks::ReadCallbackSet {
+                get: get_cb,
+                get_atomic: get_atomic_cb,
+            },
+        );
+
+        match with_store_session(store, session, |kv, sess| {
+            let input = Vec::new();
+            kv.read(sess, &key, &input, ())
+        }) {
+            Ok((status, output_opt)) => {
+                let ffi_status = to_ffi_status(status);
+                if let Some(output_data) = output_opt {
+                    let copy_len = output_data.len().min(output_buf_len as usize);
+                    if copy_len > 0 && !output_ptr.is_null() {
+                        // SAFETY: output_ptr valid for output_buf_len bytes per caller contract.
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(
+                                output_data.as_ptr(),
+                                output_ptr,
+                                copy_len,
+                            );
+                        }
+                    }
+                    if !output_len.is_null() {
+                        // SAFETY: output_len is valid per caller contract.
+                        unsafe { *output_len = output_data.len() as u32 };
+                    }
+                }
+                ffi_status
+            }
+            Err(e) => e,
+        }
+    }))
+    .unwrap_or(FasterStatus::InternalError)
+}
+
+/// Refresh the session's epoch, draining completed operations.
+///
+/// This is an alias for [`faster_session_refresh`] provided for
+/// API symmetry with the C++ `Refresh()` method.
+///
+/// # Safety
+///
+/// - `completed_out`, if non-null, must point to a valid, writable `u32`.
+/// - Must be called from the thread that owns `session`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn faster_refresh(
+    store: FasterHandle,
+    session: FasterHandle,
+    completed_out: *mut u32,
+) -> FasterStatus {
+    // SAFETY: Same requirements as faster_session_refresh.
+    unsafe { faster_session_refresh(store, session, completed_out) }
+}
+
+/// Create a fresh session (session continuation stub).
+///
+/// In the C++ FASTER API, `ContinueSession` resumes a session from a
+/// checkpoint token. This Rust implementation does not yet support true
+/// session continuation, so this creates a fresh session and writes
+/// serial number 0 to `serial_out`.
+///
+/// # Parameters
+///
+/// - `store` — Store handle from [`faster_open`].
+/// - `serial_out` — If non-null, written with the serial number (always 0).
+///
+/// # Returns
+///
+/// A new session handle, or [`INVALID_HANDLE`] on failure.
+///
+/// # Safety
+///
+/// - `serial_out`, if non-null, must point to a valid, writable `u64`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn faster_continue_session(
+    store: FasterHandle,
+    serial_out: *mut u64,
+) -> FasterHandle {
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        let store_lock = STORE_TABLE.read();
+        let kv = match store_lock.get(store) {
+            Some(s) => s,
+            None => return INVALID_HANDLE,
+        };
+        let session = kv.start_session();
+        let handle = SESSION_TABLE.write().insert(SessionCell::new(session));
+
+        if !serial_out.is_null() {
+            // SAFETY: Caller guarantees serial_out is valid and writable.
+            unsafe { *serial_out = 0 };
+        }
+
+        handle
+    }))
+    .unwrap_or(INVALID_HANDLE)
+}
 
 #[cfg(test)]
 mod tests {
@@ -2359,5 +2645,407 @@ mod tests {
     fn thread_mismatch_status_code() {
         assert_eq!(FasterStatus::ThreadMismatch as u32, 105);
         assert!(FasterStatus::ThreadMismatch.is_error());
+    }
+
+    // ── Extended operation tests ────────────────────────────────────
+
+    /// Sum-store RMW callback: initial sets value = input
+    extern "C" fn test_sum_initial(
+        _key_ptr: *const u8, _key_len: usize,
+        input_ptr: *const u8, input_len: usize,
+        value_ptr: *mut u8, value_len: *mut usize,
+    ) -> i32 {
+        unsafe {
+            std::ptr::copy_nonoverlapping(input_ptr, value_ptr, input_len);
+            *value_len = input_len;
+        }
+        0
+    }
+
+    /// Sum-store RMW callback: atomic adds input (u64) to value (u64)
+    extern "C" fn test_sum_atomic(
+        _key_ptr: *const u8, _key_len: usize,
+        input_ptr: *const u8, input_len: usize,
+        value_ptr: *mut u8, value_len: usize,
+    ) -> i32 {
+        assert_eq!(input_len, 8);
+        assert_eq!(value_len, 8);
+        unsafe {
+            let delta = u64::from_le_bytes(
+                std::slice::from_raw_parts(input_ptr, 8).try_into().unwrap(),
+            );
+            let current = u64::from_le_bytes(
+                std::slice::from_raw_parts(value_ptr, 8).try_into().unwrap(),
+            );
+            let result = current + delta;
+            std::ptr::copy_nonoverlapping(result.to_le_bytes().as_ptr(), value_ptr, 8);
+        }
+        0
+    }
+
+    /// Sum-store RMW callback: copy-update adds input to old value
+    extern "C" fn test_sum_copy(
+        _key_ptr: *const u8, _key_len: usize,
+        input_ptr: *const u8, input_len: usize,
+        old_ptr: *const u8, old_len: usize,
+        new_ptr: *mut u8, new_len: *mut usize,
+    ) -> i32 {
+        assert_eq!(input_len, 8);
+        assert_eq!(old_len, 8);
+        unsafe {
+            let delta = u64::from_le_bytes(
+                std::slice::from_raw_parts(input_ptr, 8).try_into().unwrap(),
+            );
+            let old_val = u64::from_le_bytes(
+                std::slice::from_raw_parts(old_ptr, 8).try_into().unwrap(),
+            );
+            let result = old_val + delta;
+            std::ptr::copy_nonoverlapping(result.to_le_bytes().as_ptr(), new_ptr, 8);
+            *new_len = 8;
+        }
+        0
+    }
+
+    #[test]
+    fn rmw_ex_sum_store_pattern() {
+        let store = faster_open();
+        let session = faster_session_start(store);
+
+        let key = 42u64.to_le_bytes();
+        let input = 10u64.to_le_bytes();
+
+        // First RMW creates the record via initial callback
+        let status = unsafe {
+            faster_rmw_ex(
+                store, session,
+                key.as_ptr(), key.len() as u32,
+                input.as_ptr(), input.len() as u32,
+                Some(test_sum_initial),
+                Some(test_sum_copy),
+                Some(test_sum_atomic),
+            )
+        };
+        assert!(status.is_success());
+
+        // Second RMW adds to existing via atomic callback
+        let input2 = 5u64.to_le_bytes();
+        let status = unsafe {
+            faster_rmw_ex(
+                store, session,
+                key.as_ptr(), key.len() as u32,
+                input2.as_ptr(), input2.len() as u32,
+                Some(test_sum_initial),
+                Some(test_sum_copy),
+                Some(test_sum_atomic),
+            )
+        };
+        assert!(status.is_success());
+
+        // Read back — should be 15
+        let mut buf = [0u8; 8];
+        let mut out_len: u32 = 0;
+        let status = unsafe {
+            faster_read(
+                store, session,
+                key.as_ptr(), key.len() as u32,
+                buf.as_mut_ptr(), buf.len() as u32,
+                &mut out_len,
+            )
+        };
+        assert!(status.is_success());
+        assert_eq!(out_len, 8);
+        assert_eq!(u64::from_le_bytes(buf), 15);
+
+        faster_session_end(store, session);
+        faster_close(store);
+    }
+
+    #[test]
+    fn rmw_ex_null_callbacks_fallback() {
+        let store = faster_open();
+        let session = faster_session_start(store);
+
+        let key = b"nulltest";
+        let input = b"value1";
+
+        // All-null callbacks → byte-slice replacement fallback
+        let status = unsafe {
+            faster_rmw_ex(
+                store, session,
+                key.as_ptr(), key.len() as u32,
+                input.as_ptr(), input.len() as u32,
+                None, None, None,
+            )
+        };
+        assert!(status.is_success());
+
+        let mut buf = [0u8; 32];
+        let mut out_len: u32 = 0;
+        let status = unsafe {
+            faster_read(
+                store, session,
+                key.as_ptr(), key.len() as u32,
+                buf.as_mut_ptr(), buf.len() as u32,
+                &mut out_len,
+            )
+        };
+        assert!(status.is_success());
+        assert_eq!(&buf[..out_len as usize], b"value1");
+
+        faster_session_end(store, session);
+        faster_close(store);
+    }
+
+    #[test]
+    fn upsert_ex_custom_put() {
+        extern "C" fn uppercase_put(
+            _key_ptr: *const u8, _key_len: usize,
+            input_ptr: *const u8, input_len: usize,
+            value_ptr: *mut u8, _value_len: usize,
+            actual_len: *mut usize,
+        ) -> i32 {
+            unsafe {
+                let input = std::slice::from_raw_parts(input_ptr, input_len);
+                for (i, &b) in input.iter().enumerate() {
+                    *value_ptr.add(i) = b.to_ascii_uppercase();
+                }
+                *actual_len = input_len;
+            }
+            0
+        }
+
+        let store = faster_open();
+        let session = faster_session_start(store);
+
+        let key = b"upsert_key";
+        let input = b"hello";
+
+        let status = unsafe {
+            faster_upsert_ex(
+                store, session,
+                key.as_ptr(), key.len() as u32,
+                input.as_ptr(), input.len() as u32,
+                Some(uppercase_put), None,
+            )
+        };
+        assert!(status.is_success());
+
+        let mut buf = [0u8; 32];
+        let mut out_len: u32 = 0;
+        let status = unsafe {
+            faster_read(
+                store, session,
+                key.as_ptr(), key.len() as u32,
+                buf.as_mut_ptr(), buf.len() as u32,
+                &mut out_len,
+            )
+        };
+        assert!(status.is_success());
+        assert_eq!(&buf[..out_len as usize], b"HELLO");
+
+        faster_session_end(store, session);
+        faster_close(store);
+    }
+
+    #[test]
+    fn upsert_ex_null_callbacks_fallback() {
+        let store = faster_open();
+        let session = faster_session_start(store);
+
+        let key = b"upsert_null";
+        let input = b"plain_value";
+
+        let status = unsafe {
+            faster_upsert_ex(
+                store, session,
+                key.as_ptr(), key.len() as u32,
+                input.as_ptr(), input.len() as u32,
+                None, None,
+            )
+        };
+        assert!(status.is_success());
+
+        let mut buf = [0u8; 32];
+        let mut out_len: u32 = 0;
+        let status = unsafe {
+            faster_read(
+                store, session,
+                key.as_ptr(), key.len() as u32,
+                buf.as_mut_ptr(), buf.len() as u32,
+                &mut out_len,
+            )
+        };
+        assert!(status.is_success());
+        assert_eq!(&buf[..out_len as usize], b"plain_value");
+
+        faster_session_end(store, session);
+        faster_close(store);
+    }
+
+    #[test]
+    fn read_ex_custom_result() {
+        extern "C" fn prefix_read(
+            _key_ptr: *const u8, _key_len: usize,
+            value_ptr: *const u8, value_len: usize,
+            output_ptr: *mut u8, output_len: *mut usize,
+        ) -> i32 {
+            unsafe {
+                let prefix = b"READ:";
+                let total = prefix.len() + value_len;
+                if total > *output_len {
+                    *output_len = total;
+                    return 1;
+                }
+                std::ptr::copy_nonoverlapping(prefix.as_ptr(), output_ptr, prefix.len());
+                std::ptr::copy_nonoverlapping(value_ptr, output_ptr.add(prefix.len()), value_len);
+                *output_len = total;
+            }
+            0
+        }
+
+        let store = faster_open();
+        let session = faster_session_start(store);
+
+        // Insert a value first
+        let key = b"read_key";
+        let value = b"data";
+        let status = unsafe {
+            faster_upsert(
+                store, session,
+                key.as_ptr(), key.len() as u32,
+                value.as_ptr(), value.len() as u32,
+            )
+        };
+        assert!(status.is_success());
+
+        // Read with custom callback
+        let mut buf = [0u8; 32];
+        let mut out_len: u32 = 0;
+        let status = unsafe {
+            faster_read_ex(
+                store, session,
+                key.as_ptr(), key.len() as u32,
+                buf.as_mut_ptr(), buf.len() as u32,
+                &mut out_len,
+                Some(prefix_read), Some(prefix_read),
+            )
+        };
+        assert!(status.is_success());
+        assert_eq!(&buf[..out_len as usize], b"READ:data");
+
+        faster_session_end(store, session);
+        faster_close(store);
+    }
+
+    #[test]
+    fn read_ex_null_callbacks_fallback() {
+        let store = faster_open();
+        let session = faster_session_start(store);
+
+        let key = b"read_null";
+        let value = b"original";
+        let status = unsafe {
+            faster_upsert(
+                store, session,
+                key.as_ptr(), key.len() as u32,
+                value.as_ptr(), value.len() as u32,
+            )
+        };
+        assert!(status.is_success());
+
+        let mut buf = [0u8; 32];
+        let mut out_len: u32 = 0;
+        let status = unsafe {
+            faster_read_ex(
+                store, session,
+                key.as_ptr(), key.len() as u32,
+                buf.as_mut_ptr(), buf.len() as u32,
+                &mut out_len,
+                None, None,
+            )
+        };
+        assert!(status.is_success());
+        assert_eq!(&buf[..out_len as usize], b"original");
+
+        faster_session_end(store, session);
+        faster_close(store);
+    }
+
+    #[test]
+    fn refresh_basic() {
+        let store = faster_open();
+        let session = faster_session_start(store);
+
+        let mut completed: u32 = 0;
+        let status = unsafe { faster_refresh(store, session, &mut completed) };
+        assert_eq!(status, FasterStatus::Ok);
+
+        faster_session_end(store, session);
+        faster_close(store);
+    }
+
+    #[test]
+    fn refresh_null_completed_out() {
+        let store = faster_open();
+        let session = faster_session_start(store);
+
+        let status = unsafe { faster_refresh(store, session, std::ptr::null_mut()) };
+        assert_eq!(status, FasterStatus::Ok);
+
+        faster_session_end(store, session);
+        faster_close(store);
+    }
+
+    #[test]
+    fn continue_session_basic() {
+        let store = faster_open();
+        let mut serial: u64 = 999;
+        let session = unsafe { faster_continue_session(store, &mut serial) };
+        assert_ne!(session, INVALID_HANDLE);
+        assert_eq!(serial, 0);
+
+        // The continued session should be usable
+        let key = b"cont_key";
+        let value = b"cont_val";
+        let status = unsafe {
+            faster_upsert(
+                store, session,
+                key.as_ptr(), key.len() as u32,
+                value.as_ptr(), value.len() as u32,
+            )
+        };
+        assert!(status.is_success());
+
+        faster_session_end(store, session);
+        faster_close(store);
+    }
+
+    #[test]
+    fn continue_session_null_serial() {
+        let store = faster_open();
+        let session = unsafe { faster_continue_session(store, std::ptr::null_mut()) };
+        assert_ne!(session, INVALID_HANDLE);
+
+        faster_session_end(store, session);
+        faster_close(store);
+    }
+
+    #[test]
+    fn continue_session_invalid_store() {
+        let session = unsafe { faster_continue_session(INVALID_HANDLE, std::ptr::null_mut()) };
+        assert_eq!(session, INVALID_HANDLE);
+    }
+
+    #[test]
+    fn async_callback_fn_type_compatible() {
+        // Verify the type can hold a valid extern "C" function pointer
+        extern "C" fn dummy_async_cb(_status: u8, _context: u64) {}
+        let _cb: crate::callbacks::FasterAsyncCallbackFn = dummy_async_cb;
+        let _opt: Option<crate::callbacks::FasterAsyncCallbackFn> = Some(dummy_async_cb);
+        // Option<extern "C" fn> should be the same size as a function pointer (niche optimization)
+        assert_eq!(
+            std::mem::size_of::<Option<crate::callbacks::FasterAsyncCallbackFn>>(),
+            std::mem::size_of::<usize>(),
+        );
     }
 }

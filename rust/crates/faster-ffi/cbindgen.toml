@@ -27,6 +27,14 @@ include = [
     "FasterCheckpointResult",
     "FasterHandle",
     "INVALID_HANDLE",
+    "FasterRmwInitialFn",
+    "FasterRmwCopyFn",
+    "FasterRmwAtomicFn",
+    "FasterUpsertPutFn",
+    "FasterUpsertPutAtomicFn",
+    "FasterReadGetFn",
+    "FasterReadGetAtomicFn",
+    "FasterAsyncCallbackFn",
 ]
 
 [export.rename]
