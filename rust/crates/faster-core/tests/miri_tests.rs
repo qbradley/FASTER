@@ -1,12 +1,18 @@
 //! Miri-based undefined behavior tests for FASTER's unsafe code.
 //!
-//! These tests exercise the raw pointer arithmetic, allocation, and free-list
-//! operations in `allocator.rs` and the cache-line-aligned hash bucket
-//! operations in `hash_bucket.rs`. They are gated behind `#[cfg(miri)]` so
-//! they only run under `cargo +nightly miri test`.
+//! These tests exercise the raw pointer arithmetic, allocation, free-list
+//! operations, record accessors, log scanning, hash table operations,
+//! compaction, epoch-deferred drain, state packing, and record metadata
+//! across the entire `faster-core` crate. They are gated behind
+//! `#[cfg(miri)]` so they only run under `cargo +nightly miri test`.
 //!
 //! **Constraints:** Miri is slow, so all tests use small iteration counts.
 //! All tests are single-threaded (Miri has limited concurrency support).
+//!
+//! **Coverage:** allocator, buffer_pool, device callbacks, hash bucket,
+//! hash table (get_unchecked paths), hybrid_log page/allocator/record_ops/scan,
+//! compaction scanner/copier/address_update, epoch drain (via EpochTable::defer),
+//! record_info bit-packing, state EPVS packing, store CRUD operations.
 
 // -----------------------------------------------------------------------
 // Allocator tests — exercises resolve(), ptr::write/read (free-list),
@@ -664,8 +670,7 @@ mod miri_hybrid_log_page {
         );
 
         // Write a pattern.
-        // SAFETY: Single-threaded, exclusive access via &mut.
-        let slice = unsafe { frame.as_mut_slice() };
+        let slice = frame.as_mut_slice();
         for (i, byte) in slice.iter_mut().enumerate() {
             *byte = (i & 0xFF) as u8;
         }
@@ -753,5 +758,1178 @@ mod miri_hybrid_log_allocator {
         }
 
         // Allocator drops here — Miri catches leaks or UB.
+    }
+}
+
+// -----------------------------------------------------------------------
+// RecordInfo tests — exercises bit-packing and atomic CAS on record
+// metadata (record_info.rs). While the packing itself is const-fn safe
+// code, AtomicRecordInfo uses atomics that Miri validates for data races
+// and ordering correctness.
+// -----------------------------------------------------------------------
+
+#[cfg(miri)]
+mod miri_record_info {
+    use core::sync::atomic::Ordering;
+    use faster_core::address::{LogicalAddress, Offset, Page};
+    use faster_core::record::{AtomicRecordInfo, RecordInfo};
+
+    #[test]
+    fn record_info_roundtrip_all_flags() {
+        let addr = LogicalAddress::new(Page(42), Offset(1024));
+        let info = RecordInfo::new(addr, 100, false, false, false);
+
+        assert_eq!(info.previous_address(), addr);
+        assert_eq!(info.checkpoint_version(), 100);
+        assert!(!info.is_invalid());
+        assert!(!info.is_tombstone());
+        assert!(!info.is_final());
+    }
+
+    #[test]
+    fn record_info_flag_mutations() {
+        let info = RecordInfo::new(LogicalAddress::INVALID, 0, false, false, false);
+
+        let with_tomb = RecordInfo::new(LogicalAddress::INVALID, 0, false, true, false);
+        assert!(with_tomb.is_tombstone());
+        assert!(!with_tomb.is_invalid());
+
+        let with_invalid = RecordInfo::new(LogicalAddress::INVALID, 0, true, false, false);
+        assert!(with_invalid.is_invalid());
+        assert!(!with_invalid.is_tombstone());
+
+        let with_final = RecordInfo::new(LogicalAddress::INVALID, 0, false, false, true);
+        assert!(with_final.is_final());
+
+        // Raw roundtrip
+        let raw = info.raw();
+        let back = RecordInfo::from_raw(raw);
+        assert_eq!(back.raw(), raw);
+    }
+
+    #[test]
+    fn atomic_record_info_load_store_cas() {
+        let info = RecordInfo::new(
+            LogicalAddress::new(Page(1), Offset(8)),
+            5,
+            false,
+            false,
+            false,
+        );
+        let atomic = AtomicRecordInfo::new(info);
+
+        let loaded = atomic.load(Ordering::Acquire);
+        assert_eq!(loaded.previous_address(), info.previous_address());
+        assert_eq!(loaded.checkpoint_version(), 5);
+
+        // Store a new value
+        let new_info = RecordInfo::new(
+            LogicalAddress::new(Page(2), Offset(16)),
+            10,
+            true,
+            false,
+            false,
+        );
+        atomic.store(new_info, Ordering::Release);
+        let loaded2 = atomic.load(Ordering::Acquire);
+        assert!(loaded2.is_invalid());
+        assert_eq!(loaded2.checkpoint_version(), 10);
+
+        // CAS — should succeed
+        let cas_target = RecordInfo::new(
+            LogicalAddress::new(Page(3), Offset(32)),
+            15,
+            false,
+            true,
+            false,
+        );
+        let result =
+            atomic.compare_exchange(new_info, cas_target, Ordering::AcqRel, Ordering::Acquire);
+        assert!(result.is_ok());
+        let loaded3 = atomic.load(Ordering::Acquire);
+        assert!(loaded3.is_tombstone());
+
+        // CAS — should fail (stale expected)
+        let stale = new_info;
+        let result2 = atomic.compare_exchange(
+            stale,
+            RecordInfo::new(LogicalAddress::ZERO, 0, false, false, false),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        assert!(result2.is_err());
+    }
+
+    #[test]
+    fn record_info_max_version_and_address() {
+        // Version is 12-bit (0..4095) per the architecture
+        let addr = LogicalAddress::new(Page(8_388_607), Offset(33_554_431));
+        let info = RecordInfo::new(addr, 4095, true, true, true);
+        assert_eq!(info.checkpoint_version(), 4095);
+        assert!(info.is_invalid());
+        assert!(info.is_tombstone());
+        assert!(info.is_final());
+        assert_eq!(info.previous_address(), addr);
+    }
+}
+
+// -----------------------------------------------------------------------
+// SystemState tests — exercises EPVS packing/unpacking and atomic CAS
+// on system state (state/mod.rs). Validates that Phase+Version round-trip
+// through u64 packing without corruption.
+// -----------------------------------------------------------------------
+
+#[cfg(miri)]
+mod miri_system_state {
+    use core::sync::atomic::Ordering;
+    use faster_core::state::{AtomicSystemState, Phase, SystemState};
+
+    #[test]
+    fn system_state_pack_unpack() {
+        let state = SystemState::new(Phase::Rest, 0);
+        assert!(state.phase().is_rest());
+        assert_eq!(state.version(), 0);
+
+        let state2 = SystemState::new(Phase::InProgress, 42);
+        assert_eq!(state2.phase(), Phase::InProgress);
+        assert_eq!(state2.version(), 42);
+
+        // Word roundtrip
+        let word = state2.word();
+        let back = SystemState::from_word(word);
+        assert_eq!(back.phase(), Phase::InProgress);
+        assert_eq!(back.version(), 42);
+    }
+
+    #[test]
+    fn system_state_all_phases() {
+        let phases = [
+            Phase::Rest,
+            Phase::Prepare,
+            Phase::InProgress,
+            Phase::WaitFlush,
+            Phase::WaitCompletion,
+            Phase::PersistenceCallback,
+            Phase::PrepareGrow,
+            Phase::InProgressGrow,
+            Phase::WaitCompletionGrow,
+        ];
+
+        for (i, &phase) in phases.iter().enumerate() {
+            let state = SystemState::new(phase, i as u64 * 1000);
+            assert_eq!(state.phase(), phase);
+            assert_eq!(state.version(), i as u64 * 1000);
+        }
+    }
+
+    #[test]
+    fn system_state_intermediate_bit() {
+        let state = SystemState::new(Phase::Prepare, 7);
+        assert!(!state.is_intermediate());
+
+        let intermediate = state.make_intermediate();
+        assert!(intermediate.is_intermediate());
+        // Phase and version survive the intermediate bit
+        assert_eq!(intermediate.version(), 7);
+    }
+
+    #[test]
+    fn atomic_system_state_cas() {
+        let initial = SystemState::new(Phase::Rest, 1);
+        let atomic = AtomicSystemState::new(initial);
+
+        let loaded = atomic.load(Ordering::Acquire);
+        assert!(loaded.phase().is_rest());
+        assert_eq!(loaded.version(), 1);
+
+        // CAS to Prepare
+        let new_state = SystemState::new(Phase::Prepare, 2);
+        let result =
+            atomic.compare_exchange(initial, new_state, Ordering::AcqRel, Ordering::Acquire);
+        assert!(result.is_ok());
+
+        let loaded2 = atomic.load(Ordering::Acquire);
+        assert_eq!(loaded2.phase(), Phase::Prepare);
+        assert_eq!(loaded2.version(), 2);
+
+        // CAS with stale value — should fail
+        let result2 =
+            atomic.compare_exchange(initial, new_state, Ordering::AcqRel, Ordering::Acquire);
+        assert!(result2.is_err());
+    }
+}
+
+// -----------------------------------------------------------------------
+// HashTable tests — exercises the table-level find_or_create_entry,
+// find_entry, and update_entry operations that use unsafe get_unchecked
+// for hot-path bucket access (hash/table.rs).
+// -----------------------------------------------------------------------
+
+#[cfg(miri)]
+mod miri_hash_table {
+    use faster_core::address::{LogicalAddress, Offset, Page};
+    use faster_core::hash::{Hashable, KeyHash};
+    use faster_core::hash_table::HashTable;
+
+    #[test]
+    fn find_or_create_entry_basic() {
+        // Small table (4 buckets) — exercises get_unchecked in bucket()
+        let table = HashTable::new(2);
+        assert_eq!(table.num_buckets(), 4);
+
+        // Use Hashable to get a proper hash with non-zero tag
+        let hash = 42u64.hash();
+        let addr = LogicalAddress::new(Page(10), Offset(256));
+
+        // First call — should create a tentative entry
+        let result = table.find_or_create_entry(hash, addr);
+        assert!(result.created);
+        assert!(result.entry.is_tentative());
+        assert_eq!(result.entry.tag(), hash.tag());
+
+        // Commit the entry by clearing the tentative bit
+        let committed = result.entry.without_tentative();
+        assert!(table.update_entry(result.slot, result.entry, committed));
+
+        // Second find — should find the committed entry
+        let found = table.find_entry(hash);
+        assert!(found.is_some());
+        let (entry, _slot) = found.unwrap();
+        assert!(!entry.is_tentative());
+        assert_eq!(entry.address(), addr);
+    }
+
+    #[test]
+    fn find_or_create_multiple_hashes() {
+        let table = HashTable::new(4); // 16 buckets
+
+        // Use Hashable trait for proper hash distribution
+        let keys: Vec<u64> = (100..110).collect();
+        let hashes: Vec<KeyHash> = keys.iter().map(|k| k.hash()).collect();
+
+        // Insert entries
+        let mut inserted = Vec::new();
+        for (i, &hash) in hashes.iter().enumerate() {
+            let addr = LogicalAddress::new(Page(i as u32), Offset(0));
+            let result = table.find_or_create_entry(hash, addr);
+            if result.created {
+                let committed = result.entry.without_tentative();
+                table.update_entry(result.slot, result.entry, committed);
+                inserted.push((hash, addr));
+            }
+        }
+
+        // All inserted entries should be findable
+        for (hash, addr) in &inserted {
+            let found = table.find_entry(*hash);
+            assert!(found.is_some());
+            let (entry, _) = found.unwrap();
+            assert_eq!(entry.address(), *addr);
+        }
+    }
+
+    #[test]
+    fn bucket_by_index_all_buckets() {
+        let table = HashTable::new(3); // 8 buckets
+        for i in 0..table.num_buckets() {
+            let _bucket = table.bucket_by_index(i);
+            // Miri validates the get_unchecked doesn't go out of bounds
+        }
+    }
+
+    #[test]
+    fn find_or_create_collision_chain() {
+        // Use a tiny table to force overflow chains. Each bucket holds 7 entries.
+        // With 2 buckets (14 slots total), inserting many entries forces overflow.
+        let table = HashTable::new(1); // 2 buckets
+        let mut inserted = Vec::new();
+
+        // Insert enough entries to trigger overflow
+        for i in 0..30u64 {
+            let hash = (i + 1000).hash();
+            let addr = LogicalAddress::new(Page(i as u32), Offset(64));
+            let result = table.find_or_create_entry(hash, addr);
+            if result.created {
+                let committed = result.entry.without_tentative();
+                table.update_entry(result.slot, result.entry, committed);
+                inserted.push((hash, addr));
+            }
+        }
+
+        // All inserted entries should be findable despite overflow chains
+        for (hash, addr) in &inserted {
+            let found = table.find_entry(*hash);
+            assert!(found.is_some());
+            let (entry, _) = found.unwrap();
+            assert_eq!(entry.address(), *addr);
+        }
+
+        // With 30 insertions into 2 buckets (14 inline slots), we should
+        // have at least some overflow buckets.
+        assert!(
+            inserted.len() > 14 || table.overflow_count() > 0,
+            "should have enough entries to exercise bucket chains"
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// RecordAccessor tests — exercises raw pointer construction and
+// read/write through RecordAccessor and MutableRecordAccessor
+// (hybrid_log/record_ops.rs). These types wrap *const u8 / *mut u8
+// pointers and perform unsafe slice reconstruction.
+// -----------------------------------------------------------------------
+
+#[cfg(miri)]
+mod miri_record_accessor {
+    use faster_core::address::LogicalAddress;
+    use faster_core::hybrid_log::{MutableRecordAccessor, RecordAccessor};
+    use faster_core::record::{RecordInfo, RecordLayout};
+
+    /// Helper to allocate a properly 8-byte-aligned buffer.
+    fn aligned_buf(size: usize) -> Vec<u64> {
+        vec![0u64; (size + 7) / 8]
+    }
+
+    #[test]
+    fn record_accessor_from_raw_pointer() {
+        let key: u64 = 42;
+        let value: u64 = 100;
+        let layout = RecordLayout::for_kv(&key, &value);
+        let total_size = layout.total_size();
+
+        let mut buf = aligned_buf(total_size);
+        let ptr = buf.as_mut_ptr() as *mut u8;
+
+        // SAFETY: buf is valid, 8-byte aligned (Vec<u64>), and large enough.
+        let mut accessor = unsafe { MutableRecordAccessor::new(ptr, total_size as u32) };
+
+        let info = RecordInfo::new(LogicalAddress::INVALID, 1, false, false, false);
+        accessor.write_full_record(&info, &key, &value, &layout);
+
+        // SAFETY: Same buffer, still valid.
+        let reader = unsafe { RecordAccessor::new(ptr, total_size as u32) };
+        let read_info = reader.record_info();
+        assert_eq!(read_info.checkpoint_version(), 1);
+        assert_eq!(reader.key::<u64>(&layout), 42);
+        assert_eq!(reader.value::<u64>(&layout), 100);
+
+        let slice = reader.as_slice();
+        assert_eq!(slice.len(), total_size);
+    }
+
+    #[test]
+    fn mutable_accessor_write_key_value_separately() {
+        let key: u64 = 0xDEAD;
+        let value: u64 = 0xBEEF;
+        let layout = RecordLayout::for_kv(&key, &value);
+        let total_size = layout.total_size();
+
+        let mut buf = aligned_buf(total_size);
+        let ptr = buf.as_mut_ptr() as *mut u8;
+
+        // SAFETY: buf is valid, aligned, and large enough.
+        let mut accessor = unsafe { MutableRecordAccessor::new(ptr, total_size as u32) };
+        let info = RecordInfo::new(LogicalAddress::ZERO, 0, false, false, false);
+        accessor.write_record_info(&info);
+        accessor.write_key(&key, &layout);
+        accessor.write_value(&value, &layout);
+
+        assert_eq!(accessor.key::<u64>(&layout), 0xDEAD);
+        assert_eq!(accessor.value::<u64>(&layout), 0xBEEF);
+
+        let key_bytes = accessor.key_ref(&layout);
+        assert_eq!(key_bytes.len(), 8);
+        let value_bytes = accessor.value_ref(&layout);
+        assert_eq!(value_bytes.len(), 8);
+    }
+
+    #[test]
+    fn mutable_accessor_zero() {
+        let key: u64 = 42;
+        let value: u64 = 100;
+        let layout = RecordLayout::for_kv(&key, &value);
+        let total_size = layout.total_size();
+
+        let mut buf = aligned_buf(total_size);
+        // Fill with non-zero data
+        for b in buf.iter_mut() {
+            *b = 0xFFFF_FFFF_FFFF_FFFF;
+        }
+        let ptr = buf.as_mut_ptr() as *mut u8;
+
+        // SAFETY: buf is valid, aligned, and large enough.
+        let mut accessor = unsafe { MutableRecordAccessor::new(ptr, total_size as u32) };
+        accessor.zero();
+
+        let slice = accessor.as_slice();
+        assert!(slice.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn accessor_value_mut_ptr() {
+        let key: u64 = 1;
+        let value: u64 = 2;
+        let layout = RecordLayout::for_kv(&key, &value);
+        let total_size = layout.total_size();
+
+        let mut buf = aligned_buf(total_size);
+        let ptr = buf.as_mut_ptr() as *mut u8;
+
+        // SAFETY: buf is valid, aligned, and large enough.
+        let mut accessor = unsafe { MutableRecordAccessor::new(ptr, total_size as u32) };
+        let info = RecordInfo::new(LogicalAddress::INVALID, 0, false, false, false);
+        accessor.write_full_record(&info, &key, &value, &layout);
+
+        let val_ptr = accessor.value_mut_ptr(&layout);
+        // SAFETY: val_ptr points within our aligned buffer, at value offset.
+        unsafe {
+            let val_ref = &mut *(val_ptr as *mut u64);
+            *val_ref = 999;
+        }
+
+        assert_eq!(accessor.value::<u64>(&layout), 999);
+    }
+}
+
+// -----------------------------------------------------------------------
+// LogRecordWriter / LogRecordReader tests — exercises the full write-
+// then-read path through the HybridLogAllocator, which involves unsafe
+// pointer arithmetic in try_allocate() and get_physical_address().
+// -----------------------------------------------------------------------
+
+#[cfg(miri)]
+mod miri_log_record_ops {
+    use faster_core::address::LogicalAddress;
+    use faster_core::hybrid_log::{HybridLogAllocator, LogRecordReader, LogRecordWriter};
+    use faster_core::record::{RecordInfo, RecordLayout};
+
+    #[test]
+    fn write_and_read_single_record() {
+        let alloc = HybridLogAllocator::new(4, 0.5, 512);
+        let writer = LogRecordWriter::new(&alloc);
+
+        let info = RecordInfo::new(LogicalAddress::INVALID, 1, false, false, false);
+        let addr = writer
+            .write_record::<u64, u64>(&info, &42u64, &100u64)
+            .expect("write should succeed");
+
+        let reader = LogRecordReader::new(&alloc);
+        let layout = RecordLayout::for_kv(&42u64, &100u64);
+
+        let read_key: u64 = reader
+            .read_key(addr, &layout)
+            .expect("key should be readable");
+        assert_eq!(read_key, 42);
+
+        let read_val: u64 = reader
+            .read_value(addr, &layout)
+            .expect("value should be readable");
+        assert_eq!(read_val, 100);
+
+        let read_info = reader
+            .read_record_info(addr)
+            .expect("header should be readable");
+        assert_eq!(read_info.checkpoint_version(), 1);
+    }
+
+    #[test]
+    fn write_multiple_records_no_overlap() {
+        let alloc = HybridLogAllocator::new(4, 0.5, 512);
+        let writer = LogRecordWriter::new(&alloc);
+        let layout = RecordLayout::for_kv(&0u64, &0u64);
+
+        let mut addrs = Vec::new();
+        for i in 0..15u64 {
+            let info = RecordInfo::new(LogicalAddress::INVALID, 0, false, false, false);
+            let addr = writer
+                .write_record(&info, &i, &(i * 10))
+                .expect("write should succeed");
+            addrs.push(addr);
+        }
+
+        // All addresses should be distinct
+        for (i, a) in addrs.iter().enumerate() {
+            for b in &addrs[i + 1..] {
+                assert_ne!(a, b, "records should not overlap");
+            }
+        }
+
+        // All records should read back correctly
+        let reader = LogRecordReader::new(&alloc);
+        for (i, addr) in addrs.iter().enumerate() {
+            let key: u64 = reader.read_key(*addr, &layout).unwrap();
+            let val: u64 = reader.read_value(*addr, &layout).unwrap();
+            assert_eq!(key, i as u64);
+            assert_eq!(val, i as u64 * 10);
+        }
+    }
+
+    #[test]
+    fn allocate_raw_and_manual_write() {
+        let alloc = HybridLogAllocator::new(4, 0.5, 512);
+        let writer = LogRecordWriter::new(&alloc);
+        let layout = RecordLayout::for_kv(&0u64, &0u64);
+
+        let (addr, mut accessor) = writer
+            .allocate_raw(layout.total_size() as u32)
+            .expect("raw allocation should succeed");
+
+        let info = RecordInfo::new(LogicalAddress::INVALID, 7, false, true, false);
+        accessor.write_full_record(&info, &99u64, &88u64, &layout);
+
+        let reader = LogRecordReader::new(&alloc);
+        let read_info = reader.read_record_info(addr).unwrap();
+        assert!(read_info.is_tombstone());
+        assert_eq!(read_info.checkpoint_version(), 7);
+        assert_eq!(reader.read_key::<u64>(addr, &layout).unwrap(), 99);
+        assert_eq!(reader.read_value::<u64>(addr, &layout).unwrap(), 88);
+    }
+
+    #[test]
+    fn get_record_accessor_through_reader() {
+        let alloc = HybridLogAllocator::new(4, 0.5, 512);
+        let writer = LogRecordWriter::new(&alloc);
+        let layout = RecordLayout::for_kv(&0u64, &0u64);
+
+        let info = RecordInfo::new(LogicalAddress::INVALID, 0, false, false, false);
+        let addr = writer.write_record(&info, &77u64, &88u64).unwrap();
+
+        let reader = LogRecordReader::new(&alloc);
+        let accessor = reader
+            .get_record(addr, layout.total_size() as u32)
+            .expect("accessor should be available");
+
+        assert_eq!(accessor.key::<u64>(&layout), 77);
+        assert_eq!(accessor.value::<u64>(&layout), 88);
+        assert_eq!(accessor.record_size(), layout.total_size() as u32);
+    }
+}
+
+// -----------------------------------------------------------------------
+// LogScanIterator tests — exercises sequential record scanning through
+// the hybrid log, which uses unsafe slice::from_raw_parts to reconstruct
+// record data from page memory (hybrid_log/scan.rs).
+// -----------------------------------------------------------------------
+
+#[cfg(miri)]
+mod miri_log_scan {
+    use faster_core::address::LogicalAddress;
+    use faster_core::hybrid_log::{
+        HybridLogAllocator, LogRecordWriter, LogScanIterator, ScanOptions,
+    };
+    use faster_core::record::RecordInfo;
+
+    #[test]
+    fn scan_empty_log() {
+        let alloc = HybridLogAllocator::new(4, 0.5, 512);
+        let start = alloc.head_address();
+        let end = alloc.tail_address();
+
+        let iter = LogScanIterator::new(&alloc, start, end, 8, 8, ScanOptions::default());
+        let records: Vec<_> = iter.collect();
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn scan_multiple_records() {
+        let alloc = HybridLogAllocator::new(4, 0.5, 512);
+        let writer = LogRecordWriter::new(&alloc);
+
+        let start = alloc.tail_address();
+
+        // Write 10 records
+        for i in 0..10u64 {
+            let info = RecordInfo::new(LogicalAddress::INVALID, 0, false, false, false);
+            writer
+                .write_record(&info, &i, &(i * 100))
+                .expect("write should succeed");
+        }
+
+        let end = alloc.tail_address();
+
+        let iter = LogScanIterator::new(&alloc, start, end, 8, 8, ScanOptions::default());
+        let records: Vec<_> = iter.collect();
+        assert_eq!(records.len(), 10);
+
+        // Verify keys are sequential
+        for (i, record) in records.iter().enumerate() {
+            let key_bytes = record.key_bytes();
+            let key = u64::from_le_bytes(key_bytes.try_into().unwrap());
+            assert_eq!(key, i as u64);
+
+            let value_bytes = record.value_bytes();
+            let value = u64::from_le_bytes(value_bytes.try_into().unwrap());
+            assert_eq!(value, i as u64 * 100);
+        }
+    }
+
+    #[test]
+    fn scan_with_tombstones() {
+        let alloc = HybridLogAllocator::new(4, 0.5, 512);
+        let writer = LogRecordWriter::new(&alloc);
+
+        let start = alloc.tail_address();
+
+        // Write a mix of normal and tombstone records
+        let info_normal = RecordInfo::new(LogicalAddress::INVALID, 0, false, false, false);
+        let info_tomb = RecordInfo::new(LogicalAddress::INVALID, 0, false, true, false);
+
+        writer.write_record(&info_normal, &1u64, &10u64).unwrap();
+        writer.write_record(&info_tomb, &2u64, &20u64).unwrap();
+        writer.write_record(&info_normal, &3u64, &30u64).unwrap();
+
+        let end = alloc.tail_address();
+
+        // Default scan excludes tombstones
+        let default_scan: Vec<_> =
+            LogScanIterator::new(&alloc, start, end, 8, 8, ScanOptions::default()).collect();
+        assert_eq!(default_scan.len(), 2, "tombstones should be excluded");
+
+        // Inclusive scan includes tombstones
+        let inclusive_scan: Vec<_> = LogScanIterator::new(
+            &alloc,
+            start,
+            end,
+            8,
+            8,
+            ScanOptions {
+                include_tombstones: true,
+                ..ScanOptions::default()
+            },
+        )
+        .collect();
+        assert_eq!(inclusive_scan.len(), 3, "tombstones should be included");
+    }
+
+    #[test]
+    fn scan_record_addresses_are_ascending() {
+        let alloc = HybridLogAllocator::new(4, 0.5, 512);
+        let writer = LogRecordWriter::new(&alloc);
+        let start = alloc.tail_address();
+
+        for i in 0..5u64 {
+            let info = RecordInfo::new(LogicalAddress::INVALID, 0, false, false, false);
+            writer.write_record(&info, &i, &i).unwrap();
+        }
+
+        let end = alloc.tail_address();
+        let records: Vec<_> =
+            LogScanIterator::new(&alloc, start, end, 8, 8, ScanOptions::default()).collect();
+
+        for window in records.windows(2) {
+            assert!(
+                window[0].address < window[1].address,
+                "addresses should be ascending"
+            );
+        }
+    }
+}
+
+// -----------------------------------------------------------------------
+// Epoch drain tests — exercises the lock-free Treiber stack used for
+// deferred epoch callbacks (epoch/drain.rs). DrainList is pub(crate),
+// so we exercise it indirectly through EpochTable::defer which pushes
+// to the internal DrainList and then drains via try_drain.
+// -----------------------------------------------------------------------
+
+#[cfg(miri)]
+mod miri_epoch_drain {
+    use faster_core::epoch::EpochTable;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn defer_and_drain_single() {
+        let table = Arc::new(EpochTable::new());
+        let thread = table.register().expect("register should succeed");
+
+        let counter = Arc::new(AtomicU64::new(0));
+        let c = Arc::clone(&counter);
+
+        // defer() pushes onto the internal DrainList
+        table.defer(move || {
+            c.fetch_add(1, Ordering::Relaxed);
+        });
+
+        // Protect and unprotect to advance epochs
+        for _ in 0..10 {
+            let _guard = thread.protect();
+            // guard drops here, calling unprotect
+            table.bump_current_epoch_no_callback();
+        }
+
+        // The callback should have been executed by now
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn defer_multiple_callbacks() {
+        let table = Arc::new(EpochTable::new());
+        let thread = table.register().expect("register should succeed");
+
+        let counter = Arc::new(AtomicU64::new(0));
+
+        // Push multiple deferred actions
+        for _ in 0..5 {
+            let c = Arc::clone(&counter);
+            table.defer(move || {
+                c.fetch_add(1, Ordering::Relaxed);
+            });
+        }
+
+        // Advance epochs to trigger drain
+        for _ in 0..15 {
+            let _guard = thread.protect();
+            table.bump_current_epoch_no_callback();
+        }
+
+        assert_eq!(counter.load(Ordering::Relaxed), 5);
+    }
+
+    #[test]
+    fn bump_epoch_with_callback() {
+        let table = Arc::new(EpochTable::new());
+        let thread = table.register().expect("register should succeed");
+
+        let fired = Arc::new(AtomicU64::new(0));
+        let f = Arc::clone(&fired);
+
+        // bump_current_epoch takes a callback that fires when the epoch becomes safe
+        table.bump_current_epoch(move || {
+            f.fetch_add(1, Ordering::Relaxed);
+        });
+
+        for _ in 0..15 {
+            let _guard = thread.protect();
+            table.bump_current_epoch_no_callback();
+        }
+
+        assert_eq!(fired.load(Ordering::Relaxed), 1);
+    }
+}
+
+// -----------------------------------------------------------------------
+// Compaction scanner tests — exercises scanning log records to classify
+// them as live, dead, or tombstoned. Scanner reads raw memory through
+// the hybrid log allocator's unsafe pointer arithmetic.
+// -----------------------------------------------------------------------
+
+#[cfg(miri)]
+mod miri_compaction_scanner {
+    use faster_core::address::LogicalAddress;
+    use faster_core::compaction::scanner::CompactionScanner;
+    use faster_core::hash::index::HashIndex;
+    use faster_core::hybrid_log::{HybridLogAllocator, LogRecordWriter};
+    use faster_core::record::RecordInfo;
+
+    #[test]
+    fn scan_empty_range() {
+        let alloc = HybridLogAllocator::new(4, 0.5, 512);
+        let hash_index = HashIndex::new(4);
+
+        let scanner = CompactionScanner::new(&alloc, &hash_index);
+        let start = alloc.tail_address();
+        let end = start;
+
+        let plan = scanner
+            .scan::<u64, u64>(start, end)
+            .expect("scan should succeed");
+        assert_eq!(plan.total_records(), 0);
+        assert_eq!(plan.live_fraction(), 0.0);
+    }
+
+    #[test]
+    fn scan_with_live_and_dead_records() {
+        let alloc = HybridLogAllocator::new(4, 0.5, 512);
+        let hash_index = HashIndex::new(4);
+        let writer = LogRecordWriter::new(&alloc);
+
+        let start = alloc.tail_address();
+
+        // Write records and add them to the hash index so they appear "live"
+        let info = RecordInfo::new(LogicalAddress::INVALID, 0, false, false, false);
+        for i in 0..5u64 {
+            let addr = writer.write_record(&info, &i, &(i * 10)).unwrap();
+            let hash = <u64 as faster_core::hash::Hashable>::hash(&i);
+            let result = hash_index.find_or_create(hash, addr);
+            if result.created {
+                let committed = result.entry.without_tentative();
+                result
+                    .slot
+                    .compare_exchange(
+                        result.entry,
+                        committed,
+                        core::sync::atomic::Ordering::AcqRel,
+                        core::sync::atomic::Ordering::Acquire,
+                    )
+                    .ok();
+            }
+        }
+
+        // Write a record NOT indexed — should appear "dead" to the scanner.
+        // Use a key that won't hash-collide with 0..5.
+        writer
+            .write_record(&info, &0xFFFF_FFFF_FFFF_FFFFu64, &0u64)
+            .unwrap();
+
+        let end = alloc.tail_address();
+
+        let scanner = CompactionScanner::new(&alloc, &hash_index);
+        let plan = scanner
+            .scan::<u64, u64>(start, end)
+            .expect("scan should succeed");
+
+        // At least 5 records should be live, and total should be 6
+        assert_eq!(plan.total_records(), 6);
+        assert!(
+            plan.live_records.len() >= 5,
+            "at least 5 live records expected"
+        );
+        assert!(plan.total_bytes_scanned > 0);
+    }
+
+    #[test]
+    fn scan_with_tombstone_records() {
+        let alloc = HybridLogAllocator::new(4, 0.5, 512);
+        let hash_index = HashIndex::new(4);
+        let writer = LogRecordWriter::new(&alloc);
+
+        let start = alloc.tail_address();
+
+        // Write a tombstone record and add it to the hash index
+        let tomb_info = RecordInfo::new(LogicalAddress::INVALID, 0, false, true, false);
+        let addr = writer.write_record(&tomb_info, &1u64, &0u64).unwrap();
+        let hash = <u64 as faster_core::hash::Hashable>::hash(&1u64);
+        let result = hash_index.find_or_create(hash, addr);
+        if result.created {
+            let committed = result.entry.without_tentative();
+            result
+                .slot
+                .compare_exchange(
+                    result.entry,
+                    committed,
+                    core::sync::atomic::Ordering::AcqRel,
+                    core::sync::atomic::Ordering::Acquire,
+                )
+                .ok();
+        }
+
+        let end = alloc.tail_address();
+
+        let scanner = CompactionScanner::new(&alloc, &hash_index);
+        let plan = scanner
+            .scan::<u64, u64>(start, end)
+            .expect("scan should succeed");
+
+        assert_eq!(plan.tombstone_count, 1);
+        assert_eq!(plan.tombstone_records.len(), 1);
+    }
+}
+
+// -----------------------------------------------------------------------
+// Compaction copier tests — exercises copying live records from one log
+// region to the tail, involving unsafe pointer arithmetic for record
+// reads and writes (compaction/copier.rs).
+// -----------------------------------------------------------------------
+
+#[cfg(miri)]
+mod miri_compaction_copier {
+    use faster_core::address::LogicalAddress;
+    use faster_core::compaction::LiveRecord;
+    use faster_core::compaction::copier::RecordCopier;
+    use faster_core::hybrid_log::{HybridLogAllocator, LogRecordReader, LogRecordWriter};
+    use faster_core::record::{RecordInfo, RecordLayout};
+
+    #[test]
+    fn copy_single_record() {
+        let alloc = HybridLogAllocator::new(4, 0.5, 512);
+        let writer = LogRecordWriter::new(&alloc);
+        let layout = RecordLayout::for_kv(&0u64, &0u64);
+
+        let info = RecordInfo::new(LogicalAddress::INVALID, 0, false, false, false);
+        let addr = writer.write_record(&info, &42u64, &100u64).unwrap();
+
+        let copier = RecordCopier::new(&alloc);
+        let live = vec![LiveRecord {
+            address: addr,
+            record_size: layout.total_size(),
+        }];
+
+        let result = copier.copy_records(&live).expect("copy should succeed");
+        assert_eq!(result.records_copied(), 1);
+        assert!(result.bytes_copied > 0);
+
+        // Verify the new copy is readable
+        let new_addr = result.new_address_of(addr).expect("mapping should exist");
+        let reader = LogRecordReader::new(&alloc);
+        let key: u64 = reader.read_key(new_addr, &layout).unwrap();
+        let val: u64 = reader.read_value(new_addr, &layout).unwrap();
+        assert_eq!(key, 42);
+        assert_eq!(val, 100);
+    }
+
+    #[test]
+    fn copy_multiple_records() {
+        let alloc = HybridLogAllocator::new(4, 0.5, 512);
+        let writer = LogRecordWriter::new(&alloc);
+        let layout = RecordLayout::for_kv(&0u64, &0u64);
+        let info = RecordInfo::new(LogicalAddress::INVALID, 0, false, false, false);
+
+        let mut live = Vec::new();
+        for i in 0..8u64 {
+            let addr = writer.write_record(&info, &i, &(i * 10)).unwrap();
+            live.push(LiveRecord {
+                address: addr,
+                record_size: layout.total_size(),
+            });
+        }
+
+        let copier = RecordCopier::new(&alloc);
+        let result = copier.copy_records(&live).expect("copy should succeed");
+        assert_eq!(result.records_copied(), 8);
+
+        // Verify all copies are correct
+        let reader = LogRecordReader::new(&alloc);
+        for (i, rec) in live.iter().enumerate() {
+            let new_addr = result.new_address_of(rec.address).unwrap();
+            let key: u64 = reader.read_key(new_addr, &layout).unwrap();
+            let val: u64 = reader.read_value(new_addr, &layout).unwrap();
+            assert_eq!(key, i as u64);
+            assert_eq!(val, i as u64 * 10);
+        }
+    }
+
+    #[test]
+    fn copy_empty_list() {
+        let alloc = HybridLogAllocator::new(4, 0.5, 512);
+        let copier = RecordCopier::new(&alloc);
+        let result = copier.copy_records(&[]).expect("empty copy should succeed");
+        assert_eq!(result.records_copied(), 0);
+        assert_eq!(result.bytes_copied, 0);
+    }
+}
+
+// -----------------------------------------------------------------------
+// Compaction address_update tests — exercises CAS-based pointer swing
+// in the hash index after records are copied. The swing operation uses
+// unsafe compare_exchange on atomic bucket entries.
+// -----------------------------------------------------------------------
+
+#[cfg(miri)]
+mod miri_compaction_address_update {
+    use faster_core::address::LogicalAddress;
+    use faster_core::compaction::LiveRecord;
+    use faster_core::compaction::address_update::AddressUpdater;
+    use faster_core::compaction::copier::RecordCopier;
+    use faster_core::compaction::scanner::CompactionScanner;
+    use faster_core::hash::index::HashIndex;
+    use faster_core::hybrid_log::{HybridLogAllocator, LogRecordWriter};
+    use faster_core::record::{RecordInfo, RecordLayout};
+
+    #[test]
+    fn swing_updates_hash_entries() {
+        let alloc = HybridLogAllocator::new(4, 0.5, 512);
+        let hash_index = HashIndex::new(4);
+        let writer = LogRecordWriter::new(&alloc);
+        let layout = RecordLayout::for_kv(&0u64, &0u64);
+
+        let info = RecordInfo::new(LogicalAddress::INVALID, 0, false, false, false);
+
+        // Write records and index them
+        let mut live = Vec::new();
+        for i in 0..3u64 {
+            let addr = writer.write_record(&info, &i, &(i * 10)).unwrap();
+            let hash = <u64 as faster_core::hash::Hashable>::hash(&i);
+            let result = hash_index.find_or_create(hash, addr);
+            if result.created {
+                let committed = result.entry.without_tentative();
+                result
+                    .slot
+                    .compare_exchange(
+                        result.entry,
+                        committed,
+                        core::sync::atomic::Ordering::AcqRel,
+                        core::sync::atomic::Ordering::Acquire,
+                    )
+                    .ok();
+            }
+            live.push(LiveRecord {
+                address: addr,
+                record_size: layout.total_size(),
+            });
+        }
+
+        // Copy records to new locations
+        let copier = RecordCopier::new(&alloc);
+        let copy_result = copier.copy_records(&live).expect("copy should succeed");
+        assert_eq!(copy_result.records_copied(), 3);
+
+        // Build a minimal CompactionPlan for the swing
+        let scanner = CompactionScanner::new(&alloc, &hash_index);
+        let start = alloc.head_address();
+        let end = alloc.tail_address();
+        let plan = scanner.scan::<u64, u64>(start, end).unwrap();
+
+        // Swing pointers
+        let updater = AddressUpdater::new(&hash_index, &alloc);
+        let stats = updater.swing::<u64, u64>(&copy_result, &plan);
+
+        // At least some entries should have been swung
+        assert!(stats.swung > 0, "should have swung at least one entry");
+
+        // Verify hash index now points to new addresses
+        for (i, rec) in live.iter().enumerate() {
+            let hash = <u64 as faster_core::hash::Hashable>::hash(&(i as u64));
+            let found = hash_index.find(hash);
+            assert!(found.is_some(), "entry {i} should still exist");
+            let (entry, _) = found.unwrap();
+            let new_addr = copy_result.new_address_of(rec.address).unwrap();
+            assert_eq!(
+                entry.address(),
+                new_addr,
+                "entry {i} should point to new address"
+            );
+        }
+    }
+}
+
+// -----------------------------------------------------------------------
+// Store CRUD operations tests — exercises the full read/upsert/rmw/delete
+// code paths through FasterKv, which internally use unsafe
+// MutableRecordAccessor and pointer-based record access
+// (store/operations.rs, store/functions.rs).
+// -----------------------------------------------------------------------
+
+#[cfg(miri)]
+mod miri_store_operations {
+    use faster_core::NullDevice;
+    use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
+
+    fn small_store() -> FasterKv<SimpleFunctions<u64, u64>> {
+        FasterKv::new(
+            FasterKvConfig {
+                hash_index_size_log2: 4, // 16 buckets — small for Miri
+                buffer_size_pages: 4,
+                mutable_fraction: 0.9,
+                sector_size: 512,
+                ..FasterKvConfig::default()
+            },
+            SimpleFunctions::new(),
+            NullDevice::new(),
+        )
+    }
+
+    #[test]
+    fn upsert_and_read() {
+        let store = small_store();
+        let mut session = store.new_session();
+
+        let _ = store.upsert_simple(&mut session, &1u64, &100u64);
+        let result = store.read_simple(&mut session, &1u64);
+        assert_eq!(result, Some(100u64));
+
+        store.dispose_session(session);
+    }
+
+    #[test]
+    fn upsert_overwrite() {
+        let store = small_store();
+        let mut session = store.new_session();
+
+        let _ = store.upsert_simple(&mut session, &1u64, &100u64);
+        let _ = store.upsert_simple(&mut session, &1u64, &200u64);
+
+        let result = store.read_simple(&mut session, &1u64);
+        assert_eq!(result, Some(200u64));
+
+        store.dispose_session(session);
+    }
+
+    #[test]
+    fn delete_removes_entry() {
+        let store = small_store();
+        let mut session = store.new_session();
+
+        let _ = store.upsert_simple(&mut session, &42u64, &999u64);
+        let before = store.read_simple(&mut session, &42u64);
+        assert_eq!(before, Some(999u64));
+
+        let _ = store.delete_simple(&mut session, &42u64);
+        let after = store.read_simple(&mut session, &42u64);
+        // After delete, read should not return the old value
+        // (it may return None or a default depending on implementation)
+        assert_ne!(after, Some(999u64));
+
+        store.dispose_session(session);
+    }
+
+    #[test]
+    fn multiple_keys() {
+        let store = small_store();
+        let mut session = store.new_session();
+
+        for i in 0..10u64 {
+            let _ = store.upsert_simple(&mut session, &i, &(i * 100));
+        }
+
+        for i in 0..10u64 {
+            let result = store.read_simple(&mut session, &i);
+            assert_eq!(
+                result,
+                Some(i * 100),
+                "key {i} should have value {}",
+                i * 100
+            );
+        }
+
+        store.dispose_session(session);
+    }
+
+    #[test]
+    fn read_nonexistent_key() {
+        let store = small_store();
+        let mut session = store.new_session();
+
+        let result = store.read_simple(&mut session, &999u64);
+        assert_eq!(result, None);
+
+        store.dispose_session(session);
+    }
+
+    #[test]
+    fn session_create_dispose() {
+        let store = small_store();
+
+        // Create and dispose multiple sessions
+        for _ in 0..3 {
+            let session = store.new_session();
+            store.dispose_session(session);
+        }
+        // No leaks — Miri catches double-free or missing drop
+    }
+}
+
+// -----------------------------------------------------------------------
+// Prefetch tests — hash/prefetch.rs uses CPU-specific intrinsics
+// (_mm_prefetch on x86_64, PRFM on aarch64). Under Miri, these are
+// effectively no-ops but we verify the safe wrappers don't cause UB
+// when given valid pointers.
+// -----------------------------------------------------------------------
+
+#[cfg(miri)]
+mod miri_prefetch {
+    use faster_core::hash::Hashable;
+    use faster_core::hash_table::HashTable;
+
+    #[test]
+    fn prefetch_bucket_no_ub() {
+        let table = HashTable::new(4);
+        // prefetch_bucket exercises the prefetch intrinsic wrapper
+        for i in 0..16u64 {
+            let hash = (i + 500).hash();
+            table.prefetch_bucket(hash);
+        }
+        // No assertion needed — Miri would detect UB if any
     }
 }
