@@ -2168,7 +2168,9 @@ mod tests {
         let store = faster_open();
         let sess = faster_session_start(store);
         let mut completed: u32 = 99;
-        let status = faster_session_refresh(store, sess, &mut completed);
+        // SAFETY: `store` and `sess` are valid handles; `completed` is a valid mutable reference.
+        // SAFETY: test-controlled pointers are valid.
+        let status = unsafe { faster_session_refresh(store, sess, &mut completed) };
         assert_eq!(status, FasterStatus::Ok);
         assert_eq!(completed, 0);
         faster_session_end(store, sess);
@@ -2179,7 +2181,9 @@ mod tests {
     fn session_refresh_null_out() {
         let store = faster_open();
         let sess = faster_session_start(store);
-        let status = faster_session_refresh(store, sess, std::ptr::null_mut());
+        // SAFETY: `store` and `sess` are valid handles; null output pointer is explicitly supported.
+        // SAFETY: null out-pointer is explicitly handled by the function.
+        let status = unsafe { faster_session_refresh(store, sess, std::ptr::null_mut()) };
         assert_eq!(status, FasterStatus::Ok);
         faster_session_end(store, sess);
         faster_close(store);
@@ -2189,7 +2193,9 @@ mod tests {
     fn session_refresh_invalid_handles() {
         let mut completed: u32 = 0;
         assert_eq!(
-            faster_session_refresh(999, 999, &mut completed),
+            // SAFETY: testing with invalid handles — the function is designed to return InvalidHandle.
+            // SAFETY: test-controlled pointers are valid.
+            unsafe { faster_session_refresh(999, 999, &mut completed) },
             FasterStatus::InvalidHandle,
         );
     }
@@ -2201,7 +2207,9 @@ mod tests {
         let store = faster_open();
         let sess = faster_session_start(store);
         let mut completed: u32 = 99;
-        let status = faster_wait_for_all_pending(store, sess, &mut completed);
+        // SAFETY: `store` and `sess` are valid handles; `completed` is a valid mutable reference.
+        // SAFETY: test-controlled pointers are valid.
+        let status = unsafe { faster_wait_for_all_pending(store, sess, &mut completed) };
         assert_eq!(status, FasterStatus::Ok);
         assert_eq!(completed, 0);
         faster_session_end(store, sess);
@@ -2212,7 +2220,9 @@ mod tests {
     fn wait_for_all_pending_null_out() {
         let store = faster_open();
         let sess = faster_session_start(store);
-        let status = faster_wait_for_all_pending(store, sess, std::ptr::null_mut());
+        // SAFETY: `store` and `sess` are valid handles; null output pointer is explicitly supported.
+        // SAFETY: null out-pointer is explicitly handled by the function.
+        let status = unsafe { faster_wait_for_all_pending(store, sess, std::ptr::null_mut()) };
         assert_eq!(status, FasterStatus::Ok);
         faster_session_end(store, sess);
         faster_close(store);
@@ -2227,6 +2237,7 @@ mod tests {
         let status = std::thread::spawn(move || {
             let key = b"k";
             let val = b"v";
+            // SAFETY: `store` and `sess` are valid handles; pointers reference stack-allocated slices.
             unsafe {
                 faster_upsert(
                     store,
@@ -2253,6 +2264,7 @@ mod tests {
             let key = b"k";
             let mut buf = [0u8; 64];
             let mut out_len: u32 = 0;
+            // SAFETY: `store` and `sess` are valid handles; all pointers reference stack allocations.
             unsafe {
                 faster_read(
                     store,
@@ -2278,6 +2290,7 @@ mod tests {
         let sess = faster_session_start(store);
         let status = std::thread::spawn(move || {
             let key = b"k";
+            // SAFETY: `store` and `sess` are valid handles; key pointer references a stack-allocated slice.
             unsafe { faster_delete(store, sess, key.as_ptr(), key.len() as u32) }
         })
         .join()
@@ -2293,6 +2306,7 @@ mod tests {
         let sess = faster_session_start(store);
         let status = std::thread::spawn(move || {
             let mut completed: u32 = 0;
+            // SAFETY: `store` and `sess` are valid handles; `completed` is a valid mutable reference.
             unsafe { faster_complete_pending(store, sess, &mut completed) }
         })
         .join()
@@ -2308,7 +2322,8 @@ mod tests {
         let sess = faster_session_start(store);
         let status = std::thread::spawn(move || {
             let mut completed: u32 = 0;
-            faster_session_refresh(store, sess, &mut completed)
+            // SAFETY: `store` and `sess` are valid handles; `completed` is a valid mutable reference.
+            unsafe { faster_session_refresh(store, sess, &mut completed) }
         })
         .join()
         .unwrap();
@@ -2323,6 +2338,7 @@ mod tests {
         let sess = faster_session_start(store);
         let key = b"st";
         let val = b"ok";
+        // SAFETY: `store` and `sess` are valid handles; all pointers reference stack allocations.
         let status = unsafe {
             faster_upsert(
                 store,

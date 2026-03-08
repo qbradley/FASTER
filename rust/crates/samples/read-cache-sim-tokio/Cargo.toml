@@ -1,0 +1,22 @@
+[package]
+name = "read-cache-sim-tokio"
+version = "0.1.0"
+description = "Async/Tokio read-cache simulation using FASTER — for comparison with sync version"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+faster-core = { path = "../../faster-core" }
+faster-tokio = { path = "../../faster-tokio" }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "signal",
+    "sync",
+    "time",
+] }
+clap = { version = "4", features = ["derive"] }
+rand = "0.9"

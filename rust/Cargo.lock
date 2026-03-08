@@ -918,6 +918,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "read-cache-sim-tokio"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "faster-core",
+ "faster-tokio",
+ "rand",
+ "tokio",
+]
+
+[[package]]
 name = "regex"
 version = "1.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
