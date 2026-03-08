@@ -11,7 +11,9 @@ members = [
     "crates/samples/cross-impl-bench",
     "crates/samples/tokio-kv-server",
     "crates/samples/uring-stress",
+    "crates/samples/disk-io-bench",
 ]
+exclude = ["fuzz"]
 resolver = "3"
 
 [workspace.package]

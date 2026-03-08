@@ -21,7 +21,7 @@
 //!   before execution to preserve FIFO insertion order.
 
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
 /// A single deferred action in the lock-free drain list.
 ///
@@ -52,6 +52,10 @@ struct DrainNode {
 /// once. The `Drop` impl walks any remaining nodes to prevent leaks.
 pub(crate) struct DrainList {
     head: AtomicPtr<DrainNode>,
+    /// Number of pending (not yet drained) actions. Used as a fast-path
+    /// signal in `try_drain`: when zero, the expensive epoch table scan
+    /// is skipped entirely.
+    drain_count: AtomicU64,
 }
 
 // SAFETY: `DrainList` is safe to send between threads. The raw
@@ -71,6 +75,7 @@ impl DrainList {
     pub(crate) fn new() -> Self {
         Self {
             head: AtomicPtr::new(ptr::null_mut()),
+            drain_count: AtomicU64::new(0),
         }
     }
 
@@ -152,6 +157,7 @@ impl DrainList {
         // SAFETY: `node` was just allocated via Box::into_raw above.
         // It is valid, uniquely owned, and not yet published.
         unsafe { self.link_and_cas_push(node) };
+        self.drain_count.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Executes and removes all actions whose epoch is ≤ `safe_epoch`.
@@ -183,12 +189,13 @@ impl DrainList {
         // in push(). We have exclusive ownership of the claimed chain.
         let nodes = unsafe { Self::claim_chain(head) };
 
+        let mut drained = 0u64;
         for mut node in nodes {
             if node.epoch <= safe_epoch {
                 if let Some(action) = node.action.take() {
                     action();
                 }
-                // `node` dropped here → memory freed
+                drained += 1;
             } else {
                 // Re-push unready nodes so they survive until a future drain.
                 let raw = Box::into_raw(node);
@@ -197,6 +204,18 @@ impl DrainList {
                 unsafe { self.link_and_cas_push(raw) };
             }
         }
+        if drained > 0 {
+            self.drain_count.fetch_sub(drained, Ordering::Relaxed);
+        }
+    }
+
+    /// Returns `true` if there are pending (not yet drained) actions.
+    ///
+    /// O(1) check via atomic counter. In pure-read workloads drain_count
+    /// stays at zero, letting `try_drain` skip the epoch table scan.
+    #[inline]
+    pub(crate) fn has_pending(&self) -> bool {
+        self.drain_count.load(Ordering::Relaxed) > 0
     }
 
     /// Returns the number of pending (not yet drained) actions.
