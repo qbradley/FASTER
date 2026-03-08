@@ -116,6 +116,13 @@ pub enum OperationStatus {
     /// or when the system determines the operation cannot proceed (e.g.,
     /// store is shutting down).
     Aborted,
+
+    /// A sealed record was revivified and updated in-place.
+    ///
+    /// Returned by RMW and Upsert when the target record was sealed but
+    /// all revivification conditions were met: record in the mutable region,
+    /// value fits in the existing allocation, and the CAS to unseal succeeded.
+    Revivified,
 }
 
 impl OperationStatus {
@@ -143,7 +150,7 @@ impl OperationStatus {
     pub const fn is_success(self) -> bool {
         matches!(
             self,
-            Self::Ok | Self::Created | Self::InPlaceUpdated | Self::CopyUpdated | Self::Deleted
+            Self::Ok | Self::Created | Self::InPlaceUpdated | Self::CopyUpdated | Self::Deleted | Self::Revivified
         )
     }
 
@@ -218,7 +225,7 @@ impl OperationStatus {
     pub const fn is_modified(self) -> bool {
         matches!(
             self,
-            Self::Created | Self::InPlaceUpdated | Self::CopyUpdated | Self::Deleted
+            Self::Created | Self::InPlaceUpdated | Self::CopyUpdated | Self::Deleted | Self::Revivified
         )
     }
 }
@@ -234,6 +241,7 @@ impl fmt::Display for OperationStatus {
             Self::CopyUpdated => write!(f, "CopyUpdated"),
             Self::Deleted => write!(f, "Deleted"),
             Self::Aborted => write!(f, "Aborted"),
+            Self::Revivified => write!(f, "Revivified"),
         }
     }
 }
@@ -386,6 +394,7 @@ mod tests {
         assert_eq!(format!("{}", OperationStatus::CopyUpdated), "CopyUpdated");
         assert_eq!(format!("{}", OperationStatus::Deleted), "Deleted");
         assert_eq!(format!("{}", OperationStatus::Aborted), "Aborted");
+        assert_eq!(format!("{}", OperationStatus::Revivified), "Revivified");
     }
 
     #[test]
@@ -419,6 +428,7 @@ mod tests {
         assert!(OperationStatus::InPlaceUpdated.is_success());
         assert!(OperationStatus::CopyUpdated.is_success());
         assert!(OperationStatus::Deleted.is_success());
+        assert!(OperationStatus::Revivified.is_success());
     }
 
     #[test]
@@ -472,6 +482,7 @@ mod tests {
         assert!(OperationStatus::InPlaceUpdated.is_modified());
         assert!(OperationStatus::CopyUpdated.is_modified());
         assert!(OperationStatus::Deleted.is_modified());
+        assert!(OperationStatus::Revivified.is_modified());
     }
 
     #[test]
@@ -568,6 +579,7 @@ mod tests {
             OperationStatus::CopyUpdated,
             OperationStatus::Deleted,
             OperationStatus::Aborted,
+            OperationStatus::Revivified,
         ]
     }
 }

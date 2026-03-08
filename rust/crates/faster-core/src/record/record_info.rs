@@ -253,6 +253,16 @@ impl RecordInfo {
         Self(self.0 | SEALED_BIT)
     }
 
+    /// Returns a copy with the sealed bit cleared.
+    ///
+    /// Used during **revivification**: when an in-place update is performed
+    /// on a previously sealed record, the sealed bit must be cleared to
+    /// allow future in-place updates without copy-to-tail overhead.
+    #[inline]
+    pub const fn with_sealed_cleared(self) -> Self {
+        Self(self.0 & !SEALED_BIT)
+    }
+
     /// Returns a copy with the previous address replaced.
     #[inline]
     pub const fn with_previous_address(self, addr: LogicalAddress) -> Self {
@@ -404,6 +414,24 @@ impl AtomicRecordInfo {
         }
         let desired = current.with_sealed();
         self.compare_exchange(current, desired, Ordering::AcqRel, Ordering::Acquire)
+    }
+
+    /// Attempts to **revivify** a sealed record via compare-and-swap.
+    ///
+    /// Atomically clears the sealed bit if the current header matches
+    /// `expected`. This is the CAS primitive for revivification: only one
+    /// thread can win the race to unseal a record for in-place update.
+    ///
+    /// Returns `Ok(previous)` on success, `Err(actual)` on failure.
+    /// Uses `AcqRel` on success, `Acquire` on failure.
+    #[inline]
+    pub fn try_revivify(&self, expected: RecordInfo) -> Result<RecordInfo, RecordInfo> {
+        debug_assert!(
+            expected.is_sealed(),
+            "try_revivify called with unsealed RecordInfo"
+        );
+        let desired = expected.with_sealed_cleared();
+        self.compare_exchange(expected, desired, Ordering::AcqRel, Ordering::Acquire)
     }
 
     /// Compare-and-swap. Returns `Ok(current)` on success, `Err(actual)` on
@@ -993,6 +1021,94 @@ mod tests {
                 prop_assert_eq!(sealed.is_tombstone(), tombstone);
                 prop_assert_eq!(sealed.is_final(), final_bit);
             }
+
+            #[test]
+            fn with_sealed_cleared_preserves_other_fields(
+                addr in arb_logical_address(),
+                version in 0u16..=MAX_VERSION,
+                invalid in any::<bool>(),
+                tombstone in any::<bool>(),
+                final_bit in any::<bool>(),
+            ) {
+                let info = RecordInfo::new(addr, version, invalid, tombstone, final_bit).with_sealed();
+                let unsealed = info.with_sealed_cleared();
+                prop_assert!(!unsealed.is_sealed());
+                prop_assert_eq!(unsealed.previous_address(), addr);
+                prop_assert_eq!(unsealed.checkpoint_version(), version);
+                prop_assert_eq!(unsealed.is_invalid(), invalid);
+                prop_assert_eq!(unsealed.is_tombstone(), tombstone);
+                prop_assert_eq!(unsealed.is_final(), final_bit);
+            }
         }
+    }
+
+    #[test]
+    fn with_sealed_cleared_basic() {
+        let addr = LogicalAddress::new(Page(5), Offset(128));
+        let info = RecordInfo::new(addr, 42, false, false, false).with_sealed();
+        assert!(info.is_sealed());
+        let unsealed = info.with_sealed_cleared();
+        assert!(!unsealed.is_sealed());
+        assert_eq!(unsealed.previous_address(), addr);
+        assert_eq!(unsealed.checkpoint_version(), 42);
+    }
+
+    #[test]
+    fn with_sealed_cleared_already_unsealed() {
+        let info = RecordInfo::new(LogicalAddress::ZERO, 0, false, false, false);
+        let still_unsealed = info.with_sealed_cleared();
+        assert_eq!(info.raw(), still_unsealed.raw());
+    }
+
+    #[test]
+    fn with_sealed_cleared_round_trip() {
+        let addr = LogicalAddress::new(Page(100), Offset(512));
+        let info = RecordInfo::new(addr, 999, true, true, true);
+        let sealed = info.with_sealed();
+        let unsealed = sealed.with_sealed_cleared();
+        assert_eq!(unsealed.raw(), info.raw());
+    }
+
+    #[test]
+    fn atomic_try_revivify_success() {
+        let info = RecordInfo::new(LogicalAddress::ZERO, 7, false, false, false).with_sealed();
+        let atomic = AtomicRecordInfo::new(info);
+        assert!(atomic.try_revivify(info).is_ok());
+        let current = atomic.load(Ordering::Acquire);
+        assert!(!current.is_sealed());
+        assert_eq!(current.checkpoint_version(), 7);
+    }
+
+    #[test]
+    fn atomic_try_revivify_already_unsealed() {
+        let info = RecordInfo::new(LogicalAddress::ZERO, 0, false, false, false);
+        let sealed = info.with_sealed();
+        let atomic = AtomicRecordInfo::new(info);
+        assert!(atomic.try_revivify(sealed).is_err());
+    }
+
+    #[test]
+    fn atomic_try_revivify_concurrent_race() {
+        let info = RecordInfo::new(LogicalAddress::ZERO, 3, false, false, false).with_sealed();
+        let atomic = AtomicRecordInfo::new(info);
+        assert!(atomic.try_revivify(info).is_ok());
+        assert!(atomic.try_revivify(info).is_err());
+        let current = atomic.load(Ordering::Acquire);
+        assert!(!current.is_sealed());
+    }
+
+    #[test]
+    fn atomic_try_revivify_preserves_all_fields() {
+        let addr = LogicalAddress::new(Page(42), Offset(256));
+        let info = RecordInfo::new(addr, 999, true, false, true).with_sealed();
+        let atomic = AtomicRecordInfo::new(info);
+        assert!(atomic.try_revivify(info).is_ok());
+        let current = atomic.load(Ordering::Acquire);
+        assert!(!current.is_sealed());
+        assert_eq!(current.previous_address(), addr);
+        assert_eq!(current.checkpoint_version(), 999);
+        assert!(current.is_invalid());
+        assert!(!current.is_tombstone());
+        assert!(current.is_final());
     }
 }
