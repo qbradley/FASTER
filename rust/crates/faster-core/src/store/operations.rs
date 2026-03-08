@@ -359,6 +359,21 @@ pub(crate) fn internal_upsert<F: Functions>(
                         );
                     }
 
+                    // Sealed records are write-protected: fall back to
+                    // copy-to-tail (RCU) instead of in-place mutation.
+                    if ri.is_sealed() {
+                        return upsert_copy_to_tail(
+                            ctx,
+                            functions,
+                            key,
+                            input,
+                            &layout,
+                            result.entry,
+                            result.slot,
+                            found_addr,
+                        );
+                    }
+
                     // In-place update via raw or standard path.
                     let ptr = ctx.allocator.get_physical_address(found_addr);
                     if let Some(ptr) = ptr {
@@ -599,6 +614,28 @@ pub(crate) fn internal_rmw<F: Functions>(
                             functions,
                             key,
                             input,
+                            output,
+                            &layout,
+                            result.entry,
+                            result.slot,
+                            found_addr,
+                        );
+                    }
+
+                    // Sealed records are write-protected: read current
+                    // value then copy-to-tail (RCU).
+                    if ri.is_sealed() {
+                        let reader = LogRecordReader::new(ctx.allocator);
+                        let value: F::Value = match reader.read_value(found_addr, &layout) {
+                            Some(v) => v,
+                            None => return OperationStatus::Aborted,
+                        };
+                        return rmw_copy_to_tail(
+                            ctx,
+                            functions,
+                            key,
+                            input,
+                            &value,
                             output,
                             &layout,
                             result.entry,

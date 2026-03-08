@@ -36,7 +36,7 @@ fn address_to_record_info_round_trip() {
         common::addr(8_388_607, 33_554_431), // MAX_PAGE, MAX_OFFSET
     ];
     for &addr in &addrs {
-        for version in [0u16, 1, 42, 8191] {
+        for version in [0u16, 1, 42, 4095] {
             for (inv, tomb, fin) in [(false, false, false), (true, true, true)] {
                 let info = RecordInfo::new(addr, version, inv, tomb, fin);
                 assert_eq!(
