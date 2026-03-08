@@ -65,6 +65,10 @@ typedef enum FasterStatus {
    * A checkpoint or recovery operation failed.
    */
   FasterStatus_CheckpointError = 104,
+  /**
+   * Session used from a thread other than the one that created it.
+   */
+  FasterStatus_ThreadMismatch = 105,
 } FasterStatus;
 
 /**
@@ -387,6 +391,55 @@ enum FasterStatus faster_recover(FasterHandle store,
                                  uint32_t checkpoint_dir_len,
                                  uint64_t token_high,
                                  uint64_t token_low);
+
+/**
+ * Destroy a store handle. This is an alias for [`faster_close`].
+ *
+ * Provided for API symmetry with `faster_open` / `faster_destroy`.
+ */
+enum FasterStatus faster_destroy(FasterHandle store);
+
+/**
+ * Refresh the session epoch and complete any ready pending operations.
+ *
+ * # Parameters
+ *
+ * - `store` — Store handle from [`faster_open`].
+ * - `session` — Session handle from [`faster_session_start`].
+ * - `completed_out` — If non-null, written with the number of completed ops.
+ *
+ * # Returns
+ *
+ * [`FasterStatus::Ok`] on success.
+ *
+ * # Safety
+ *
+ * - `completed_out`, if non-null, must point to a valid, writable `u32`.
+ */
+enum FasterStatus faster_session_refresh(FasterHandle store,
+                                         FasterHandle session,
+                                         uint32_t *completed_out);
+
+/**
+ * Block until all pending operations on this session complete.
+ *
+ * # Parameters
+ *
+ * - `store` — Store handle from [`faster_open`].
+ * - `session` — Session handle from [`faster_session_start`].
+ * - `completed_out` — If non-null, written with the number of completed ops.
+ *
+ * # Returns
+ *
+ * [`FasterStatus::Ok`] on success.
+ *
+ * # Safety
+ *
+ * - `completed_out`, if non-null, must point to a valid, writable `u32`.
+ */
+enum FasterStatus faster_wait_for_all_pending(FasterHandle store,
+                                              FasterHandle session,
+                                              uint32_t *completed_out);
 
 #endif  /* FASTER_H */
 
