@@ -949,6 +949,7 @@ pub unsafe extern "C" fn faster_rmw_ex(
 
     // SAFETY: Caller guarantees pointer validity per doc contract.
     let key = unsafe { extract_bytes(key_ptr, key_len) };
+    // SAFETY: Caller guarantees pointer validity per doc contract.
     let input = unsafe { extract_bytes(input_ptr, input_len) };
 
     panic::catch_unwind(AssertUnwindSafe(|| {
@@ -1009,6 +1010,7 @@ pub unsafe extern "C" fn faster_upsert_ex(
 
     // SAFETY: Caller guarantees pointer validity per doc contract.
     let key = unsafe { extract_bytes(key_ptr, key_len) };
+    // SAFETY: Caller guarantees pointer validity per doc contract.
     let input = unsafe { extract_bytes(input_ptr, input_len) };
 
     panic::catch_unwind(AssertUnwindSafe(|| {
@@ -1154,11 +1156,12 @@ pub unsafe extern "C" fn faster_continue_session(
     serial_out: *mut u64,
 ) -> FasterHandle {
     panic::catch_unwind(AssertUnwindSafe(|| {
-        let handle = match store_handles().with::<FfiStore, _>(store, |kv| {
+        let result = store_handles().with::<FfiStore, _>(store, |kv| {
             let session = kv.new_session();
             let cell = SessionCell::new(session);
             session_handles().insert(cell)
-        }) {
+        });
+        let handle = match result {
             Some(h) => h,
             None => return INVALID_HANDLE,
         };

@@ -23,7 +23,7 @@
 
 use std::cell::Cell;
 
-use faster_core::store::{DeleteInfo, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo};
+use faster_core::store::{Functions, RmwInPlaceResult};
 
 // ── Minimum buffer capacity ─────────────────────────────────────────
 
@@ -151,6 +151,7 @@ pub(crate) struct RmwCallbackSet {
 
 /// Upsert callback set installed per-operation.
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 pub(crate) struct UpsertCallbackSet {
     pub put: Option<FasterUpsertPutFn>,
     pub put_atomic: Option<FasterUpsertPutAtomicFn>,
@@ -158,6 +159,7 @@ pub(crate) struct UpsertCallbackSet {
 
 /// Read callback set installed per-operation.
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 pub(crate) struct ReadCallbackSet {
     pub get: Option<FasterReadGetFn>,
     pub get_atomic: Option<FasterReadGetAtomicFn>,
@@ -248,7 +250,6 @@ impl Functions for CallbackFunctions {
         value: &Vec<u8>,
         _input: &Vec<u8>,
         output: &mut Option<Vec<u8>>,
-        _info: &ReadInfo,
     ) {
         let cbs = READ_CALLBACKS.with(|c| c.get());
         if let Some(cbs) = cbs {
@@ -283,7 +284,6 @@ impl Functions for CallbackFunctions {
         input: &Vec<u8>,
         _old_value: Option<&Vec<u8>>,
         _output: &mut Option<Vec<u8>>,
-        _info: &UpsertInfo,
     ) {
         let cbs = UPSERT_CALLBACKS.with(|c| c.get());
         if let Some(cbs) = cbs {
@@ -319,7 +319,6 @@ impl Functions for CallbackFunctions {
         input: &Vec<u8>,
         value: &mut Vec<u8>,
         _output: &mut Option<Vec<u8>>,
-        _info: &RmwInfo,
     ) {
         let cbs = RMW_CALLBACKS.with(|c| c.get());
         if let Some(cbs) = cbs {
@@ -350,7 +349,6 @@ impl Functions for CallbackFunctions {
         input: &Vec<u8>,
         value: &mut Vec<u8>,
         _output: &mut Option<Vec<u8>>,
-        _info: &RmwInfo,
     ) -> RmwInPlaceResult {
         let cbs = RMW_CALLBACKS.with(|c| c.get());
         if let Some(cbs) = cbs {
@@ -388,7 +386,6 @@ impl Functions for CallbackFunctions {
         old_value: &Vec<u8>,
         new_value: &mut Vec<u8>,
         _output: &mut Option<Vec<u8>>,
-        _info: &RmwInfo,
     ) {
         let cbs = RMW_CALLBACKS.with(|c| c.get());
         if let Some(cbs) = cbs {
@@ -415,7 +412,7 @@ impl Functions for CallbackFunctions {
         new_value.extend_from_slice(input);
     }
 
-    fn delete(&self, _key: &Vec<u8>, _value: &mut Vec<u8>, _info: &DeleteInfo) {}
+    fn delete(&self, _key: &Vec<u8>, _value: &mut Vec<u8>) {}
 }
 
 // ── Unit tests ──────────────────────────────────────────────────────
@@ -423,23 +420,11 @@ impl Functions for CallbackFunctions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use faster_core::address::LogicalAddress;
-    use faster_core::record::RecordInfo;
-
-    fn dummy_rmw_info() -> RmwInfo {
-        RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::default(), false)
-    }
-
-    fn dummy_read_info() -> ReadInfo {
-        ReadInfo::new(0, LogicalAddress::INVALID, RecordInfo::default())
-    }
-
-    fn dummy_upsert_info() -> UpsertInfo {
-        UpsertInfo::new(0, LogicalAddress::INVALID, RecordInfo::default())
-    }
 
     // ── RMW callback tests ──────────────────────────────────────────
 
+    /// Sum-store pattern: value is a little-endian u64 counter,
+    /// input is the delta to add.
     extern "C" fn sum_initial(
         _key_ptr: *const u8, _key_len: usize,
         input_ptr: *const u8, input_len: usize,
@@ -497,28 +482,31 @@ mod tests {
         let f = CallbackFunctions;
         let key = vec![1u8, 2, 3];
         let input = 42u64.to_le_bytes().to_vec();
-        let info = dummy_rmw_info();
 
+        // Install callbacks
         let _guard = RmwCallbackGuard::install(RmwCallbackSet {
             initial: Some(sum_initial),
             copy_update: Some(sum_copy),
             in_place: Some(sum_atomic),
         });
 
+        // Test initial
         let mut value = Vec::new();
         let mut output = None;
-        f.rmw_initial(&key, &input, &mut value, &mut output, &info);
+        f.rmw_initial(&key, &input, &mut value, &mut output);
         assert_eq!(u64::from_le_bytes(value[..8].try_into().unwrap()), 42);
 
+        // Test in-place (add 10)
         let input2 = 10u64.to_le_bytes().to_vec();
-        let result = f.rmw_in_place(&key, &input2, &mut value, &mut output, &info);
+        let result = f.rmw_in_place(&key, &input2, &mut value, &mut output);
         assert_eq!(result, RmwInPlaceResult::InPlaceOk);
         assert_eq!(u64::from_le_bytes(value[..8].try_into().unwrap()), 52);
 
+        // Test copy-update (add 8)
         let input3 = 8u64.to_le_bytes().to_vec();
         let old_value = value.clone();
         let mut new_value = Vec::new();
-        f.rmw_copy_update(&key, &input3, &old_value, &mut new_value, &mut output, &info);
+        f.rmw_copy_update(&key, &input3, &old_value, &mut new_value, &mut output);
         assert_eq!(u64::from_le_bytes(new_value[..8].try_into().unwrap()), 60);
     }
 
@@ -527,20 +515,21 @@ mod tests {
         let f = CallbackFunctions;
         let key = vec![1u8];
         let input = vec![10u8, 20];
-        let info = dummy_rmw_info();
 
+        // No callbacks installed — should do byte-slice replacement
         let mut value = Vec::new();
         let mut output = None;
-        f.rmw_initial(&key, &input, &mut value, &mut output, &info);
+        f.rmw_initial(&key, &input, &mut value, &mut output);
         assert_eq!(value, vec![10, 20]);
 
         let input2 = vec![30u8, 40];
-        let result = f.rmw_in_place(&key, &input2, &mut value, &mut output, &info);
+        let result = f.rmw_in_place(&key, &input2, &mut value, &mut output);
         assert_eq!(result, RmwInPlaceResult::InPlaceOk);
         assert_eq!(value, vec![30, 40]);
 
+        // Different length → NeedsNewRecord
         let input3 = vec![50u8, 60, 70];
-        let result = f.rmw_in_place(&key, &input3, &mut value, &mut output, &info);
+        let result = f.rmw_in_place(&key, &input3, &mut value, &mut output);
         assert_eq!(result, RmwInPlaceResult::NeedsNewRecord);
     }
 
@@ -554,14 +543,18 @@ mod tests {
             });
             assert!(RMW_CALLBACKS.with(|c| c.get()).is_some());
         }
+        // After guard drops, should be None
         assert!(RMW_CALLBACKS.with(|c| c.get()).is_none());
     }
+
+    // ── Read callback tests ─────────────────────────────────────────
 
     extern "C" fn read_double(
         _key_ptr: *const u8, _key_len: usize,
         value_ptr: *const u8, value_len: usize,
         output_ptr: *mut u8, output_len: *mut usize,
     ) -> i32 {
+        // SAFETY: test callback, pointers valid
         unsafe {
             let needed = value_len * 2;
             if needed > *output_len {
@@ -581,7 +574,6 @@ mod tests {
         let key = vec![1u8];
         let value = vec![0xAA, 0xBB];
         let input = Vec::new();
-        let info = dummy_read_info();
 
         let _guard = ReadCallbackGuard::install(ReadCallbackSet {
             get: Some(read_double),
@@ -589,7 +581,7 @@ mod tests {
         });
 
         let mut output = None;
-        f.read(&key, &value, &input, &mut output, &info);
+        f.read(&key, &value, &input, &mut output);
         assert_eq!(output, Some(vec![0xAA, 0xBB, 0xAA, 0xBB]));
     }
 
@@ -600,10 +592,11 @@ mod tests {
         let value = vec![0xDE, 0xAD];
         let input = Vec::new();
         let mut output = None;
-        let info = dummy_read_info();
-        f.read(&key, &value, &input, &mut output, &info);
+        f.read(&key, &value, &input, &mut output);
         assert_eq!(output, Some(vec![0xDE, 0xAD]));
     }
+
+    // ── Upsert callback tests ───────────────────────────────────────
 
     extern "C" fn upsert_uppercase(
         _key_ptr: *const u8, _key_len: usize,
@@ -611,6 +604,7 @@ mod tests {
         value_ptr: *mut u8, _value_len: usize,
         actual_len: *mut usize,
     ) -> i32 {
+        // SAFETY: test callback, pointers valid
         unsafe {
             let input = std::slice::from_raw_parts(input_ptr, input_len);
             for (i, &b) in input.iter().enumerate() {
@@ -626,7 +620,6 @@ mod tests {
         let f = CallbackFunctions;
         let key = vec![1u8];
         let input = b"hello".to_vec();
-        let info = dummy_upsert_info();
 
         let _guard = UpsertCallbackGuard::install(UpsertCallbackSet {
             put: Some(upsert_uppercase),
@@ -635,7 +628,7 @@ mod tests {
 
         let mut value = Vec::new();
         let mut output = None;
-        f.upsert(&key, &mut value, &input, None, &mut output, &info);
+        f.upsert(&key, &mut value, &input, None, &mut output);
         assert_eq!(value, b"HELLO");
     }
 
@@ -646,8 +639,7 @@ mod tests {
         let input = vec![42u8, 43];
         let mut value = vec![1u8, 2, 3];
         let mut output = None;
-        let info = dummy_upsert_info();
-        f.upsert(&key, &mut value, &input, None, &mut output, &info);
+        f.upsert(&key, &mut value, &input, None, &mut output);
         assert_eq!(value, vec![42, 43]);
     }
 }
