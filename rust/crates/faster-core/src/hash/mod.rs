@@ -29,6 +29,7 @@ pub mod hash;
 pub mod index; // contains unsafe: raw pointer slice for bucket serialization
 #[deny(unsafe_code)]
 pub mod overflow;
+pub mod prefetch;
 pub mod table; // contains unsafe: unchecked indexing for hot-path performance
 
 // Re-export items from `hash/hash.rs` at this level so that

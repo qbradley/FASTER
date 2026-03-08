@@ -240,6 +240,32 @@ impl HashIndex {
         self.table.find_entry(hash)
     }
 
+    /// Issues a software prefetch hint for the hash bucket that `hash` maps to.
+    ///
+    /// Call this between computing the key hash and calling [`find`](Self::find)
+    /// or [`find_or_create`](Self::find_or_create) so the CPU can begin pulling
+    /// the bucket cache line into L1 while other work (e.g. record layout
+    /// computation) proceeds.
+    ///
+    /// The hint is purely advisory and never affects correctness.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use faster_core::hash_index::HashIndex;
+    /// use faster_core::hash::KeyHash;
+    ///
+    /// let index = HashIndex::new(10);
+    /// let hash = KeyHash::new(0xCAFE);
+    /// index.prefetch(hash); // non-blocking hint
+    /// // … do other work (compute layout, etc.) …
+    /// let _result = index.find(hash);
+    /// ```
+    #[inline(always)]
+    pub fn prefetch(&self, hash: KeyHash) {
+        self.table.prefetch_bucket(hash);
+    }
+
     /// Finds an existing entry or creates a new tentative entry.
     ///
     /// Delegates to [`HashTable::find_or_create_entry`] — the two-phase tentative
@@ -1477,5 +1503,40 @@ mod tests {
         assert!(lf < 1.0);
         let expected = 7.0 / 112.0;
         assert!((lf - expected).abs() < 1e-10);
+    }
+
+    // ── Prefetch tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn prefetch_does_not_panic() {
+        let index = HashIndex::new(10);
+        let hash = KeyHash::new(0xDEAD_BEEF);
+        index.prefetch(hash);
+    }
+
+    #[test]
+    fn prefetch_before_find() {
+        let index = HashIndex::new(10);
+        let thread = index.register_thread().unwrap();
+        let _guard = thread.protect();
+
+        let hash = KeyHash::new(12345);
+        let r = index.find_or_create(hash, LogicalAddress::INVALID);
+        assert!(r.created);
+        let addr = LogicalAddress::new(Page(1), Offset(42));
+        let committed = HashBucketEntry::new(r.entry.tag(), addr, false);
+        index.update(r.slot, r.entry, committed);
+
+        index.prefetch(hash);
+        let found = index.find(hash);
+        assert!(found.is_some());
+    }
+
+    #[test]
+    fn prefetch_miss_is_harmless() {
+        let index = HashIndex::new(10);
+        let hash = KeyHash::new(0xBAAD_F00D);
+        index.prefetch(hash);
+        assert!(index.find(hash).is_none());
     }
 }
