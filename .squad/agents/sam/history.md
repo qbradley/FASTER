@@ -362,3 +362,31 @@
 
 **Branch:** `sam/revivification`
 **Commit:** `2bb358a5`
+
+---
+
+## 2026-03-08: Memory Pressure and OOM Testing (Sam)
+
+**What:** Created 25 comprehensive memory pressure tests covering all critical subsystems — allocator, buffer pool, hybrid log, hash table, and combined stress scenarios. Addresses the CRITICAL gap of zero OOM/pressure testing.
+
+**Artifact:** `rust/crates/faster-core/tests/memory_pressure_tests.rs` (1184 LOC)
+
+**Test breakdown (25 tests, 7 modules):**
+- Allocator stress (4): rapid alloc/free, concurrent alloc/free, free-list reuse waves, producer-consumer
+- Buffer pool / hybrid log (5): tiny buffer integrity, address monotonicity, flush/evict sanity, concurrent writers + maintenance, data footprint
+- Hybrid log checkpoint (2): checkpoint under pressure, reads during eviction
+- Hash table saturation (6): extreme overflow (200 keys / 2 buckets), high load factor >90%, concurrent saturation, store CRUD in saturated hash, update-in-place, delete
+- Combined pressure (2): concurrent writers + maintenance + tiny hash + tiny buffer, interleaved upsert/delete
+- Property-based (3): proptest for store integrity, allocator uniqueness, hash findability
+- Device variants (2): page recycling, NullDevice under pressure
+
+**Key learnings:**
+- `find_entry()` on HashTable skips tentative entries. After `find_or_create_entry()`, must call `update_entry()` with `entry.without_tentative()` to commit — otherwise lookups silently miss the entry.
+- `FasterKv::entry_count()` is intentionally stubbed to return 0 (deferred implementation — "Maintaining an atomic counter on every upsert/delete adds contention on a hot path"). Use `tail_address() - head_address()` as a proxy for data footprint.
+- The allocator's `count()` reflects bump allocations only. When free-list items are reused, count doesn't increase — which is correct but counterintuitive when testing concurrent alloc/free.
+- Proptest's `prop_assert_eq!` macro doesn't support captured variable interpolation in format strings (Rust macro hygiene limitation). Use plain `prop_assert_eq!(a, b)` without message, or use `prop_assert!` with manual formatting.
+
+**Performance:** All 25 tests run in <3 seconds. No flakiness — uses barriers for thread coordination, not sleeps.
+
+**Branch:** `sam/memory-pressure-tests`
+**Commit:** `737ab04c`
