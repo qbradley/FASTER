@@ -133,3 +133,29 @@
 
 **Next steps:** Profile the record access path (logical address → physical pointer → key comparison → value) to find the actual bottleneck.
 
+### 2026-03-06: Iteration 6 Merge Consolidation — All Feature Branches into Squad
+
+**What:** Merged all 9 Iteration 6 feature branches into `squad` in dependency order (Wave 1 → Wave 2), resolving conflicts and fixing compilation issues.
+
+**Branches merged (in order):**
+1. `sam/epvs-implementation` — EPVS core (clean)
+2. `legolas/disk-io-bench-fix` — disk I/O benchmark methodology (clean, also brought in eowyn/ci-fuzz-integration)
+3. `saruman/cpp-integration-tests` — C++ test suite (clean)
+4. `eowyn/ci-fuzz-integration` — already merged via legolas branch lineage
+5. `sam/revivification` — CAS unsealing (clean)
+6. `legolas/two-level-prefetch` — two-level prefetch pipeline (clean, auto-merged)
+7. `aragorn/batch-api` — **CONFLICT** in batch.rs (add/add) and kv.rs (content)
+8. `boromir/epvs-integration-tests` — EPVS tests (clean)
+9. `gandalf/open-addressing-prototype` — **CONFLICT** in batch.rs (divergent history)
+
+**Conflicts resolved:**
+- **batch.rs (aragorn):** Both legolas and aragorn created batch.rs. Took Legolas's UTF-8 em-dashes + Aragorn's clippy allow attribute. Identical batch logic.
+- **kv.rs (aragorn):** Both added batch convenience methods to FasterKv. Took Aragorn's version (proper doc comments, includes batch_execute). Restored sam's Revivified doc lines.
+- **lib.rs (FFI):** Added Revivified → InPlaceUpdated mapping to exhaustive match (aragorn's branch predated revivification).
+- **batch.rs (gandalf):** Open-addressing branch diverged before batch work. Kept squad's version wholesale.
+- **compaction_integration.rs:** Post-merge duplicate import fix (ReadInfo, RmwInfo, UpsertInfo imported twice from different branch merges).
+
+**Test results:** 1,456 passed, 0 failed, 5 ignored. Full workspace compiles clean.
+
+**Key insight:** Merge ordering matters significantly. The EPVS → revivification dependency chain was critical, and the two-level-prefetch → batch-api overlap in batch.rs was the most complex resolution. Eowyn's fuzz CI was automatically included via legolas's branch lineage, saving a merge step.
+
