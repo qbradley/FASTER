@@ -552,3 +552,48 @@ Created `rust/crates/faster-core/examples/cache_store.rs` — a Rust port of the
 - **Legolas (Performance):** Rust FASTER baseline established at 59.77M ops/sec (Workload C, 16T). Any core changes to Hash Table or record layout must not regress below 60M ops/sec. Cross-impl benchmark suite is the single source of truth for performance claims.
 
 - **Gimli (Storage):** UringDevice async read semantics validated. io_uring reads beyond EOF return short reads (0 bytes), not zero-fills. If checkpoint recovery depends on zero-initialized regions, handle explicitly at higher level. Behavior is correct per Device trait contract.
+
+---
+
+### C FFI Layer Implementation (2026-03-07)
+
+**Task:** Build the C FFI layer (Parts 1–3) from the squad spec.
+
+**Part 1 — Missing FFI Functions:**
+- `faster_destroy()` — alias for `faster_close()`, provides API symmetry
+- `faster_session_refresh()` — wraps `kv.refresh(session)`, returns completed pending count via out-pointer
+- `faster_wait_for_all_pending()` — wraps `kv.complete_pending_sync(session)`, blocks until all I/O complete
+- All follow existing pattern: `catch_unwind` + handle validation + thread affinity check
+
+**Part 2 — Thread-Affinity Enforcement (FFI-02):**
+- Rewrote `session.rs`: `SessionCell` now stores `owner_thread: ThreadId` recorded at construction
+- Added `SessionCell::new(session)` constructor and `check_thread()` method
+- `with_store_session()` validates thread ID on every CRUD call
+- Returns `FasterStatus::ThreadMismatch = 105` if called from wrong thread
+- Converts what was previously undefined behavior into a deterministic, debuggable error
+
+**Part 3 — Unwrap Audit:**
+- Audited `faster-core/src/store/functions.rs` — zero unwraps in production code
+- All unwraps in the `store/` directory are exclusively in test code
+- Audit finding was a false positive
+
+**Tests Added:** 13 new tests (83 total), covering:
+- `faster_destroy` (alias behavior, double-destroy)
+- `faster_session_refresh` (basic, null out, invalid handles)
+- `faster_wait_for_all_pending` (basic, null out)
+- Thread-mismatch enforcement (upsert, read, delete, complete_pending, refresh)
+- Same-thread success verification
+- ThreadMismatch status code validation
+
+**Learnings:**
+- `faster_session_refresh`/`faster_wait_for_all_pending` must be `unsafe extern "C"` because they dereference raw `*mut u32` pointers — clippy catches this
+- All unsafe blocks require `// SAFETY:` comments even in test code when `-D warnings` is enabled
+- `CompletePendingResult` has `completed: u32` field; `complete_pending_sync()` returns `Vec<(Output, Context)>`
+- cbindgen automatically regenerates `include/faster.h` during builds — new FFI functions appear in the C header
+- The `#[non_exhaustive]` on `CompactionPlan` means new fields can be added without breaking downstream
+- In a multi-agent environment, file edits can be reverted by VS Code file watchers or other agents — use `git add` immediately after writing
+
+**Pre-existing Build Fixes (also committed by other agents):**
+- `CompactionPlan` missing `dead_bytes`, `tombstone_bytes`, `total_chain_hops` fields — fixed by Boromir (SF-3/5/8/9)
+- `log::warn!()` references without `log` crate dependency — fixed by Boromir
+- `has_pending()` method on `DrainList` — fixed by Legolas (disk-io-bench)
