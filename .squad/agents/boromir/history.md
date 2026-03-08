@@ -189,3 +189,26 @@
 **Validation:** 1161 tests pass, clippy clean.
 
 **Learning:** The write_pending_completion tests (previously 18.5s, now ~2s each) use proper synchronization — no sleeps. The convention "no thread::sleep in tests" is already upheld.
+
+## 2026-03-07: SF-3/5/8/9 — Compaction Scanner Runtime Warnings & Edge-Case Tests
+
+**What:** Addressed 4 should-fix items from the final review synthesis of the variable-length compaction feature.
+
+**Changes (commit 4c11175b):**
+
+1. **SF-3 (Tombstone vector warning):** Added `log::warn!` when `tombstone_records` vector exceeds 100 MB (checked every 1024 pushes). Estimated via `count * size_of::<LiveRecord>()`.
+
+2. **SF-5 (Hash collision hop metrics):** Changed `is_current_version()` return type from `bool` to `(bool, usize)` to return hop count. Track cumulative hops in `CompactionPlan.total_chain_hops`. Warn when total exceeds 1,000,000.
+
+3. **SF-8 (Post-scan byte validation):** Two checks before `Ok(plan)`: (a) scanned bytes vs address-range span (>5% threshold), (b) `live_bytes + dead_bytes + tombstone_bytes == total_bytes_scanned`.
+
+4. **SF-9 (5 new test categories):** `record_nearly_fills_page`, `moderate_corruption_plausible_wrong_size`, `version_chain_variable_length_different_sizes`, `empty_key_record_size`, `eq_from_bytes_trailing_garbage`.
+
+**Learnings:**
+- `log` crate added as non-optional dep (safety warnings should always emit). `tracing` bridges to `log` so no conflict.
+- Alignment padding gotcha: key len 2→3 doesn't change padded record size due to 8-byte alignment. Key len 4→5 DOES cross: pad(24,8)=24 vs pad(25,8)=32.
+- With `mutable_fraction=0.9` and small records, upsert stays in-place (`InPlaceUpdated`). Need `shift_read_only_to_tail()` first for `CopyUpdated`.
+- `VarLenFunctions` (Vec<u8> key+value) defined inline for scanner tests since `SimpleFunctions` requires `V: Copy`.
+- Concurrent squad agents can continuously overwrite shared files between edit and build steps.
+
+**Validation:** All 20 scanner tests pass (18 existing + 2 fixed).
