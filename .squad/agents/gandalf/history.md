@@ -118,3 +118,18 @@
 
 **Test results:** All 1173 tests pass. Clippy clean. Fmt clean. Cross-compile for aarch64 passes.
 
+### 2026-03-06: A8 — Hash Table Layout Investigation (Open Addressing Prototype)
+
+**What:** Investigated whether open addressing with inline data could close the ~14% Workload C read gap vs C#.
+
+**Critical finding:** The hypothesis was wrong. C# and Rust FASTER use **identical** hash table architectures — 64-byte multi-slot buckets with 8-byte logical address entries. Neither stores keys or values inline. The gap lives in the record access path, not the hash index.
+
+**Deliverables:**
+- Analysis document: `.squad/agents/gandalf/hash-table-layout-analysis.md`
+- Benchmark prototype: `rust/crates/faster-core/benches/hash_layout_bench.rs`
+- Decision: `.squad/decisions/inbox/gandalf-hash-layout.md`
+
+**Architectural insight:** True open addressing is fundamentally incompatible with FASTER's hybrid log. Records must be addressable by logical address so they can flow through mutable → read-only → disk tiers without touching the hash index. Inlining data would break grow, compaction, and the entire tiered storage model.
+
+**Next steps:** Profile the record access path (logical address → physical pointer → key comparison → value) to find the actual bottleneck.
+
