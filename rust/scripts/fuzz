@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+#
+# Fuzz testing runner for FASTER Rust.
+#
+# Usage:
+#   ./scripts/fuzz              # CI mode: 60s per target
+#   ./scripts/fuzz 300          # Custom: 300s per target
+#   ./scripts/fuzz 0            # Run indefinitely (Ctrl-C to stop)
+#
+# Requirements:
+#   - Rust nightly toolchain
+#   - cargo-fuzz: cargo install cargo-fuzz
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUST_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+FUZZ_DIR="$RUST_DIR/fuzz"
+
+# Duration per target in seconds (default: 60 for CI)
+DURATION="${1:-60}"
+
+TARGETS=(
+    fuzz_record_parsing
+    fuzz_record_layout
+    fuzz_compaction_record_size
+    fuzz_hash
+    fuzz_store_ops
+)
+
+# ── Preflight ─────────────────────────────────────────────────────────
+
+if ! command -v cargo-fuzz &>/dev/null; then
+    echo "ERROR: cargo-fuzz not found. Install with: cargo install cargo-fuzz"
+    exit 1
+fi
+
+if ! rustup toolchain list | grep -q nightly; then
+    echo "ERROR: Nightly toolchain not found. Install with: rustup toolchain install nightly"
+    exit 1
+fi
+
+# ── Build ─────────────────────────────────────────────────────────────
+
+echo "Building fuzz targets..."
+cd "$FUZZ_DIR"
+cargo fuzz build
+echo ""
+
+# ── Run ───────────────────────────────────────────────────────────────
+
+FAILED=()
+
+for target in "${TARGETS[@]}"; do
+    echo "════════════════════════════════════════════════════════════════"
+    if [ "$DURATION" -eq 0 ] 2>/dev/null; then
+        echo "  Running: $target (indefinite — Ctrl-C to stop)"
+    else
+        echo "  Running: $target (${DURATION}s)"
+    fi
+    echo "════════════════════════════════════════════════════════════════"
+
+    ARGS=(-max_len=4096)
+    if [ "$DURATION" -gt 0 ] 2>/dev/null; then
+        ARGS+=(-max_total_time="$DURATION")
+    fi
+
+    if cargo fuzz run "$target" -- "${ARGS[@]}"; then
+        echo "  ✓ $target: OK"
+    else
+        echo "  ✗ $target: CRASH FOUND"
+        FAILED+=("$target")
+    fi
+    echo ""
+done
+
+# ── Summary ───────────────────────────────────────────────────────────
+
+echo "════════════════════════════════════════════════════════════════"
+echo "  SUMMARY: ${#TARGETS[@]} targets, ${#FAILED[@]} failures"
+echo "════════════════════════════════════════════════════════════════"
+
+if [ ${#FAILED[@]} -gt 0 ]; then
+    echo ""
+    echo "Failing targets:"
+    for t in "${FAILED[@]}"; do
+        echo "  - $t"
+        echo "    Reproduce: cd $FUZZ_DIR && cargo fuzz run $t artifacts/$t/<crash-file>"
+    done
+    exit 1
+fi
+
+echo "All targets passed."

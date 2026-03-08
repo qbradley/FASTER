@@ -1,0 +1,47 @@
+[package]
+name = "faster-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Standalone workspace — prevents cargo-fuzz from inheriting the parent
+# workspace. This avoids race conditions with concurrent workspace edits
+# and simplifies the fuzz crate's build isolation.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+[dependencies.faster-core]
+path = "../crates/faster-core"
+
+# Fuzz targets — one [[bin]] per attack surface.
+
+[[bin]]
+name = "fuzz_record_parsing"
+path = "fuzz_targets/fuzz_record_parsing.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_record_layout"
+path = "fuzz_targets/fuzz_record_layout.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_compaction_record_size"
+path = "fuzz_targets/fuzz_compaction_record_size.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_hash"
+path = "fuzz_targets/fuzz_hash.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_store_ops"
+path = "fuzz_targets/fuzz_store_ops.rs"
+doc = false

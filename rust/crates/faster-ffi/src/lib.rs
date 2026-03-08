@@ -51,7 +51,6 @@ pub mod functions;
 pub mod handle;
 pub mod session;
 
-use std::cell::UnsafeCell;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::OnceLock;
@@ -247,7 +246,7 @@ pub extern "C" fn faster_session_start(store: FasterHandle) -> FasterHandle {
     panic::catch_unwind(AssertUnwindSafe(|| {
         let result = store_handles().with::<FfiStore, _>(store, |kv| {
             let session = kv.new_session();
-            let cell = SessionCell(UnsafeCell::new(session));
+            let cell = SessionCell::new(session);
             session_handles().insert(cell)
         });
         result.unwrap_or(INVALID_HANDLE)
@@ -277,7 +276,7 @@ pub extern "C" fn faster_session_end(
         };
 
         // Dispose via the store (releases epoch thread resources).
-        let session = cell.0.into_inner();
+        let session = cell.inner.into_inner();
         let disposed = store_handles().with::<FfiStore, _>(store, |kv| {
             kv.dispose_session(session);
         });
@@ -307,12 +306,16 @@ fn with_store_session<R>(
         .with::<FfiStore, _>(store, |kv| {
             session_handles()
                 .with::<SessionCell, _>(session_handle, |cell| {
-                    // SAFETY: FFI contract requires single-threaded access per session.
-                    // No other call can be using this session concurrently.
-                    let session = unsafe { &mut *cell.0.get() };
-                    f(kv, session)
+                    // Runtime thread-affinity check (FFI-02).
+                    if !cell.check_thread() {
+                        return Err(FasterStatus::ThreadMismatch);
+                    }
+                    // SAFETY: We just verified this is the owning thread, and
+                    // the FFI contract forbids concurrent calls on the same session.
+                    let session = unsafe { &mut *cell.inner.get() };
+                    Ok(f(kv, session))
                 })
-                .ok_or(FasterStatus::InvalidHandle)
+                .ok_or(FasterStatus::InvalidHandle)?
         })
         .ok_or(FasterStatus::InvalidHandle)?
 }
@@ -789,6 +792,92 @@ pub unsafe extern "C" fn faster_recover(
         Ok(None) => FasterStatus::InvalidHandle,
         Err(_) => FasterStatus::InternalError,
     }
+}
+
+// ── Destroy (alias for close) ───────────────────────────────────────
+
+/// Destroy a store handle. This is an alias for [`faster_close`].
+///
+/// Provided for API symmetry with `faster_open` / `faster_destroy`.
+#[unsafe(no_mangle)]
+pub extern "C" fn faster_destroy(store: FasterHandle) -> FasterStatus {
+    faster_close(store)
+}
+
+// ── Session refresh ─────────────────────────────────────────────────
+
+/// Refresh the session epoch and complete any ready pending operations.
+///
+/// # Parameters
+///
+/// - `store` — Store handle from [`faster_open`].
+/// - `session` — Session handle from [`faster_session_start`].
+/// - `completed_out` — If non-null, written with the number of completed ops.
+///
+/// # Returns
+///
+/// [`FasterStatus::Ok`] on success.
+///
+/// # Safety
+///
+/// - `completed_out`, if non-null, must point to a valid, writable `u32`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn faster_session_refresh(
+    store: FasterHandle,
+    session: FasterHandle,
+    completed_out: *mut u32,
+) -> FasterStatus {
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        match with_store_session(store, session, |kv, sess| kv.refresh(sess)) {
+            Ok(result) => {
+                if !completed_out.is_null() {
+                    // SAFETY: Caller guarantees `completed_out` is valid and writable.
+                    unsafe { *completed_out = result.completed };
+                }
+                FasterStatus::Ok
+            }
+            Err(status) => status,
+        }
+    }))
+    .unwrap_or(FasterStatus::InternalError)
+}
+
+// ── Wait for all pending ────────────────────────────────────────────
+
+/// Block until all pending operations on this session complete.
+///
+/// # Parameters
+///
+/// - `store` — Store handle from [`faster_open`].
+/// - `session` — Session handle from [`faster_session_start`].
+/// - `completed_out` — If non-null, written with the number of completed ops.
+///
+/// # Returns
+///
+/// [`FasterStatus::Ok`] on success.
+///
+/// # Safety
+///
+/// - `completed_out`, if non-null, must point to a valid, writable `u32`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn faster_wait_for_all_pending(
+    store: FasterHandle,
+    session: FasterHandle,
+    completed_out: *mut u32,
+) -> FasterStatus {
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        match with_store_session(store, session, |kv, sess| kv.complete_pending_sync(sess)) {
+            Ok(results) => {
+                if !completed_out.is_null() {
+                    // SAFETY: Caller guarantees `completed_out` is valid and writable.
+                    unsafe { *completed_out = results.len() as u32 };
+                }
+                FasterStatus::Ok
+            }
+            Err(status) => status,
+        }
+    }))
+    .unwrap_or(FasterStatus::InternalError)
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -2060,5 +2149,199 @@ mod tests {
     fn checkpoint_type_enum_values() {
         assert_eq!(FasterCheckpointType::FoldOver as u32, 0);
         assert_eq!(FasterCheckpointType::Snapshot as u32, 1);
+    }
+
+    // ── Destroy tests ──────────────────────────────────────────────
+
+    #[test]
+    fn destroy_is_close_alias() {
+        let h = faster_open();
+        assert_ne!(h, INVALID_HANDLE);
+        assert_eq!(faster_destroy(h), FasterStatus::Ok);
+        assert_eq!(faster_destroy(h), FasterStatus::InvalidHandle);
+    }
+
+    // ── Session refresh tests ──────────────────────────────────────
+
+    #[test]
+    fn session_refresh_basic() {
+        let store = faster_open();
+        let sess = faster_session_start(store);
+        let mut completed: u32 = 99;
+        let status = faster_session_refresh(store, sess, &mut completed);
+        assert_eq!(status, FasterStatus::Ok);
+        assert_eq!(completed, 0);
+        faster_session_end(store, sess);
+        faster_close(store);
+    }
+
+    #[test]
+    fn session_refresh_null_out() {
+        let store = faster_open();
+        let sess = faster_session_start(store);
+        let status = faster_session_refresh(store, sess, std::ptr::null_mut());
+        assert_eq!(status, FasterStatus::Ok);
+        faster_session_end(store, sess);
+        faster_close(store);
+    }
+
+    #[test]
+    fn session_refresh_invalid_handles() {
+        let mut completed: u32 = 0;
+        assert_eq!(
+            faster_session_refresh(999, 999, &mut completed),
+            FasterStatus::InvalidHandle,
+        );
+    }
+
+    // ── Wait for all pending tests ─────────────────────────────────
+
+    #[test]
+    fn wait_for_all_pending_basic() {
+        let store = faster_open();
+        let sess = faster_session_start(store);
+        let mut completed: u32 = 99;
+        let status = faster_wait_for_all_pending(store, sess, &mut completed);
+        assert_eq!(status, FasterStatus::Ok);
+        assert_eq!(completed, 0);
+        faster_session_end(store, sess);
+        faster_close(store);
+    }
+
+    #[test]
+    fn wait_for_all_pending_null_out() {
+        let store = faster_open();
+        let sess = faster_session_start(store);
+        let status = faster_wait_for_all_pending(store, sess, std::ptr::null_mut());
+        assert_eq!(status, FasterStatus::Ok);
+        faster_session_end(store, sess);
+        faster_close(store);
+    }
+
+    // ── Thread-affinity enforcement tests ──────────────────────────
+
+    #[test]
+    fn thread_mismatch_upsert() {
+        let store = faster_open();
+        let sess = faster_session_start(store);
+        let status = std::thread::spawn(move || {
+            let key = b"k";
+            let val = b"v";
+            unsafe {
+                faster_upsert(
+                    store,
+                    sess,
+                    key.as_ptr(),
+                    key.len() as u32,
+                    val.as_ptr(),
+                    val.len() as u32,
+                )
+            }
+        })
+        .join()
+        .unwrap();
+        assert_eq!(status, FasterStatus::ThreadMismatch);
+        faster_session_end(store, sess);
+        faster_close(store);
+    }
+
+    #[test]
+    fn thread_mismatch_read() {
+        let store = faster_open();
+        let sess = faster_session_start(store);
+        let status = std::thread::spawn(move || {
+            let key = b"k";
+            let mut buf = [0u8; 64];
+            let mut out_len: u32 = 0;
+            unsafe {
+                faster_read(
+                    store,
+                    sess,
+                    key.as_ptr(),
+                    key.len() as u32,
+                    buf.as_mut_ptr(),
+                    buf.len() as u32,
+                    &mut out_len,
+                )
+            }
+        })
+        .join()
+        .unwrap();
+        assert_eq!(status, FasterStatus::ThreadMismatch);
+        faster_session_end(store, sess);
+        faster_close(store);
+    }
+
+    #[test]
+    fn thread_mismatch_delete() {
+        let store = faster_open();
+        let sess = faster_session_start(store);
+        let status = std::thread::spawn(move || {
+            let key = b"k";
+            unsafe { faster_delete(store, sess, key.as_ptr(), key.len() as u32) }
+        })
+        .join()
+        .unwrap();
+        assert_eq!(status, FasterStatus::ThreadMismatch);
+        faster_session_end(store, sess);
+        faster_close(store);
+    }
+
+    #[test]
+    fn thread_mismatch_complete_pending() {
+        let store = faster_open();
+        let sess = faster_session_start(store);
+        let status = std::thread::spawn(move || {
+            let mut completed: u32 = 0;
+            unsafe { faster_complete_pending(store, sess, &mut completed) }
+        })
+        .join()
+        .unwrap();
+        assert_eq!(status, FasterStatus::ThreadMismatch);
+        faster_session_end(store, sess);
+        faster_close(store);
+    }
+
+    #[test]
+    fn thread_mismatch_refresh() {
+        let store = faster_open();
+        let sess = faster_session_start(store);
+        let status = std::thread::spawn(move || {
+            let mut completed: u32 = 0;
+            faster_session_refresh(store, sess, &mut completed)
+        })
+        .join()
+        .unwrap();
+        assert_eq!(status, FasterStatus::ThreadMismatch);
+        faster_session_end(store, sess);
+        faster_close(store);
+    }
+
+    #[test]
+    fn same_thread_succeeds() {
+        let store = faster_open();
+        let sess = faster_session_start(store);
+        let key = b"st";
+        let val = b"ok";
+        let status = unsafe {
+            faster_upsert(
+                store,
+                sess,
+                key.as_ptr(),
+                key.len() as u32,
+                val.as_ptr(),
+                val.len() as u32,
+            )
+        };
+        assert!(status.is_success(), "expected success, got {status}");
+        assert_ne!(status, FasterStatus::ThreadMismatch);
+        faster_session_end(store, sess);
+        faster_close(store);
+    }
+
+    #[test]
+    fn thread_mismatch_status_code() {
+        assert_eq!(FasterStatus::ThreadMismatch as u32, 105);
+        assert!(FasterStatus::ThreadMismatch.is_error());
     }
 }
