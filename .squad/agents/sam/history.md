@@ -334,3 +334,31 @@
 
 **Branch:** `sam/epvs-implementation`
 **Commit:** `88010752` — `feat(faster-core): implement EPVS (Epoch-Protected Version Scheme)`
+
+---
+
+## 2026-03-08: A5 — Revivification Implementation (P-04)
+
+**What:** Implemented revivification for sealed records in the Rust FASTER hybrid log. When a sealed record in the mutable region is targeted by an Upsert or RMW, the system now attempts to atomically clear the sealed bit (CAS) and perform an in-place update, rather than unconditionally falling back to copy-to-tail.
+
+**Key design decisions:**
+- **CAS-based unsealing**: `AtomicRecordInfo::try_revivify(expected)` atomically clears the sealed bit if the header matches `expected`. Only one thread wins the race; losers fall back to copy-to-tail.
+- **AcqRel/Acquire memory ordering**: Matches the `try_seal` pattern — AcqRel on success publishes the unseal to other threads, Acquire on failure observes the winner's writes.
+- **New `Revivified` status**: Added `OperationStatus::Revivified` to distinguish revivification from normal in-place updates. This lets callers track revivification frequency for diagnostics.
+- **`with_sealed_cleared()`**: Symmetric to `with_sealed()` — clears bit 60 while preserving all other fields (version, flags, previous address).
+- **Conditions for revivification**: (1) Record is in the mutable region, (2) record is sealed, (3) CAS to unseal succeeds, (4) value fits in existing allocation. Version check deferred until EPVS is integrated into the operation paths.
+
+**Files modified:**
+- `rust/crates/faster-core/src/record/record_info.rs` — `with_sealed_cleared()` + `try_revivify()` + 8 unit tests + 1 property test
+- `rust/crates/faster-core/src/status.rs` — `Revivified` variant + updated `is_success`/`is_modified`/`Display`
+- `rust/crates/faster-core/src/store/operations.rs` — Revivification in Upsert + RMW sealed paths + 5 integration tests
+- `rust/crates/faster-core/src/store/kv.rs` — Doc comments updated
+
+**Testing:** 1228 tests passing (1215 baseline + 13 new). Clippy clean.
+
+**Learnings:**
+- Multiple concurrent agents sharing the same working tree create constant branch-switching conflicts. Using `git worktree` to create an isolated working directory was the solution — no more file reverts from other agents' checkouts.
+- The `try_revivify` CAS pattern is symmetric to `try_seal` — seal/unseal form a natural pair of atomic operations on the same bit, with matching memory ordering.
+
+**Branch:** `sam/revivification`
+**Commit:** `2bb358a5`
