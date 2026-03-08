@@ -7,16 +7,19 @@
 //! # Bit layout (matches C++ `record.h` exactly)
 //!
 //! ```text
-//!   63    62    61    60..48           47..0
-//! ┌─────┬─────┬─────┬──────────────┬───────────────────────────────┐
-//! │ Fin │ Tom │ Inv │ Version (13) │ Previous Address (48)         │
-//! └─────┴─────┴─────┴──────────────┴───────────────────────────────┘
+//!   63    62    61    60     59..48           47..0
+//! ┌─────┬─────┬─────┬──────┬──────────────┬───────────────────────────────┐
+//! │ Fin │ Tom │ Inv │ Seal │ Version (12) │ Previous Address (48)         │
+//! └─────┴─────┴─────┴──────┴──────────────┴───────────────────────────────┘
 //! ```
 //!
 //! - **Previous Address (bits 0..47):** 48-bit [`LogicalAddress`] pointing to
 //!   the prior version of this key in the log (version chain).
-//! - **Checkpoint Version (bits 48..60):** 13-bit version number identifying
-//!   the checkpoint epoch when this record was written (max 8191).
+//! - **Checkpoint Version (bits 48..59):** 12-bit version number identifying
+//!   the checkpoint epoch when this record was written (max 4095).
+//! - **Sealed (bit 60):** Write-protection flag for RCU transitions. When set,
+//!   in-place updates (Upsert/RMW) must fall back to copy-to-tail. Delete
+//!   (tombstone placement) is still permitted on sealed records.
 //! - **Invalid (bit 61):** Record has been superseded in the mutable region.
 //!   Readers skip invalid records.
 //! - **Tombstone (bit 62):** Logical deletion marker — key was deleted.
@@ -34,14 +37,20 @@ use crate::address::LogicalAddress;
 /// Mask for the 48-bit previous address field (bits 0..47).
 const PREVIOUS_ADDR_MASK: u64 = (1u64 << 48) - 1;
 
-/// Bit position where the 13-bit checkpoint version field starts.
+/// Bit position where the 12-bit checkpoint version field starts.
 const VERSION_SHIFT: u32 = 48;
 
-/// Mask for the 13-bit checkpoint version field (bits 48..60).
-const VERSION_MASK: u64 = 0x1FFF_0000_0000_0000;
+/// Mask for the 12-bit checkpoint version field (bits 48..59).
+const VERSION_MASK: u64 = 0x0FFF_0000_0000_0000;
 
-/// Maximum checkpoint version value (2^13 − 1 = 8191).
-pub(crate) const MAX_VERSION: u16 = (1u16 << 13) - 1;
+/// Maximum checkpoint version value (2^12 − 1 = 4095).
+pub(crate) const MAX_VERSION: u16 = (1u16 << 12) - 1;
+
+/// Bit 60: sealed — write-protected during RCU transition.
+///
+/// When set, in-place Upsert and RMW must copy-to-tail instead.
+/// Delete (tombstone) is still permitted on sealed records.
+const SEALED_BIT: u64 = 1u64 << 60;
 
 /// Bit 61: record has been invalidated (superseded by a newer record).
 const INVALID_BIT: u64 = 1u64 << 61;
@@ -83,7 +92,7 @@ impl RecordInfo {
     ///
     /// # Panics (debug only)
     ///
-    /// Debug-asserts that `checkpoint_version` fits in 13 bits (≤ 8191).
+    /// Debug-asserts that `checkpoint_version` fits in 12 bits (≤ 4095).
     ///
     /// # Examples
     ///
@@ -105,7 +114,7 @@ impl RecordInfo {
     ) -> Self {
         debug_assert!(
             checkpoint_version <= MAX_VERSION,
-            "checkpoint_version exceeds 13-bit max (8191)"
+            "checkpoint_version exceeds 12-bit max (4095)"
         );
 
         let mut bits = previous_address.raw() & PREVIOUS_ADDR_MASK;
@@ -169,7 +178,7 @@ impl RecordInfo {
         LogicalAddress::from_raw(self.0 & PREVIOUS_ADDR_MASK)
     }
 
-    /// Extracts the 13-bit checkpoint version (0..=8191).
+    /// Extracts the 12-bit checkpoint version (0..=4095).
     ///
     /// # Examples
     ///
@@ -229,6 +238,21 @@ impl RecordInfo {
         Self(self.0 | FINAL_BIT)
     }
 
+    /// Returns `true` if the sealed bit (bit 60) is set.
+    ///
+    /// A sealed record is write-protected: in-place Upsert and RMW
+    /// must fall back to copy-to-tail. Delete is still permitted.
+    #[inline(always)]
+    pub const fn is_sealed(self) -> bool {
+        self.0 & SEALED_BIT != 0
+    }
+
+    /// Returns a copy with the sealed bit set.
+    #[inline]
+    pub const fn with_sealed(self) -> Self {
+        Self(self.0 | SEALED_BIT)
+    }
+
     /// Returns a copy with the previous address replaced.
     #[inline]
     pub const fn with_previous_address(self, addr: LogicalAddress) -> Self {
@@ -239,10 +263,10 @@ impl RecordInfo {
     ///
     /// # Panics (debug only)
     ///
-    /// Debug-asserts that `version` ≤ 8191.
+    /// Debug-asserts that `version` ≤ 4095.
     #[inline]
     pub const fn with_checkpoint_version(self, version: u16) -> Self {
-        debug_assert!(version <= MAX_VERSION, "version exceeds 13-bit max");
+        debug_assert!(version <= MAX_VERSION, "version exceeds 12-bit max");
         Self((self.0 & !VERSION_MASK) | ((version as u64) << VERSION_SHIFT))
     }
 }
@@ -259,6 +283,7 @@ impl fmt::Debug for RecordInfo {
         f.debug_struct("RecordInfo")
             .field("previous_address", &self.previous_address())
             .field("checkpoint_version", &self.checkpoint_version())
+            .field("sealed", &self.is_sealed())
             .field("invalid", &self.is_invalid())
             .field("tombstone", &self.is_tombstone())
             .field("final", &self.is_final())
@@ -271,9 +296,10 @@ impl fmt::Display for RecordInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "RecordInfo(prev={}, v={}{}{}{})",
+            "RecordInfo(prev={}, v={}{}{}{}{})",
             self.previous_address(),
             self.checkpoint_version(),
+            if self.is_sealed() { " S" } else { "" },
             if self.is_invalid() { " I" } else { "" },
             if self.is_tombstone() { " T" } else { "" },
             if self.is_final() { " F" } else { "" },
@@ -343,6 +369,41 @@ impl AtomicRecordInfo {
     #[inline]
     pub fn set_final(&self, order: Ordering) -> RecordInfo {
         RecordInfo(self.0.fetch_or(FINAL_BIT, order))
+    }
+
+    /// Atomically sets the sealed bit (bit 60) with `Release` ordering.
+    ///
+    /// Uses `Release` so that all prior writes to the record's value
+    /// are visible to threads that later observe the sealed flag.
+    /// Returns the *previous* value.
+    #[inline]
+    pub fn seal(&self) -> RecordInfo {
+        RecordInfo(self.0.fetch_or(SEALED_BIT, Ordering::Release))
+    }
+
+    /// Loads the record info with `Acquire` ordering and checks the
+    /// sealed bit.
+    ///
+    /// Uses `Acquire` to pair with the `Release` in [`seal()`](Self::seal),
+    /// ensuring all record writes before sealing are visible.
+    #[inline]
+    pub fn is_sealed(&self) -> bool {
+        self.load(Ordering::Acquire).is_sealed()
+    }
+
+    /// Attempts to seal the record via compare-and-swap.
+    ///
+    /// Returns `Ok(previous)` if the CAS succeeded (sealed bit was not
+    /// already set), or `Err(actual)` if it failed. Uses `AcqRel`
+    /// ordering on success and `Acquire` on failure.
+    #[inline]
+    pub fn try_seal(&self) -> Result<RecordInfo, RecordInfo> {
+        let current = self.load(Ordering::Acquire);
+        if current.is_sealed() {
+            return Err(current);
+        }
+        let desired = current.with_sealed();
+        self.compare_exchange(current, desired, Ordering::AcqRel, Ordering::Acquire)
     }
 
     /// Compare-and-swap. Returns `Ok(current)` on success, `Err(actual)` on
@@ -418,9 +479,9 @@ mod tests {
     #[test]
     fn new_with_all_true_flags() {
         let addr = LogicalAddress::new(Page(0), Offset(0));
-        let info = RecordInfo::new(addr, 8191, true, true, true);
+        let info = RecordInfo::new(addr, 4095, true, true, true);
         assert_eq!(info.previous_address(), addr);
-        assert_eq!(info.checkpoint_version(), 8191);
+        assert_eq!(info.checkpoint_version(), 4095);
         assert!(info.is_invalid());
         assert!(info.is_tombstone());
         assert!(info.is_final());
@@ -484,9 +545,9 @@ mod tests {
         let info = RecordInfo::new(LogicalAddress::ZERO, 1, false, false, false);
         assert_eq!(info.raw(), 1u64 << 48);
 
-        // checkpoint_version = 0x1FFF (max) → bits 48..60
-        let info = RecordInfo::new(LogicalAddress::ZERO, 0x1FFF, false, false, false);
-        assert_eq!(info.raw(), 0x1FFF_u64 << 48);
+        // checkpoint_version = 0x0FFF (max) → bits 48..59
+        let info = RecordInfo::new(LogicalAddress::ZERO, 0x0FFF, false, false, false);
+        assert_eq!(info.raw(), 0x0FFF_u64 << 48);
 
         // invalid bit → bit 61
         let info = RecordInfo::new(LogicalAddress::ZERO, 0, true, false, false);
@@ -504,13 +565,13 @@ mod tests {
     #[test]
     fn all_fields_packed_correctly() {
         let addr = LogicalAddress::from_raw(0x0000_DEAD_BEEF_1234);
-        let info = RecordInfo::new(addr, 0x1ABC, true, true, true);
+        let info = RecordInfo::new(addr, 0x0ABC, true, true, true);
 
         let raw = info.raw();
         // Previous address: lower 48 bits
         assert_eq!(raw & PREVIOUS_ADDR_MASK, 0x0000_DEAD_BEEF_1234);
-        // Version: bits 48..60
-        assert_eq!((raw >> 48) & 0x1FFF, 0x1ABC);
+        // Version: bits 48..59
+        assert_eq!((raw >> 48) & 0x0FFF, 0x0ABC);
         // Invalid: bit 61
         assert_ne!(raw & (1u64 << 61), 0);
         // Tombstone: bit 62
@@ -695,6 +756,152 @@ mod tests {
         assert!(dbg.contains("AtomicRecordInfo"));
     }
 
+    // ── Sealed bit tests ────────────────────────────────────────────
+
+    #[test]
+    fn sealed_bit_position() {
+        // Sealed bit is bit 60.
+        let info = RecordInfo::from_raw(1u64 << 60);
+        assert!(info.is_sealed());
+        assert!(!info.is_invalid());
+        assert!(!info.is_tombstone());
+        assert!(!info.is_final());
+        assert_eq!(info.checkpoint_version(), 0);
+    }
+
+    #[test]
+    fn new_never_sealed() {
+        // Records created via new() are never sealed.
+        let info = RecordInfo::new(LogicalAddress::ZERO, 100, true, true, true);
+        assert!(!info.is_sealed());
+    }
+
+    #[test]
+    fn with_sealed() {
+        let info = RecordInfo::new(LogicalAddress::ZERO, 42, false, false, false);
+        let sealed = info.with_sealed();
+        assert!(sealed.is_sealed());
+        assert_eq!(sealed.checkpoint_version(), 42);
+        assert!(!sealed.is_invalid());
+    }
+
+    #[test]
+    fn sealed_preserves_all_other_fields() {
+        let addr = LogicalAddress::new(Page(77), Offset(999));
+        let info = RecordInfo::new(addr, 3000, true, true, true);
+        let sealed = info.with_sealed();
+        assert!(sealed.is_sealed());
+        assert_eq!(sealed.previous_address(), addr);
+        assert_eq!(sealed.checkpoint_version(), 3000);
+        assert!(sealed.is_invalid());
+        assert!(sealed.is_tombstone());
+        assert!(sealed.is_final());
+    }
+
+    #[test]
+    fn sealed_idempotent() {
+        let info = RecordInfo::new(LogicalAddress::ZERO, 1, false, false, false)
+            .with_sealed();
+        let double_sealed = info.with_sealed();
+        assert_eq!(info.raw(), double_sealed.raw());
+    }
+
+    #[test]
+    fn sealed_in_debug_output() {
+        let info = RecordInfo::new(LogicalAddress::ZERO, 1, false, false, false)
+            .with_sealed();
+        let dbg = format!("{info:?}");
+        assert!(dbg.contains("sealed: true"));
+    }
+
+    #[test]
+    fn sealed_in_display_output() {
+        let info = RecordInfo::new(LogicalAddress::ZERO, 1, false, false, false)
+            .with_sealed();
+        let s = format!("{info}");
+        assert!(s.contains(" S"));
+    }
+
+    #[test]
+    fn atomic_seal() {
+        let info = RecordInfo::new(LogicalAddress::ZERO, 5, false, false, false);
+        let atomic = AtomicRecordInfo::new(info);
+
+        let prev = atomic.seal();
+        assert!(!prev.is_sealed());
+        assert!(atomic.is_sealed());
+        assert_eq!(atomic.load(Ordering::Relaxed).checkpoint_version(), 5);
+    }
+
+    #[test]
+    fn atomic_seal_idempotent() {
+        let info = RecordInfo::new(LogicalAddress::ZERO, 5, false, false, false);
+        let atomic = AtomicRecordInfo::new(info);
+        atomic.seal();
+        let prev = atomic.seal();
+        assert!(prev.is_sealed());
+        assert!(atomic.is_sealed());
+    }
+
+    #[test]
+    fn atomic_try_seal_success() {
+        let info = RecordInfo::new(LogicalAddress::ZERO, 5, false, false, false);
+        let atomic = AtomicRecordInfo::new(info);
+        let result = atomic.try_seal();
+        assert!(result.is_ok());
+        assert!(!result.unwrap().is_sealed()); // previous value wasn't sealed
+        assert!(atomic.is_sealed());
+    }
+
+    #[test]
+    fn atomic_try_seal_already_sealed() {
+        let info = RecordInfo::new(LogicalAddress::ZERO, 5, false, false, false);
+        let atomic = AtomicRecordInfo::new(info);
+        atomic.seal();
+        let result = atomic.try_seal();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn atomic_try_seal_concurrent_race() {
+        // Simulate a CAS race: another thread seals between our load and CAS.
+        let info = RecordInfo::new(LogicalAddress::ZERO, 5, false, false, false);
+        let atomic = AtomicRecordInfo::new(info);
+
+        // Load the current value (not sealed).
+        let current = atomic.load(Ordering::Acquire);
+        assert!(!current.is_sealed());
+
+        // "Another thread" seals it.
+        atomic.seal();
+
+        // Our CAS should fail.
+        let desired = current.with_sealed();
+        let result = atomic.compare_exchange(
+            current,
+            desired,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        assert!(result.is_err());
+        let actual = result.unwrap_err();
+        assert!(actual.is_sealed());
+    }
+
+    #[test]
+    fn sealed_raw_round_trip() {
+        let addr = LogicalAddress::new(Page(42), Offset(256));
+        let info = RecordInfo::new(addr, 999, true, false, true).with_sealed();
+        let raw = info.raw();
+        let restored = RecordInfo::from_raw(raw);
+        assert!(restored.is_sealed());
+        assert_eq!(restored.previous_address(), addr);
+        assert_eq!(restored.checkpoint_version(), 999);
+        assert!(restored.is_invalid());
+        assert!(!restored.is_tombstone());
+        assert!(restored.is_final());
+    }
+
     // ── Property tests ──────────────────────────────────────────────
 
     mod proptests {
@@ -712,13 +919,16 @@ mod tests {
             fn record_info_round_trip(
                 addr in arb_logical_address(),
                 version in 0u16..=MAX_VERSION,
+                sealed in any::<bool>(),
                 invalid in any::<bool>(),
                 tombstone in any::<bool>(),
                 final_bit in any::<bool>(),
             ) {
-                let info = RecordInfo::new(addr, version, invalid, tombstone, final_bit);
+                let mut info = RecordInfo::new(addr, version, invalid, tombstone, final_bit);
+                if sealed { info = info.with_sealed(); }
                 prop_assert_eq!(info.previous_address(), addr);
                 prop_assert_eq!(info.checkpoint_version(), version);
+                prop_assert_eq!(info.is_sealed(), sealed);
                 prop_assert_eq!(info.is_invalid(), invalid);
                 prop_assert_eq!(info.is_tombstone(), tombstone);
                 prop_assert_eq!(info.is_final(), final_bit);
@@ -764,6 +974,24 @@ mod tests {
                 prop_assert_eq!(updated.is_invalid(), invalid);
                 prop_assert_eq!(updated.is_tombstone(), tombstone);
                 prop_assert_eq!(updated.is_final(), final_bit);
+            }
+
+            #[test]
+            fn seal_preserves_other_fields(
+                addr in arb_logical_address(),
+                version in 0u16..=MAX_VERSION,
+                invalid in any::<bool>(),
+                tombstone in any::<bool>(),
+                final_bit in any::<bool>(),
+            ) {
+                let info = RecordInfo::new(addr, version, invalid, tombstone, final_bit);
+                let sealed = info.with_sealed();
+                prop_assert!(sealed.is_sealed());
+                prop_assert_eq!(sealed.previous_address(), addr);
+                prop_assert_eq!(sealed.checkpoint_version(), version);
+                prop_assert_eq!(sealed.is_invalid(), invalid);
+                prop_assert_eq!(sealed.is_tombstone(), tombstone);
+                prop_assert_eq!(sealed.is_final(), final_bit);
             }
         }
     }
