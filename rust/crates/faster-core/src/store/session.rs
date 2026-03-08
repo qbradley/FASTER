@@ -614,7 +614,7 @@ impl<F: Functions> Drop for SessionGuard<'_, F> {
 /// store.dispose_session(session);
 /// ```
 pub struct UnsafeContext<'a, F: Functions> {
-    session: &'a mut FasterSession<F>,
+    pub(super) session: &'a mut FasterSession<F>,
 }
 
 impl<'a, F: Functions> UnsafeContext<'a, F> {
