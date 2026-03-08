@@ -270,3 +270,38 @@
 - **Gimli (Storage):** io_uring async read semantics documented. Allocator integration with UringDevice validated through 10 new battle tests. Async read behavior is well-understood and accounted for in recovery path.
 
 - **Galadriel (Security):** Allocator FFI layer (if exposed) must follow panic-safety rule. All unsafe code in allocator has been audited; reference SECURITY-AUDIT.md.
+
+---
+
+## 2026-03-07: W2-02 — Sealed Bit in RecordInfo (P-03)
+
+**What:** Implemented the "sealed" bit in RecordInfo — a write-protection flag for RCU transitions. This is the prerequisite for P-04 (revivification). Narrowed the checkpoint version field from 13 to 12 bits (max 4095 instead of 8191) and repurposed bit 60 as the sealed flag.
+
+**New bit layout:**
+```
+  63    62    61    60     59..48           47..0
+┌─────┬─────┬─────┬──────┬──────────────┬───────────────────────────────┐
+│ Fin │ Tom │ Inv │ Seal │ Version (12) │ Previous Address (48)         │
+└─────┴─────┴─────┴──────┴──────────────┴───────────────────────────────┘
+```
+
+**Key design decisions:**
+- **Bit 60 for sealed** (not bit 57 as in Tsavorite): Our layout differs from Tsavorite's — stealing the top version bit keeps all flag bits contiguous at bits 60-63.
+- **Version narrowed 13→12 bits**: Max 4095 checkpoint versions, sufficient for epoch tracking. No existing usage requires more.
+- **`new()` never sealed**: Records always start unsealed; sealed only via `with_sealed()` builder or atomic `seal()` method.
+- **Memory ordering**: `seal()` uses Release (publishes prior record writes), `is_sealed()` uses Acquire (observes writes before seal), `try_seal()` uses AcqRel/Acquire CAS.
+- **Delete not checked**: Tombstone placement is metadata-only, not a value mutation — sealed records can still be deleted.
+
+**Write-path auditing:**
+- `internal_upsert`: Added sealed check before in-place update path. Sealed records fall back to copy-to-tail (RCU).
+- `internal_rmw`: Added sealed check before in-place update path. Reads current value first, then falls back to copy-to-tail.
+- `internal_delete`: Intentionally unchanged — tombstone placement is permitted on sealed records.
+
+**Testing:** 14 new unit tests + 1 new property test (`seal_preserves_other_fields`). All 1168 lib tests + integration tests pass. Clippy clean.
+
+**Learnings:**
+- Multiple concurrent copilot agents sharing the same working tree creates constant file-reverting conflicts. Staging changes immediately after applying them is essential.
+- The `edit` tool and Python/bash operate on potentially different filesystem views. Always verify changes via bash after applying.
+
+**Branch:** `sam/sealed-bit-p03`
+**Commit:** `f2d516c1` — `feat(record): add sealed bit to RecordInfo (P-03)`
