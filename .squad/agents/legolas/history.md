@@ -237,3 +237,32 @@
 2. Hash table layout optimization (open addressing) — expected +15-30%
 3. Per-thread log tail allocation — expected +5-10% writes
 4. True disk-bound benchmarks with 100M+ keys
+
+---
+
+## 2026-03-07: Disk I/O Benchmark Methodology Fix (A2+A11)
+
+**What:** Overhauled the disk-io-bench sample to fix the W3-02 0% pending rate problem and add statistical rigor.
+
+**Branch:** `legolas/disk-io-bench-fix`
+
+**Problem:** The W3-02 disk I/O benchmark matrix showed 0% pending rate with buffer_pages=128 on a 32GB VM. All operations completed synchronously, meaning we measured in-memory ceiling performance, NOT actual disk I/O behavior.
+
+**Changes:**
+1. **Pending-rate validation gate:** After measurement, checks pending rate. If < 0.1%, prints a WARNING and tags results as "IN-MEMORY BASELINE". Results are classified as DISK-BOUND (>=5%), MIXED (0.1-5%), or IN-MEMORY BASELINE (<0.1%).
+2. **--force-disk mode:** Auto-tunes buffer_pages starting at 16, halving until pending_rate > 0%. Reports final configuration that achieved disk-bound behavior.
+3. **Pending rate in all output:** Every result row shows pending_rate and io_classification in table, CSV, and JSON output.
+4. **Default parameters fixed:** buffer_pages reduced from 128-256 to 16-32. With 10M keys x 1KiB values on 32GB VM, this should produce actual disk pressure. Documented the memory budget relationship.
+5. **Statistical rigor (--iterations):** Default 5 iterations with mean, stddev, 95% CI (t-distribution for small n). HIGH VARIANCE flag when stddev > 10% of mean.
+
+**Key Design Decisions:**
+- I/O classification thresholds: <0.1% = IN-MEMORY, 0.1-5% = MIXED, >=5% = DISK-BOUND
+- Force-disk probes use short 5s runs to minimize auto-tune time
+- Median run used for latency percentiles (more robust than mean for tail metrics)
+- t-distribution critical values hardcoded for n=1..10 (no external stats dependency)
+
+## Learnings
+
+- **Concurrent agent /tmp file collision:** Multiple agents share `/tmp/commit-msg.txt` — files get overwritten between write and use. Use `git commit --amend` to fix after the fact.
+- **Branch switching by concurrent agents:** Other agents can `git checkout` while you're working. Always verify branch immediately before commit and chain git operations atomically.
+- **Memory budget for disk benchmarks:** `buffer_pages * 32KiB` is the FASTER in-memory window, but the OS page cache also matters. Even with tiny buffer_pages, the OS may cache the entire dataset. True disk-bound behavior requires either: (a) dataset >> RAM, (b) O_DIRECT, or (c) explicit cache flushing.
