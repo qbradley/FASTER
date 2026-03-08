@@ -1,6 +1,9 @@
 # Build artifacts
 /target/
 
+# Fuzz crash/hang artifacts (generated at runtime, not checked in)
+/artifacts/
+
 # Editor files
 *.swp
 *.swo
@@ -22,3 +25,6 @@ Thumbs.db
 *.profdata
 lcov.info
 tarpaulin-report.html
+
+# libfuzzer log files
+fuzz-*.log

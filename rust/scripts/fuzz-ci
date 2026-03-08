@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+#
+# CI-compatible fuzz runner for FASTER Rust.
+#
+# Runs each fuzz target, collects results, and exits non-zero on any crash.
+# Crash artifacts are saved under rust/fuzz/artifacts/<target>/ for investigation.
+#
+# Usage:
+#   ./scripts/fuzz-ci                       # CI mode: 60s per target (or FUZZ_DURATION)
+#   ./scripts/fuzz-ci --smoke               # Smoke test: 10s per target (PR validation)
+#   ./scripts/fuzz-ci --target record_parsing      # Run only this target
+#   ./scripts/fuzz-ci --target fuzz_hash --smoke   # Smoke test one target
+#   FUZZ_DURATION=300 ./scripts/fuzz-ci            # Override duration per target
+#
+# Environment variables:
+#   FUZZ_DURATION  — seconds per target (default: 60; overridden by --smoke)
+#   FUZZ_MAX_LEN   — max input length in bytes (default: 4096)
+#   FUZZ_JOBS       — parallel fuzzing jobs (default: 1)
+#   FUZZ_ARTIFACTS  — artifact output directory (default: rust/fuzz/artifacts)
+#
+# Requirements:
+#   - Rust nightly toolchain (libfuzzer requires nightly)
+#   - cargo-fuzz: cargo install cargo-fuzz
+
+set -euo pipefail
+
+# ── Paths ─────────────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUST_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+FUZZ_DIR="$RUST_DIR/fuzz"
+CORPUS_DIR="$FUZZ_DIR/corpus"
+ARTIFACTS_DIR="${FUZZ_ARTIFACTS:-$FUZZ_DIR/artifacts}"
+
+# ── All available targets ─────────────────────────────────────────────
+ALL_TARGETS=(
+    fuzz_record_parsing
+    fuzz_record_layout
+    fuzz_compaction_record_size
+    fuzz_hash
+    fuzz_store_ops
+)
+
+# ── Parse arguments ───────────────────────────────────────────────────
+SMOKE=false
+SELECTED_TARGET=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --smoke)
+            SMOKE=true
+            shift
+            ;;
+        --target)
+            if [[ -z "${2:-}" ]]; then
+                echo "ERROR: --target requires an argument" >&2
+                exit 1
+            fi
+            SELECTED_TARGET="$2"
+            shift 2
+            ;;
+        --help|-h)
+            head -20 "$0" | grep '^#' | sed 's/^# \?//'
+            exit 0
+            ;;
+        *)
+            echo "ERROR: Unknown argument: $1" >&2
+            echo "Usage: $0 [--smoke] [--target <name>]" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# ── Resolve duration ──────────────────────────────────────────────────
+if [[ "$SMOKE" == true ]]; then
+    DURATION=10
+    MODE="smoke"
+else
+    DURATION="${FUZZ_DURATION:-60}"
+    MODE="ci"
+fi
+
+MAX_LEN="${FUZZ_MAX_LEN:-4096}"
+JOBS="${FUZZ_JOBS:-1}"
+
+# ── Resolve target list ──────────────────────────────────────────────
+if [[ -n "$SELECTED_TARGET" ]]; then
+    # Allow shorthand: "record_parsing" → "fuzz_record_parsing"
+    CANONICAL="$SELECTED_TARGET"
+    if [[ ! "$CANONICAL" == fuzz_* ]]; then
+        CANONICAL="fuzz_${CANONICAL}"
+    fi
+    # Validate target exists
+    FOUND=false
+    for t in "${ALL_TARGETS[@]}"; do
+        if [[ "$t" == "$CANONICAL" ]]; then
+            FOUND=true
+            break
+        fi
+    done
+    if [[ "$FOUND" == false ]]; then
+        echo "ERROR: Unknown target '$SELECTED_TARGET'" >&2
+        echo "Available targets:" >&2
+        for t in "${ALL_TARGETS[@]}"; do
+            echo "  - ${t#fuzz_}" >&2
+        done
+        exit 1
+    fi
+    TARGETS=("$CANONICAL")
+else
+    TARGETS=("${ALL_TARGETS[@]}")
+fi
+
+# ── Preflight ─────────────────────────────────────────────────────────
+if ! command -v cargo-fuzz &>/dev/null; then
+    echo "ERROR: cargo-fuzz not found. Install with: cargo install cargo-fuzz" >&2
+    exit 1
+fi
+
+if ! rustup toolchain list | grep -q nightly; then
+    echo "ERROR: Nightly toolchain not found. Install with: rustup toolchain install nightly" >&2
+    exit 1
+fi
+
+# ── Prepare artifacts directory ───────────────────────────────────────
+mkdir -p "$ARTIFACTS_DIR"
+
+# ── Build ─────────────────────────────────────────────────────────────
+echo "═══════════════════════════════════════════════════════════════════"
+echo "  FASTER Fuzz Runner — mode: $MODE, duration: ${DURATION}s/target"
+echo "  Targets: ${TARGETS[*]}"
+echo "═══════════════════════════════════════════════════════════════════"
+echo ""
+
+echo "Building fuzz targets..."
+cd "$FUZZ_DIR"
+cargo fuzz build 2>&1
+echo ""
+
+# ── Run each target ───────────────────────────────────────────────────
+FAILED=()
+PASSED=()
+TOTAL_START=$(date +%s)
+
+for target in "${TARGETS[@]}"; do
+    echo "────────────────────────────────────────────────────────────────"
+    echo "  Target: $target (${DURATION}s, max_len=${MAX_LEN})"
+    echo "────────────────────────────────────────────────────────────────"
+
+    TARGET_START=$(date +%s)
+
+    # Build libfuzzer arguments
+    FUZZ_ARGS=(
+        -max_len="$MAX_LEN"
+        -max_total_time="$DURATION"
+        -jobs="$JOBS"
+        -artifact_prefix="$ARTIFACTS_DIR/${target}/"
+    )
+
+    # Use the corpus directory if it exists
+    TARGET_CORPUS="$CORPUS_DIR/$target"
+    CORPUS_ARGS=()
+    if [[ -d "$TARGET_CORPUS" ]]; then
+        CORPUS_ARGS=("$TARGET_CORPUS")
+    fi
+
+    # Ensure artifact subdirectory exists
+    mkdir -p "$ARTIFACTS_DIR/$target"
+
+    if cargo fuzz run "$target" "${CORPUS_ARGS[@]}" -- "${FUZZ_ARGS[@]}" 2>&1; then
+        TARGET_END=$(date +%s)
+        ELAPSED=$((TARGET_END - TARGET_START))
+        echo "  ✓ $target: PASSED (${ELAPSED}s)"
+        PASSED+=("$target")
+    else
+        TARGET_END=$(date +%s)
+        ELAPSED=$((TARGET_END - TARGET_START))
+        echo "  ✗ $target: CRASH FOUND (${ELAPSED}s)"
+        echo "    Artifacts saved to: $ARTIFACTS_DIR/$target/"
+        FAILED+=("$target")
+    fi
+    echo ""
+done
+
+# ── Summary ───────────────────────────────────────────────────────────
+TOTAL_END=$(date +%s)
+TOTAL_ELAPSED=$((TOTAL_END - TOTAL_START))
+
+echo "═══════════════════════════════════════════════════════════════════"
+echo "  SUMMARY"
+echo "  Mode:    $MODE"
+echo "  Targets: ${#TARGETS[@]} total, ${#PASSED[@]} passed, ${#FAILED[@]} failed"
+echo "  Time:    ${TOTAL_ELAPSED}s"
+echo "═══════════════════════════════════════════════════════════════════"
+
+if [[ ${#FAILED[@]} -gt 0 ]]; then
+    echo ""
+    echo "FAILING TARGETS:"
+    for t in "${FAILED[@]}"; do
+        echo "  ✗ $t"
+        echo "    Artifacts: $ARTIFACTS_DIR/$t/"
+        echo "    Reproduce: cd $FUZZ_DIR && cargo fuzz run $t $ARTIFACTS_DIR/$t/<crash-file>"
+    done
+    exit 1
+fi
+
+echo ""
+echo "All targets passed. ✓"
