@@ -21,7 +21,7 @@ use faster_core::InMemoryDevice;
 use faster_core::grow::GrowConfig;
 use faster_core::hybrid_log::EvictionPolicy;
 use faster_core::status::OperationStatus;
-use faster_core::store::{FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo};
+use faster_core::store::{DeleteInfo, FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo};
 
 // ═══════════════════════════════════════════════════════════════════
 // VarLenFunctions — Functions impl for u64 keys + Vec<u8> values

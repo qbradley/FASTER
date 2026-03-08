@@ -386,7 +386,7 @@ mod tests {
     use crate::hybrid_log::eviction::EvictionPolicy;
     use crate::record::{RecordSizeError, record_size_from_bytes};
     use crate::status::OperationStatus;
-    use crate::store::{FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, SimpleFunctions, UpsertInfo};
+    use crate::store::{DeleteInfo, FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, SimpleFunctions, UpsertInfo};
 
     type SimpleStore = FasterKv<SimpleFunctions<u64, u64>>;
 

@@ -7,7 +7,7 @@
 //! analogue for variable-length byte data.
 
 use faster_core::status::OperationStatus;
-use faster_core::store::{Functions, ReadInfo, RmwInfo, RmwInPlaceResult, UpsertInfo};
+use faster_core::store::{DeleteInfo, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo};
 
 /// [`Functions`] implementation for `Vec<u8>` keys and values.
 ///

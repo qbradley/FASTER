@@ -15,7 +15,7 @@ use faster_core::SyncFileDevice;
 use faster_core::grow::GrowConfig;
 use faster_core::hybrid_log::eviction::EvictionPolicy;
 use faster_core::status::OperationStatus;
-use faster_core::store::{FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo};
+use faster_core::store::{DeleteInfo, FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo};
 use rand::Rng;
 
 // ── FASTER internal page size (2^25 = 32 MiB) ──────────────────────────
