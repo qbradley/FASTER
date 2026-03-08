@@ -17,7 +17,7 @@ pub enum Op {
 /// Disk I/O benchmark workload specifications.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkloadSpec {
-    /// 100% random reads with 10× overcommit — nearly all reads hit disk.
+    /// 100% random reads with 10x overcommit — nearly all reads hit disk.
     Overcommit,
     /// 100% upserts with sequential keys — forces continuous page flushing.
     WriteHeavy,
@@ -80,12 +80,25 @@ impl WorkloadSpec {
     }
 
     /// Suggested buffer_size_pages — controls memory pressure.
+    ///
+    /// # Memory Budget Relationship
+    ///
+    /// Each buffer page is 32 KiB. The in-memory working set is:
+    ///   `buffer_pages * 32 KiB`
+    ///
+    /// For true disk I/O, the total dataset (`num_keys * (8 + value_size)`)
+    /// must exceed the buffer memory AND the OS page cache. On a 32 GB VM
+    /// with 10M x 1 KiB records (about 10 GB dataset), you need
+    /// buffer_pages <= 16 to force reads off-disk once the OS cache is cold.
+    ///
+    /// Rule of thumb: `buffer_pages * 32 KiB < dataset_size / 100` for
+    /// meaningful pending rates.
     pub fn default_buffer_pages(&self) -> usize {
         match self {
-            WorkloadSpec::Overcommit => 128, // ~4MB — force most reads to disk
-            WorkloadSpec::WriteHeavy => 32,  // ~1MB — force rapid flushing
-            WorkloadSpec::Mixed => 256,      // ~8MB — moderate memory
-            WorkloadSpec::Scan => 64,        // ~2MB — test read-ahead
+            WorkloadSpec::Overcommit => 16, // ~512KB — force reads to disk
+            WorkloadSpec::WriteHeavy => 16, // ~512KB — force rapid flushing
+            WorkloadSpec::Mixed => 32,      // ~1MB — moderate memory pressure
+            WorkloadSpec::Scan => 16,       // ~512KB — test read-ahead from disk
         }
     }
 }
