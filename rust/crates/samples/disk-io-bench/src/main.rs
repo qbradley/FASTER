@@ -10,7 +10,15 @@
 //! cargo run -p disk-io-bench --release -- --help
 //! cargo run -p disk-io-bench --release -- --device sync --workload overcommit --threads 4
 //! cargo run -p disk-io-bench --release -- --run-all --output json --output-file results.json
+//! cargo run -p disk-io-bench --release -- --force-disk --iterations 5
 //! ```
+//!
+//! # Memory Budget
+//!
+//! For true disk I/O, the dataset (`num_keys * (8 + value_size)`) must
+//! exceed `buffer_pages * 32 KiB`. On a 32 GB VM with 10M keys and 1 KiB
+//! values (~10 GB), use buffer_pages=16 (512 KiB window) to force the
+//! vast majority of reads through the device layer.
 
 mod distribution;
 mod stats;
@@ -25,11 +33,14 @@ use faster_core::SyncFileDevice;
 use faster_core::hybrid_log::eviction::EvictionPolicy;
 use faster_core::record::Value;
 use faster_core::status::OperationStatus;
-use faster_core::store::{DeleteInfo, FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInfo, RmwInPlaceResult, UpsertInfo};
+use faster_core::store::{
+    DeleteInfo, FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInPlaceResult, RmwInfo,
+    UpsertInfo,
+};
 use serde::Serialize;
 
 use distribution::{Distribution, KeyGenerator};
-use stats::LatencyHistogram;
+use stats::{IterationSummary, LatencyHistogram};
 use workload::{Op, WorkloadSpec};
 
 // ── CLI ──────────────────────────────────────────────────────────────
@@ -38,6 +49,13 @@ use workload::{Op, WorkloadSpec};
 ///
 /// Compares SyncFileDevice, UringDevice, and TokioFileDevice under
 /// disk-bound workloads with both sync and Tokio client modes.
+///
+/// # Memory Budget
+///
+/// For true disk I/O, the dataset (`num_keys * (8 + value_size)`) must
+/// exceed `buffer_pages * 32 KiB`. On a 32 GB VM with default 10M keys
+/// and 1 KiB values (~10 GB), buffer_pages=16 gives a 512 KiB in-memory
+/// window — forcing the vast majority of reads to go through the device.
 #[derive(Parser, Debug, Clone)]
 #[command(name = "disk-io-bench", version)]
 struct Cli {
@@ -65,8 +83,9 @@ struct Cli {
     #[arg(short = 's', long, default_value = "1024")]
     value_size: usize,
 
-    /// In-memory buffer pages (controls memory pressure)
-    #[arg(short, long, default_value = "256")]
+    /// In-memory buffer pages (controls memory pressure). Each page is 32 KiB.
+    /// Lower values force more disk I/O. Use --force-disk to auto-tune.
+    #[arg(short, long, default_value = "16")]
     buffer_pages: usize,
 
     /// Measurement duration in seconds
@@ -101,7 +120,7 @@ struct Cli {
     #[arg(long)]
     output_file: Option<PathBuf>,
 
-    /// Run full benchmark matrix (all device×client×workload×thread combos)
+    /// Run full benchmark matrix (all device x client x workload x thread combos)
     #[arg(long)]
     run_all: bool,
 
@@ -112,6 +131,15 @@ struct Cli {
     /// Number of io threads for SyncFileDevice
     #[arg(long, default_value = "4")]
     io_threads: usize,
+
+    /// Number of measurement iterations for statistical rigor (min 1)
+    #[arg(long, default_value = "5")]
+    iterations: usize,
+
+    /// Auto-tune buffer_pages to guarantee disk-bound behavior.
+    /// Starts at buffer_pages=16 and halves until pending_rate > 0%.
+    #[arg(long)]
+    force_disk: bool,
 }
 
 // ── Value types ──────────────────────────────────────────────────────
@@ -275,6 +303,7 @@ struct BenchmarkConfig {
     value_size: usize,
     buffer_pages: usize,
     duration_secs: u64,
+    iterations: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -290,12 +319,36 @@ struct BenchmarkResults {
     total_writes: u64,
     total_pending: u64,
     elapsed_secs: f64,
+    // Statistical fields across iterations
+    ops_per_sec_stddev: f64,
+    ops_per_sec_ci95_lo: f64,
+    ops_per_sec_ci95_hi: f64,
+    high_variance: bool,
+    /// "DISK-BOUND", "IN-MEMORY BASELINE", or "MIXED"
+    io_classification: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct BenchmarkReport {
     config: BenchmarkConfig,
     results: BenchmarkResults,
+}
+
+/// Results from a single iteration (no stats aggregation).
+#[derive(Debug, Clone)]
+struct SingleRunResults {
+    ops_per_sec: f64,
+    #[allow(dead_code)]
+    throughput_mb_s: f64,
+    p50_ns: f64,
+    p99_ns: f64,
+    p999_ns: f64,
+    pending_rate: f64,
+    total_ops: u64,
+    total_reads: u64,
+    total_writes: u64,
+    total_pending: u64,
+    elapsed_secs: f64,
 }
 
 // ── Store construction helpers ───────────────────────────────────────
@@ -356,9 +409,7 @@ fn populate(store: &FasterKv<BenchFunctions>, num_keys: u64) {
             if k % 64 == 0 {
                 ctx.refresh();
             }
-            // Periodically complete pending I/O
             if k % chunk_size == 0 && k > 0 {
-                // Drop context, complete pending, re-acquire
                 drop(ctx);
                 loop {
                     let r = store.try_complete_pending(&mut session, false);
@@ -378,7 +429,6 @@ fn populate(store: &FasterKv<BenchFunctions>, num_keys: u64) {
             }
         }
     }
-    // Final completion pass
     loop {
         let r = store.try_complete_pending(&mut session, false);
         if r.is_done() {
@@ -387,7 +437,6 @@ fn populate(store: &FasterKv<BenchFunctions>, num_keys: u64) {
         std::thread::yield_now();
     }
     store.dispose_session(session);
-    // Run maintenance to flush remaining pages
     store.maintenance();
     eprintln!(
         "\r  Populated {:.1}M keys — done.                    ",
@@ -511,7 +560,6 @@ fn run_sync_worker(
             }
         }
     }
-    // Final completion
     loop {
         let r = store.try_complete_pending(&mut session, false);
         if r.is_done() {
@@ -555,7 +603,7 @@ fn run_sync_bench(
     warmup_duration: Duration,
     refresh_interval: u64,
     latency_sample_rate: u64,
-) -> BenchmarkResults {
+) -> SingleRunResults {
     let handles: Vec<_> = (0..threads)
         .map(|tid| {
             let store = Arc::clone(&store);
@@ -590,8 +638,7 @@ fn run_tokio_bench(
     warmup_duration: Duration,
     refresh_interval: u64,
     latency_sample_rate: u64,
-) -> BenchmarkResults {
-    // AsyncSession is !Send so we must use one OS thread per task with a LocalSet.
+) -> SingleRunResults {
     let handles: Vec<_> = (0..threads)
         .map(|tid| {
             let store = Arc::clone(&store);
@@ -738,7 +785,7 @@ async fn run_tokio_worker(
 fn aggregate_results(
     handles: Vec<std::thread::JoinHandle<ThreadStats>>,
     value_size: usize,
-) -> BenchmarkResults {
+) -> SingleRunResults {
     let mut total_ops: u64 = 0;
     let mut total_reads: u64 = 0;
     let mut total_writes: u64 = 0;
@@ -768,7 +815,7 @@ fn aggregate_results(
         0.0
     };
 
-    BenchmarkResults {
+    SingleRunResults {
         ops_per_sec,
         throughput_mb_s,
         p50_ns: merged_histogram.percentile(50.0),
@@ -783,43 +830,174 @@ fn aggregate_results(
     }
 }
 
+// ── I/O classification ───────────────────────────────────────────────
+
+fn classify_io(pending_rate: f64) -> &'static str {
+    if pending_rate < 0.001 {
+        "IN-MEMORY BASELINE"
+    } else if pending_rate < 0.05 {
+        "MIXED"
+    } else {
+        "DISK-BOUND"
+    }
+}
+
+// ── Single iteration executor ────────────────────────────────────────
+
+fn run_single_iteration(spec: &BenchSpec) -> SingleRunResults {
+    let bench_dir = spec.data_dir.join(format!(
+        "{}_{}_{}",
+        spec.device.name(),
+        spec.client.name(),
+        spec.workload.name()
+    ));
+    let _ = std::fs::remove_dir_all(&bench_dir);
+    std::fs::create_dir_all(&bench_dir).expect("failed to create bench data dir");
+
+    let config = make_config(spec.num_keys, spec.buffer_pages);
+    let dist = spec.workload.distribution();
+
+    let results = match (spec.device, spec.client) {
+        (DeviceType::Sync, ClientType::Sync) => {
+            let device = make_sync_device(&bench_dir, spec.io_threads);
+            let store = Arc::new(FasterKv::new(config, BenchFunctions, device));
+            populate(&store, spec.num_keys);
+            run_sync_bench(
+                store, spec.workload, dist, spec.num_keys, spec.threads,
+                spec.run_duration, spec.warmup_duration, spec.refresh_interval,
+                spec.latency_sample_rate,
+            )
+        }
+        (DeviceType::Sync, ClientType::Tokio) => {
+            let device = make_sync_device(&bench_dir, spec.io_threads);
+            let store = Arc::new(FasterKv::new(config, BenchFunctions, device));
+            populate(&store, spec.num_keys);
+            run_tokio_bench(
+                store, spec.workload, dist, spec.num_keys, spec.threads,
+                spec.run_duration, spec.warmup_duration, spec.refresh_interval,
+                spec.latency_sample_rate,
+            )
+        }
+        #[cfg(target_os = "linux")]
+        (DeviceType::Uring, ClientType::Sync) => {
+            let device = make_uring_device(&bench_dir, spec.queue_depth, spec.direct_io);
+            let store = Arc::new(FasterKv::new(config, BenchFunctions, device));
+            populate(&store, spec.num_keys);
+            run_sync_bench(
+                store, spec.workload, dist, spec.num_keys, spec.threads,
+                spec.run_duration, spec.warmup_duration, spec.refresh_interval,
+                spec.latency_sample_rate,
+            )
+        }
+        #[cfg(target_os = "linux")]
+        (DeviceType::Uring, ClientType::Tokio) => {
+            let device = make_uring_device(&bench_dir, spec.queue_depth, spec.direct_io);
+            let store = Arc::new(FasterKv::new(config, BenchFunctions, device));
+            populate(&store, spec.num_keys);
+            run_tokio_bench(
+                store, spec.workload, dist, spec.num_keys, spec.threads,
+                spec.run_duration, spec.warmup_duration, spec.refresh_interval,
+                spec.latency_sample_rate,
+            )
+        }
+        #[cfg(not(target_os = "linux"))]
+        (DeviceType::Uring, _) => {
+            eprintln!("  Warning: UringDevice requires Linux -- skipping");
+            return SingleRunResults {
+                ops_per_sec: 0.0, throughput_mb_s: 0.0,
+                p50_ns: 0.0, p99_ns: 0.0, p999_ns: 0.0,
+                pending_rate: 0.0, total_ops: 0, total_reads: 0,
+                total_writes: 0, total_pending: 0, elapsed_secs: 0.0,
+            };
+        }
+        (DeviceType::Tokio, ClientType::Sync) => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2).enable_all().build()
+                .expect("failed to build tokio runtime");
+            let _guard = rt.enter();
+            let device = faster_tokio::TokioFileDevice::new(
+                &bench_dir, "log.", 4096, SEGMENT_SIZE,
+            ).expect("failed to create TokioFileDevice");
+            let store = Arc::new(FasterKv::new(config, BenchFunctions, device));
+            populate(&store, spec.num_keys);
+            run_sync_bench(
+                store, spec.workload, dist, spec.num_keys, spec.threads,
+                spec.run_duration, spec.warmup_duration, spec.refresh_interval,
+                spec.latency_sample_rate,
+            )
+        }
+        (DeviceType::Tokio, ClientType::Tokio) => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2).enable_all().build()
+                .expect("failed to build tokio runtime");
+            let _guard = rt.enter();
+            let device = faster_tokio::TokioFileDevice::new(
+                &bench_dir, "log.", 4096, SEGMENT_SIZE,
+            ).expect("failed to create TokioFileDevice");
+            let store = Arc::new(FasterKv::new(config, BenchFunctions, device));
+            populate(&store, spec.num_keys);
+            run_tokio_bench(
+                store, spec.workload, dist, spec.num_keys, spec.threads,
+                spec.run_duration, spec.warmup_duration, spec.refresh_interval,
+                spec.latency_sample_rate,
+            )
+        }
+    };
+
+    let _ = std::fs::remove_dir_all(&bench_dir);
+    results
+}
+
 // ── Output formatting ────────────────────────────────────────────────
 
 fn print_table(reports: &[BenchmarkReport]) {
     println!();
     println!(
-        "╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗"
+        "╔═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗"
     );
     println!(
-        "║                              FASTER Disk I/O Benchmark Results                                                 ║"
+        "║                                          FASTER Disk I/O Benchmark Results                                                              ║"
     );
     println!(
-        "╠════════╤════════╤═══════════╤═════╤══════════════╤═══════════╤══════════╤══════════╤═══════════╤════════════════╣"
+        "╠════════╤════════╤═══════════╤═════╤═══════════════╤══════════╤══════════╤══════════╤═══════════╤══════════╤═══════════════╤═══════════════╣"
     );
     println!(
-        "║ Device │ Client │ Workload  │ Thr │ Ops/sec      │ MB/s      │ P50 (ns) │ P99 (ns) │ P99.9(ns) │ Pending Rate   ║"
+        "║ Device │ Client │ Workload  │ Thr │ Ops/sec (mean)│ +Stddev  │ P50 (ns) │ P99 (ns) │ P99.9(ns) │ Pending% │ 95% CI        │ I/O Class     ║"
     );
     println!(
-        "╠════════╪════════╪═══════════╪═════╪══════════════╪═══════════╪══════════╪══════════╪═══════════╪════════════════╣"
+        "╠════════╪════════╪═══════════╪═════╪═══════════════╪══════════╪══════════╪══════════╪═══════════╪══════════╪═══════════════╪═══════════════╣"
     );
     for r in reports {
+        let variance_flag = if r.results.high_variance { " !" } else { "" };
+        let ci_str = format!(
+            "[{},{}]",
+            format_ops(r.results.ops_per_sec_ci95_lo),
+            format_ops(r.results.ops_per_sec_ci95_hi),
+        );
         println!(
-            "║ {:6} │ {:6} │ {:9} │ {:>3} │ {:>12} │ {:>9.1} │ {:>8.0} │ {:>8.0} │ {:>9.0} │ {:>13.2}% ║",
+            "║ {:6} │ {:6} │ {:9} │ {:>3} │ {:>13} │ {:>8} │ {:>8.0} │ {:>8.0} │ {:>9.0} │ {:>7.2}% │ {:>13} │ {:>13} ║{}",
             r.config.device,
             r.config.client,
             r.config.workload,
             r.config.threads,
             format_ops(r.results.ops_per_sec),
-            r.results.throughput_mb_s,
+            format_ops(r.results.ops_per_sec_stddev),
             r.results.p50_ns,
             r.results.p99_ns,
             r.results.p999_ns,
             r.results.pending_rate * 100.0,
+            ci_str,
+            r.results.io_classification,
+            variance_flag,
         );
     }
     println!(
-        "╚════════╧════════╧═══════════╧═════╧══════════════╧═══════════╧══════════╧══════════╧═══════════╧════════════════╝"
+        "╚════════╧════════╧═══════════╧═════╧═══════════════╧══════════╧══════════╧══════════╧═══════════╧══════════╧═══════════════╧═══════════════╝"
     );
+    println!();
+    println!("  Legend: ! = HIGH VARIANCE (stddev > 10% of mean)");
+    println!("  I/O Class: DISK-BOUND (pending>=5%) | MIXED (0.1-5%) | IN-MEMORY BASELINE (<0.1%)");
+    println!("  Memory budget: buffer_pages x 32 KiB = in-memory window. Reduce to force disk I/O.");
 }
 
 fn print_json(reports: &[BenchmarkReport]) {
@@ -828,11 +1006,19 @@ fn print_json(reports: &[BenchmarkReport]) {
 
 fn print_csv(reports: &[BenchmarkReport]) {
     println!(
-        "device,client,workload,threads,num_keys,value_size,buffer_pages,ops_per_sec,throughput_mb_s,p50_ns,p99_ns,p999_ns,pending_rate,total_ops,total_reads,total_writes,total_pending,elapsed_secs"
+        "device,client,workload,threads,num_keys,value_size,buffer_pages,iterations,\
+         ops_per_sec,ops_per_sec_stddev,ops_per_sec_ci95_lo,ops_per_sec_ci95_hi,\
+         throughput_mb_s,p50_ns,p99_ns,p999_ns,pending_rate,\
+         total_ops,total_reads,total_writes,total_pending,elapsed_secs,\
+         high_variance,io_classification"
     );
     for r in reports {
         println!(
-            "{},{},{},{},{},{},{},{:.0},{:.1},{:.0},{:.0},{:.0},{:.4},{},{},{},{},{:.3}",
+            "{},{},{},{},{},{},{},{},\
+             {:.0},{:.0},{:.0},{:.0},\
+             {:.1},{:.0},{:.0},{:.0},{:.4},\
+             {},{},{},{},{:.3},\
+             {},{}",
             r.config.device,
             r.config.client,
             r.config.workload,
@@ -840,7 +1026,11 @@ fn print_csv(reports: &[BenchmarkReport]) {
             r.config.num_keys,
             r.config.value_size,
             r.config.buffer_pages,
+            r.config.iterations,
             r.results.ops_per_sec,
+            r.results.ops_per_sec_stddev,
+            r.results.ops_per_sec_ci95_lo,
+            r.results.ops_per_sec_ci95_hi,
             r.results.throughput_mb_s,
             r.results.p50_ns,
             r.results.p99_ns,
@@ -851,6 +1041,8 @@ fn print_csv(reports: &[BenchmarkReport]) {
             r.results.total_writes,
             r.results.total_pending,
             r.results.elapsed_secs,
+            r.results.high_variance,
+            r.results.io_classification,
         );
     }
 }
@@ -869,6 +1061,7 @@ fn format_ops(ops: f64) -> String {
 
 // ── Benchmark orchestration ──────────────────────────────────────────
 
+#[derive(Clone)]
 struct BenchSpec {
     device: DeviceType,
     client: ClientType,
@@ -885,20 +1078,56 @@ struct BenchSpec {
     io_threads: usize,
     queue_depth: u32,
     direct_io: bool,
+    iterations: usize,
+    force_disk: bool,
 }
 
 fn run_single_bench(spec: &BenchSpec) -> BenchmarkReport {
-    // Clean data directory
-    let bench_dir = spec.data_dir.join(format!(
-        "{}_{}_{}",
-        spec.device.name(),
-        spec.client.name(),
-        spec.workload.name()
-    ));
-    let _ = std::fs::remove_dir_all(&bench_dir);
-    std::fs::create_dir_all(&bench_dir).expect("failed to create bench data dir");
+    let mut effective_buffer_pages = spec.buffer_pages;
 
-    let config = make_config(spec.num_keys, spec.buffer_pages);
+    // ── Force-disk auto-tuning ──────────────────────────────────────
+    if spec.force_disk {
+        eprintln!(
+            "  [force-disk] Starting auto-tune with buffer_pages={effective_buffer_pages}..."
+        );
+        loop {
+            let probe_spec = BenchSpec {
+                buffer_pages: effective_buffer_pages,
+                run_duration: Duration::from_secs(5),
+                warmup_duration: Duration::from_secs(3),
+                iterations: 1,
+                force_disk: false,
+                ..spec.clone()
+            };
+            eprint!("  [force-disk] Probing buffer_pages={effective_buffer_pages}... ");
+            let probe = run_single_iteration(&probe_spec);
+            let pr = probe.pending_rate * 100.0;
+            eprintln!("pending_rate={pr:.2}%");
+
+            if probe.pending_rate > 0.001 {
+                eprintln!(
+                    "  [force-disk] Achieved disk-bound behavior at \
+                     buffer_pages={effective_buffer_pages} (pending={pr:.2}%)"
+                );
+                break;
+            }
+            if effective_buffer_pages <= 1 {
+                eprintln!(
+                    "  [force-disk] Cannot achieve disk I/O even at buffer_pages=1. \
+                     The dataset may fit in OS page cache. Try increasing --num-keys."
+                );
+                break;
+            }
+            effective_buffer_pages = (effective_buffer_pages / 2).max(1);
+        }
+    }
+
+    // ── Build effective spec with possibly tuned buffer_pages ────────
+    let run_spec = BenchSpec {
+        buffer_pages: effective_buffer_pages,
+        force_disk: false,
+        ..spec.clone()
+    };
 
     let bench_config = BenchmarkConfig {
         device: spec.device.name().to_string(),
@@ -907,168 +1136,107 @@ fn run_single_bench(spec: &BenchSpec) -> BenchmarkReport {
         threads: spec.threads,
         num_keys: spec.num_keys,
         value_size: spec.value_size,
-        buffer_pages: spec.buffer_pages,
+        buffer_pages: effective_buffer_pages,
         duration_secs: spec.run_duration.as_secs(),
+        iterations: spec.iterations,
     };
 
-    let dist = spec.workload.distribution();
+    // ── Run multiple iterations ─────────────────────────────────────
+    let iterations = spec.iterations.max(1);
+    let mut all_runs: Vec<SingleRunResults> = Vec::with_capacity(iterations);
 
-    // Choose execution path based on device and client type
-    let results = match (spec.device, spec.client) {
-        (DeviceType::Sync, ClientType::Sync) => {
-            let device = make_sync_device(&bench_dir, spec.io_threads);
-            let store = Arc::new(FasterKv::new(config, BenchFunctions, device));
-            eprint!("  Populating... ");
-            populate(&store, spec.num_keys);
-            run_sync_bench(
-                store,
-                spec.workload,
-                dist,
-                spec.num_keys,
-                spec.threads,
-                spec.run_duration,
-                spec.warmup_duration,
-                spec.refresh_interval,
-                spec.latency_sample_rate,
-            )
+    for i in 0..iterations {
+        if iterations > 1 {
+            eprint!("  Iteration {}/{}... ", i + 1, iterations);
+        } else {
+            eprint!("  Running... ");
         }
-        (DeviceType::Sync, ClientType::Tokio) => {
-            let device = make_sync_device(&bench_dir, spec.io_threads);
-            let store = Arc::new(FasterKv::new(config, BenchFunctions, device));
-            eprint!("  Populating... ");
-            populate(&store, spec.num_keys);
-            run_tokio_bench(
-                store,
-                spec.workload,
-                dist,
-                spec.num_keys,
-                spec.threads,
-                spec.run_duration,
-                spec.warmup_duration,
-                spec.refresh_interval,
-                spec.latency_sample_rate,
-            )
-        }
-        #[cfg(target_os = "linux")]
-        (DeviceType::Uring, ClientType::Sync) => {
-            let device = make_uring_device(&bench_dir, spec.queue_depth, spec.direct_io);
-            let store = Arc::new(FasterKv::new(config, BenchFunctions, device));
-            eprint!("  Populating... ");
-            populate(&store, spec.num_keys);
-            run_sync_bench(
-                store,
-                spec.workload,
-                dist,
-                spec.num_keys,
-                spec.threads,
-                spec.run_duration,
-                spec.warmup_duration,
-                spec.refresh_interval,
-                spec.latency_sample_rate,
-            )
-        }
-        #[cfg(target_os = "linux")]
-        (DeviceType::Uring, ClientType::Tokio) => {
-            let device = make_uring_device(&bench_dir, spec.queue_depth, spec.direct_io);
-            let store = Arc::new(FasterKv::new(config, BenchFunctions, device));
-            eprint!("  Populating... ");
-            populate(&store, spec.num_keys);
-            run_tokio_bench(
-                store,
-                spec.workload,
-                dist,
-                spec.num_keys,
-                spec.threads,
-                spec.run_duration,
-                spec.warmup_duration,
-                spec.refresh_interval,
-                spec.latency_sample_rate,
-            )
-        }
-        #[cfg(not(target_os = "linux"))]
-        (DeviceType::Uring, _) => {
-            eprintln!("  ⚠ UringDevice requires Linux — skipping");
-            return BenchmarkReport {
-                config: bench_config,
-                results: BenchmarkResults {
-                    ops_per_sec: 0.0,
-                    throughput_mb_s: 0.0,
-                    p50_ns: 0.0,
-                    p99_ns: 0.0,
-                    p999_ns: 0.0,
-                    pending_rate: 0.0,
-                    total_ops: 0,
-                    total_reads: 0,
-                    total_writes: 0,
-                    total_pending: 0,
-                    elapsed_secs: 0.0,
-                },
-            };
-        }
-        (DeviceType::Tokio, ClientType::Sync) => {
-            // TokioFileDevice requires a runtime — spin one up
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-                .expect("failed to build tokio runtime");
-            let _guard = rt.enter();
-            let device = faster_tokio::TokioFileDevice::new(&bench_dir, "log.", 4096, SEGMENT_SIZE)
-                .expect("failed to create TokioFileDevice");
-            let store = Arc::new(FasterKv::new(config, BenchFunctions, device));
-            eprint!("  Populating... ");
-            populate(&store, spec.num_keys);
-            run_sync_bench(
-                store,
-                spec.workload,
-                dist,
-                spec.num_keys,
-                spec.threads,
-                spec.run_duration,
-                spec.warmup_duration,
-                spec.refresh_interval,
-                spec.latency_sample_rate,
-            )
-        }
-        (DeviceType::Tokio, ClientType::Tokio) => {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-                .expect("failed to build tokio runtime");
-            let _guard = rt.enter();
-            let device = faster_tokio::TokioFileDevice::new(&bench_dir, "log.", 4096, SEGMENT_SIZE)
-                .expect("failed to create TokioFileDevice");
-            let store = Arc::new(FasterKv::new(config, BenchFunctions, device));
-            eprint!("  Populating... ");
-            populate(&store, spec.num_keys);
-            run_tokio_bench(
-                store,
-                spec.workload,
-                dist,
-                spec.num_keys,
-                spec.threads,
-                spec.run_duration,
-                spec.warmup_duration,
-                spec.refresh_interval,
-                spec.latency_sample_rate,
-            )
-        }
-    };
+        let run = run_single_iteration(&run_spec);
+        eprintln!(
+            "{:.2}M ops/sec | pending={:.2}%",
+            run.ops_per_sec / 1_000_000.0,
+            run.pending_rate * 100.0,
+        );
+        all_runs.push(run);
+    }
 
-    // Clean up data files
-    let _ = std::fs::remove_dir_all(&bench_dir);
+    // ── Aggregate across iterations ─────────────────────────────────
+    let ops_values: Vec<f64> = all_runs.iter().map(|r| r.ops_per_sec).collect();
+    let summary = IterationSummary::from_values(&ops_values);
+
+    // Use the median run for latency percentiles
+    let mut sorted_by_ops = all_runs.clone();
+    sorted_by_ops.sort_by(|a, b| a.ops_per_sec.partial_cmp(&b.ops_per_sec).unwrap());
+    let median_run = &sorted_by_ops[sorted_by_ops.len() / 2];
+
+    let avg_pending_rate =
+        all_runs.iter().map(|r| r.pending_rate).sum::<f64>() / all_runs.len() as f64;
+
+    let io_class = classify_io(avg_pending_rate);
+
+    // ── Pending-rate validation gate ────────────────────────────────
+    if avg_pending_rate < 0.001 {
+        eprintln!();
+        eprintln!(
+            "  WARNING: All operations completing synchronously -- this is an in-memory"
+        );
+        eprintln!(
+            "    benchmark, not disk-bound. Increase --num-keys or reduce --buffer-pages"
+        );
+        eprintln!("    to force disk I/O. Use --force-disk for automatic tuning.");
+        eprintln!("    Results tagged as: {io_class}");
+        eprintln!();
+    }
+
+    if summary.high_variance {
+        eprintln!(
+            "  HIGH VARIANCE: stddev={:.2}M ({:.1}% of mean) across {} iterations",
+            summary.stddev / 1_000_000.0,
+            if summary.mean > 0.0 {
+                summary.stddev / summary.mean * 100.0
+            } else {
+                0.0
+            },
+            iterations,
+        );
+    }
+
+    let total_ops: u64 = all_runs.iter().map(|r| r.total_ops).sum();
+    let total_reads: u64 = all_runs.iter().map(|r| r.total_reads).sum();
+    let total_writes: u64 = all_runs.iter().map(|r| r.total_writes).sum();
+    let total_pending: u64 = all_runs.iter().map(|r| r.total_pending).sum();
+    let total_elapsed: f64 = all_runs.iter().map(|r| r.elapsed_secs).sum();
+
+    let record_size = (8 + spec.value_size) as f64;
+    let mean_throughput = (summary.mean * record_size) / (1024.0 * 1024.0);
 
     BenchmarkReport {
         config: bench_config,
-        results,
+        results: BenchmarkResults {
+            ops_per_sec: summary.mean,
+            throughput_mb_s: mean_throughput,
+            p50_ns: median_run.p50_ns,
+            p99_ns: median_run.p99_ns,
+            p999_ns: median_run.p999_ns,
+            pending_rate: avg_pending_rate,
+            total_ops,
+            total_reads,
+            total_writes,
+            total_pending,
+            elapsed_secs: total_elapsed,
+            ops_per_sec_stddev: summary.stddev,
+            ops_per_sec_ci95_lo: summary.ci95_lo,
+            ops_per_sec_ci95_hi: summary.ci95_hi,
+            high_variance: summary.high_variance,
+            io_classification: io_class.to_string(),
+        },
     }
 }
 
 // ── System info ──────────────────────────────────────────────────────
 
 fn print_system_info() {
-    println!("── System ─────────────────────────────────────────────────────");
+    println!("-- System -----");
     if let Ok(cpuinfo) = std::fs::read_to_string("/proc/cpuinfo") {
         if let Some(line) = cpuinfo.lines().find(|l| l.starts_with("model name")) {
             if let Some(name) = line.split(':').nth(1) {
@@ -1096,9 +1264,7 @@ fn main() {
     let cli = Cli::parse();
 
     println!();
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║          FASTER — Disk I/O Device Benchmark                 ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
+    println!("=== FASTER -- Disk I/O Device Benchmark ===");
     println!();
     print_system_info();
 
@@ -1124,7 +1290,7 @@ fn main() {
                     for &threads in &thread_counts {
                         run_num += 1;
                         println!(
-                            "── [{run_num}/{total}] {} + {} | {} | {threads}T ──",
+                            "-- [{run_num}/{total}] {} + {} | {} | {threads}T --",
                             device.name(),
                             client.name(),
                             workload.name(),
@@ -1146,14 +1312,24 @@ fn main() {
                             io_threads: cli.io_threads,
                             queue_depth: cli.queue_depth,
                             direct_io: cli.direct_io,
+                            iterations: cli.iterations,
+                            force_disk: cli.force_disk,
                         };
 
                         let report = run_single_bench(&spec);
                         println!(
-                            "  → {:.2}M ops/sec | P99={:.0}ns | pending={:.1}%",
+                            "  -> {:.2}M ops/sec (+/-{:.2}M) | P99={:.0}ns | \
+                             pending={:.1}% | {}{}",
                             report.results.ops_per_sec / 1_000_000.0,
+                            report.results.ops_per_sec_stddev / 1_000_000.0,
                             report.results.p99_ns,
                             report.results.pending_rate * 100.0,
+                            report.results.io_classification,
+                            if report.results.high_variance {
+                                " HIGH VARIANCE"
+                            } else {
+                                ""
+                            },
                         );
                         println!();
                         all_reports.push(report);
@@ -1194,19 +1370,38 @@ fn main() {
             }
         };
 
+        let dataset_bytes = cli.num_keys as f64 * (8.0 + cli.value_size as f64);
+        let buffer_bytes = cli.buffer_pages as f64 * 32.0 * 1024.0;
+
         println!("  Device:      {}", device.name());
         println!("  Client:      {}", client.name());
         println!(
-            "  Workload:    {} — {}",
+            "  Workload:    {} -- {}",
             workload.name(),
             workload.description()
         );
         println!("  Threads:     {}", cli.threads);
         println!("  Keys:        {}", cli.num_keys);
         println!("  Value size:  {} bytes", cli.value_size);
-        println!("  Buffer:      {} pages", cli.buffer_pages);
+        println!(
+            "  Buffer:      {} pages ({} KiB in-memory)",
+            cli.buffer_pages,
+            cli.buffer_pages * 32
+        );
         println!("  Duration:    {}s (warmup: {}s)", cli.duration, cli.warmup);
+        println!("  Iterations:  {}", cli.iterations);
+        println!("  Force disk:  {}", cli.force_disk);
         println!("  Data dir:    {}", cli.data_dir.display());
+        println!(
+            "  Dataset:     {:.1} GiB | Buffer: {:.1} MiB | Ratio: {:.0}:1",
+            dataset_bytes / (1024.0 * 1024.0 * 1024.0),
+            buffer_bytes / (1024.0 * 1024.0),
+            if buffer_bytes > 0.0 {
+                dataset_bytes / buffer_bytes
+            } else {
+                0.0
+            },
+        );
         println!();
 
         let spec = BenchSpec {
@@ -1225,6 +1420,8 @@ fn main() {
             io_threads: cli.io_threads,
             queue_depth: cli.queue_depth,
             direct_io: cli.direct_io,
+            iterations: cli.iterations,
+            force_disk: cli.force_disk,
         };
 
         let report = run_single_bench(&spec);
@@ -1248,11 +1445,19 @@ fn main() {
             "json" => serde_json::to_string_pretty(&all_reports).unwrap(),
             "csv" => {
                 let mut s = String::from(
-                    "device,client,workload,threads,num_keys,value_size,buffer_pages,ops_per_sec,throughput_mb_s,p50_ns,p99_ns,p999_ns,pending_rate,total_ops,total_reads,total_writes,total_pending,elapsed_secs\n",
+                    "device,client,workload,threads,num_keys,value_size,buffer_pages,\
+                     iterations,ops_per_sec,ops_per_sec_stddev,ops_per_sec_ci95_lo,\
+                     ops_per_sec_ci95_hi,throughput_mb_s,p50_ns,p99_ns,p999_ns,\
+                     pending_rate,total_ops,total_reads,total_writes,total_pending,\
+                     elapsed_secs,high_variance,io_classification\n",
                 );
                 for r in &all_reports {
                     s.push_str(&format!(
-                        "{},{},{},{},{},{},{},{:.0},{:.1},{:.0},{:.0},{:.0},{:.4},{},{},{},{},{:.3}\n",
+                        "{},{},{},{},{},{},{},{},\
+                         {:.0},{:.0},{:.0},{:.0},\
+                         {:.1},{:.0},{:.0},{:.0},{:.4},\
+                         {},{},{},{},{:.3},\
+                         {},{}\n",
                         r.config.device,
                         r.config.client,
                         r.config.workload,
@@ -1260,7 +1465,11 @@ fn main() {
                         r.config.num_keys,
                         r.config.value_size,
                         r.config.buffer_pages,
+                        r.config.iterations,
                         r.results.ops_per_sec,
+                        r.results.ops_per_sec_stddev,
+                        r.results.ops_per_sec_ci95_lo,
+                        r.results.ops_per_sec_ci95_hi,
                         r.results.throughput_mb_s,
                         r.results.p50_ns,
                         r.results.p99_ns,
@@ -1271,6 +1480,8 @@ fn main() {
                         r.results.total_writes,
                         r.results.total_pending,
                         r.results.elapsed_secs,
+                        r.results.high_variance,
+                        r.results.io_classification,
                     ));
                 }
                 s
