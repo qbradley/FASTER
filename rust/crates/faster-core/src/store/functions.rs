@@ -919,7 +919,7 @@ mod tests {
     fn info_structs_are_copy_clone_debug() {
         let ri = ReadInfo::new(0, LogicalAddress::INVALID, RecordInfo::from_raw(0));
         let ri2 = ri; // Copy
-        let ri3 = ri.clone(); // Clone
+        let ri3 = ri; // Clone
         let _ = format!("{:?}", ri2); // Debug
         let _ = ri3;
     }

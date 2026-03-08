@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::address::LogicalAddress;
 
+/// Current metadata format version. Bump when the on-disk layout changes.
+pub const FORMAT_VERSION_CURRENT: u64 = 2;
+
 // ---------------------------------------------------------------------------
 // CheckpointType
 // ---------------------------------------------------------------------------
@@ -72,8 +75,10 @@ impl core::fmt::Display for CheckpointToken {
 /// as well as the log address range it referenced.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexRecoveryInfo {
+    /// On-disk format version for forward/backward compat checks.
+    pub format_version: u64,
     /// System version at the time the index checkpoint was taken.
-    pub version: u32,
+    pub version: u64,
     /// Number of hash-table buckets (main table only).
     pub table_size: u64,
     /// Size of the main hash table in bytes.
@@ -91,6 +96,7 @@ pub struct IndexRecoveryInfo {
 impl Default for IndexRecoveryInfo {
     fn default() -> Self {
         Self {
+            format_version: FORMAT_VERSION_CURRENT,
             version: 0,
             table_size: 0,
             num_ht_bytes: 0,
@@ -112,8 +118,10 @@ impl Default for IndexRecoveryInfo {
 /// Captures every address boundary needed to reconstruct the log state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogRecoveryInfo {
+    /// On-disk format version for forward/backward compat checks.
+    pub format_version: u64,
     /// System version at the time the log checkpoint was taken.
-    pub version: u32,
+    pub version: u64,
     /// The checkpoint strategy that was used.
     pub checkpoint_type: CheckpointType,
     /// Earliest valid address in the log (begin pointer).
@@ -137,6 +145,7 @@ pub struct LogRecoveryInfo {
 impl Default for LogRecoveryInfo {
     fn default() -> Self {
         Self {
+            format_version: FORMAT_VERSION_CURRENT,
             version: 0,
             checkpoint_type: CheckpointType::FoldOver,
             begin_address: LogicalAddress::ZERO,
@@ -260,6 +269,7 @@ mod tests {
     #[test]
     fn index_recovery_info_serde_round_trip() {
         let info = IndexRecoveryInfo {
+            format_version: FORMAT_VERSION_CURRENT,
             version: 7,
             table_size: 1 << 20,
             num_ht_bytes: (1 << 20) * 64,
@@ -276,6 +286,7 @@ mod tests {
     #[test]
     fn log_recovery_info_serde_round_trip() {
         let info = LogRecoveryInfo {
+            format_version: FORMAT_VERSION_CURRENT,
             version: 3,
             checkpoint_type: CheckpointType::Snapshot,
             begin_address: LogicalAddress::new(Page(0), Offset(64)),
@@ -307,6 +318,7 @@ mod tests {
     #[test]
     fn log_recovery_info_fold_over_round_trip() {
         let info = LogRecoveryInfo {
+            format_version: FORMAT_VERSION_CURRENT,
             version: 1,
             checkpoint_type: CheckpointType::FoldOver,
             begin_address: LogicalAddress::ZERO,
@@ -370,7 +382,7 @@ mod tests {
 
             #[test]
             fn index_recovery_info_identity(
-                version: u32,
+                version: u64,
                 table_size: u64,
                 num_ht_bytes: u64,
                 num_ofb_bytes: u64,
@@ -379,6 +391,7 @@ mod tests {
                 final_addr in logical_address_strategy(),
             ) {
                 let info = IndexRecoveryInfo {
+                    format_version: FORMAT_VERSION_CURRENT,
                     version,
                     table_size,
                     num_ht_bytes,
@@ -394,7 +407,7 @@ mod tests {
 
             #[test]
             fn log_recovery_info_identity(
-                version: u32,
+                version: u64,
                 ct in checkpoint_type_strategy(),
                 begin in logical_address_strategy(),
                 flushed in logical_address_strategy(),
@@ -406,6 +419,7 @@ mod tests {
                 seg_count: u64,
             ) {
                 let info = LogRecoveryInfo {
+                    format_version: FORMAT_VERSION_CURRENT,
                     version,
                     checkpoint_type: ct,
                     begin_address: begin,
