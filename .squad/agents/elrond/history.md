@@ -96,3 +96,30 @@
 - The workspace had pre-existing issues (cross-impl-bench missing main.rs, faster-uring clippy/fmt warnings) that block `scripts/precheckin` on the full workspace.
 
 
+
+---
+
+## 2026-03-07: read-cache-sim-tokio Async Benchmark
+
+**What:** Created `rust/crates/samples/read-cache-sim-tokio/` — an async/Tokio version of the existing sync `read-cache-sim` sample for performance comparison.
+
+**Architecture:**
+- `TokioFileDevice` for async I/O dispatch (Tokio's blocking pool instead of dedicated thread pool)
+- `AsyncFasterKv` for background maintenance (epoch drain, compaction)
+- `tokio::task::spawn_blocking` for workers (since `FasterSession` is `!Send`)
+- Control plane as Tokio tasks: `tokio::time::interval` stats, `tokio::signal::ctrl_c()` shutdown, duration timer
+
+**Key Design Decisions:**
+- **Workers use spawn_blocking, not async sessions:** `AsyncSession` is `!Send` due to thread-affine epoch protection. Workers run on Tokio's blocking pool with direct `FasterKv` sessions, making data-plane identical to sync version.
+- **refresh() instead of maintenance():** Workers call `store.refresh(&mut session)` every 256 ops; `AsyncFasterKv` handles global maintenance in the background.
+- **TokioFileDevice takes 4 args:** No `num_threads` param since Tokio manages the thread pool.
+
+**Pre-existing Bug Fixes (to unblock workspace build):**
+- `device.rs`: Removed `#[cfg(debug_assertions)]` block with reserved `gen` keyword (Rust 2024)
+- `drain.rs`: Fixed extra closing brace, restored `drained` counter
+- `table.rs`: Added `scan_limit: CachePadded<AtomicUsize>` field
+- `session.rs`: Fixed `ctx.status.is_completed()` → `ctx.is_completed()`
+- `faster-ffi`: Added `ThreadMismatch` variant, safety comments on test unsafe blocks
+- `disk-io-bench`: Suppressed dead code warnings
+
+**Performance:** Smoke test ~513K ops/s (3-second run, single thread, NullDevice).
