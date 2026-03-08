@@ -23,7 +23,7 @@
 //!
 //! | Region | Read | Write (Upsert/RMW) | Delete |
 //! |--------|------|--------------------|--------|
-//! | **Mutable** | read value directly | update in-place | set tombstone in-place |
+//! | **Mutable** | read value directly | update in-place (revivify if sealed) | set tombstone in-place |
 //! | **Fuzzy / ReadOnly** | read value directly | copy to tail (RCU) | tombstone at tail |
 //! | **OnDisk** | return `Pending` | return `Pending` | return `Pending` |
 //!
@@ -359,20 +359,39 @@ pub(crate) fn internal_upsert<F: Functions>(
                         );
                     }
 
-                    // Sealed records are write-protected: fall back to
-                    // copy-to-tail (RCU) instead of in-place mutation.
-                    if ri.is_sealed() {
-                        return upsert_copy_to_tail(
-                            ctx,
-                            functions,
-                            key,
-                            input,
-                            &layout,
-                            result.entry,
-                            result.slot,
-                            found_addr,
-                        );
-                    }
+                    // Sealed records: attempt revivification (CAS-unseal for
+                    // in-place update) before falling back to copy-to-tail.
+                    let was_revivified = if ri.is_sealed() {
+                        let ptr = ctx.allocator.get_physical_address(found_addr);
+                        if let Some(ptr) = ptr {
+                            let record_size =
+                                safe_read_record_size(found_addr, layout.total_size() as u32);
+                            // SAFETY: record is in mutable region, epoch guard held.
+                            let accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
+                            let atomic_ri = accessor.atomic_record_info();
+
+                            // CAS: clear sealed bit. Only one thread wins.
+                            if atomic_ri.try_revivify(ri).is_ok() {
+                                true
+                            } else {
+                                // CAS failed — concurrent modification.
+                                return upsert_copy_to_tail(
+                                    ctx,
+                                    functions,
+                                    key,
+                                    input,
+                                    &layout,
+                                    result.entry,
+                                    result.slot,
+                                    found_addr,
+                                );
+                            }
+                        } else {
+                            return OperationStatus::Aborted;
+                        }
+                    } else {
+                        false
+                    };
 
                     // In-place update via raw or standard path.
                     let ptr = ctx.allocator.get_physical_address(found_addr);
@@ -436,7 +455,11 @@ pub(crate) fn internal_upsert<F: Functions>(
                             accessor.write_value(&new_val, &write_layout);
                         }
 
-                        OperationStatus::InPlaceUpdated
+                        if was_revivified {
+                            OperationStatus::Revivified
+                        } else {
+                            OperationStatus::InPlaceUpdated
+                        }
                     } else {
                         OperationStatus::Aborted
                     }
@@ -624,27 +647,45 @@ pub(crate) fn internal_rmw<F: Functions>(
                         );
                     }
 
-                    // Sealed records are write-protected: read current
-                    // value then copy-to-tail (RCU).
-                    if ri.is_sealed() {
-                        let reader = LogRecordReader::new(ctx.allocator);
-                        let value: F::Value = match reader.read_value(found_addr, &layout) {
-                            Some(v) => v,
-                            None => return OperationStatus::Aborted,
-                        };
-                        return rmw_copy_to_tail(
-                            ctx,
-                            functions,
-                            key,
-                            input,
-                            &value,
-                            output,
-                            &layout,
-                            result.entry,
-                            result.slot,
-                            found_addr,
-                        );
-                    }
+                    // Sealed records: attempt revivification (CAS-unseal
+                    // for in-place update) before falling back to copy-to-tail.
+                    let was_revivified = if ri.is_sealed() {
+                        let ptr = ctx.allocator.get_physical_address(found_addr);
+                        if let Some(ptr) = ptr {
+                            let record_size =
+                                safe_read_record_size(found_addr, layout.total_size() as u32);
+                            // SAFETY: record is in mutable region, epoch guard held.
+                            let accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
+                            let atomic_ri = accessor.atomic_record_info();
+
+                            if atomic_ri.try_revivify(ri).is_ok() {
+                                true
+                            } else {
+                                // CAS failed — read current value, copy-to-tail.
+                                let reader = LogRecordReader::new(ctx.allocator);
+                                let value: F::Value = match reader.read_value(found_addr, &layout) {
+                                    Some(v) => v,
+                                    None => return OperationStatus::Aborted,
+                                };
+                                return rmw_copy_to_tail(
+                                    ctx,
+                                    functions,
+                                    key,
+                                    input,
+                                    &value,
+                                    output,
+                                    &layout,
+                                    result.entry,
+                                    result.slot,
+                                    found_addr,
+                                );
+                            }
+                        } else {
+                            return OperationStatus::Aborted;
+                        }
+                    } else {
+                        false
+                    };
 
                     // Try in-place update.
                     let ptr = match ctx.allocator.get_physical_address(found_addr) {
@@ -669,7 +710,13 @@ pub(crate) fn internal_rmw<F: Functions>(
                             functions.rmw_in_place_raw(key, value_ptr, value_len, input, output, &RmwInfo::new(0, found_addr, ri, false))
                         };
                         match rmw_result {
-                            RmwInPlaceResult::InPlaceOk => OperationStatus::InPlaceUpdated,
+                            RmwInPlaceResult::InPlaceOk => {
+                                if was_revivified {
+                                    OperationStatus::Revivified
+                                } else {
+                                    OperationStatus::InPlaceUpdated
+                                }
+                            }
                             RmwInPlaceResult::NeedsNewRecord => {
                                 let value: F::Value = accessor.value(&layout);
                                 rmw_copy_to_tail(
@@ -693,7 +740,11 @@ pub(crate) fn internal_rmw<F: Functions>(
                             RmwInPlaceResult::InPlaceOk => {
                                 let write_layout = RecordLayout::for_kv(key, &value);
                                 accessor.write_value(&value, &write_layout);
-                                OperationStatus::InPlaceUpdated
+                                if was_revivified {
+                                    OperationStatus::Revivified
+                                } else {
+                                    OperationStatus::InPlaceUpdated
+                                }
                             }
                             RmwInPlaceResult::NeedsNewRecord => rmw_copy_to_tail(
                                 ctx,
@@ -1307,4 +1358,144 @@ mod tests {
         );
         assert_eq!(output, Some(222));
     }
+
+    // ────────────────────────────────────────────────────────────────
+    // 11. Revivification: upsert on sealed record revivifies in-place
+    // ────────────────────────────────────────────────────────────────
+
+    /// Helper: seal the record at the given address.
+    fn seal_record_at(alloc: &HybridLogAllocator, addr: LogicalAddress) {
+        let ptr = alloc.get_physical_address(addr).expect("address in memory");
+        let record_size = safe_read_record_size(addr, 8 + 8 + 8);
+        let accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
+        let atomic_ri = accessor.atomic_record_info();
+        assert!(atomic_ri.try_seal().is_ok(), "seal should succeed");
+    }
+
+    /// Helper: find the log address of a key.
+    fn find_key_addr(hi: &HashIndex, key: u64) -> LogicalAddress {
+        use crate::hash::Hashable;
+        let key_hash = key.hash();
+        let (entry, _) = hi.find(key_hash).expect("key must exist");
+        entry.address()
+    }
+
+    #[test]
+    fn upsert_revivifies_sealed_record() {
+        let (hi, alloc, funcs) = test_context();
+        let mut session = test_session(&hi);
+        let mut guard = session.begin_unsafe();
+        let ic = ctx(&hi, &alloc);
+
+        let status = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &100u64, ());
+        assert_eq!(status, OperationStatus::Created);
+
+        let addr = find_key_addr(&hi, 42u64);
+        seal_record_at(&alloc, addr);
+
+        let status = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &200u64, ());
+        assert_eq!(status, OperationStatus::Revivified);
+
+        let mut output: Option<u64> = None;
+        let _ = internal_read(&ic, guard.session_mut(), &funcs, &42u64, &0u64, &mut output, ());
+        assert_eq!(output, Some(200));
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // 12. Revivification: RMW on sealed record
+    // ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn rmw_revivifies_sealed_record() {
+        let (hi, alloc, funcs) = test_context();
+        let mut session = test_session(&hi);
+        let mut guard = session.begin_unsafe();
+        let ic = ctx(&hi, &alloc);
+
+        let mut output: Option<u64> = None;
+        let status = internal_rmw(&ic, guard.session_mut(), &funcs, &42u64, &100u64, &mut output, ());
+        assert_eq!(status, OperationStatus::Created);
+
+        let addr = find_key_addr(&hi, 42u64);
+        seal_record_at(&alloc, addr);
+
+        let mut output2: Option<u64> = None;
+        let status = internal_rmw(&ic, guard.session_mut(), &funcs, &42u64, &200u64, &mut output2, ());
+        assert_eq!(status, OperationStatus::Revivified);
+
+        let mut read_output: Option<u64> = None;
+        let _ = internal_read(&ic, guard.session_mut(), &funcs, &42u64, &0u64, &mut read_output, ());
+        assert_eq!(read_output, Some(200));
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // 13. Normal upsert still returns InPlaceUpdated
+    // ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn upsert_unsealed_returns_in_place_updated() {
+        let (hi, alloc, funcs) = test_context();
+        let mut session = test_session(&hi);
+        let mut guard = session.begin_unsafe();
+        let ic = ctx(&hi, &alloc);
+
+        let _ = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &100u64, ());
+        let status = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &200u64, ());
+        assert_eq!(status, OperationStatus::InPlaceUpdated);
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // 14. Revivification clears the sealed bit
+    // ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn revivification_clears_sealed_bit() {
+        let (hi, alloc, funcs) = test_context();
+        let mut session = test_session(&hi);
+        let mut guard = session.begin_unsafe();
+        let ic = ctx(&hi, &alloc);
+
+        let _ = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &100u64, ());
+        let addr = find_key_addr(&hi, 42u64);
+        seal_record_at(&alloc, addr);
+
+        let status = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &200u64, ());
+        assert_eq!(status, OperationStatus::Revivified);
+
+        // Subsequent upsert should be InPlaceUpdated (sealed bit cleared).
+        let status2 = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &300u64, ());
+        assert_eq!(status2, OperationStatus::InPlaceUpdated);
+
+        let mut output: Option<u64> = None;
+        let _ = internal_read(&ic, guard.session_mut(), &funcs, &42u64, &0u64, &mut output, ());
+        assert_eq!(output, Some(300));
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // 15. Double revivification: seal → revivify → seal → revivify
+    // ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn double_revivification() {
+        let (hi, alloc, funcs) = test_context();
+        let mut session = test_session(&hi);
+        let mut guard = session.begin_unsafe();
+        let ic = ctx(&hi, &alloc);
+
+        let _ = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &100u64, ());
+        let addr = find_key_addr(&hi, 42u64);
+
+        seal_record_at(&alloc, addr);
+        let s1 = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &200u64, ());
+        assert_eq!(s1, OperationStatus::Revivified);
+
+        seal_record_at(&alloc, addr);
+        let s2 = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &300u64, ());
+        assert_eq!(s2, OperationStatus::Revivified);
+
+        let mut output: Option<u64> = None;
+        let _ = internal_read(&ic, guard.session_mut(), &funcs, &42u64, &0u64, &mut output, ());
+        assert_eq!(output, Some(300));
+    }
+
 }
