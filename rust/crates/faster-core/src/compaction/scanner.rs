@@ -151,6 +151,9 @@ impl<'a> CompactionScanner<'a> {
             tombstone_count: 0,
             total_bytes_scanned: 0,
             live_bytes: 0,
+            dead_bytes: 0,
+            tombstone_bytes: 0,
+            total_chain_hops: 0,
         };
 
         let mut current = begin_address;
@@ -205,16 +208,34 @@ impl<'a> CompactionScanner<'a> {
             if info.is_tombstone() {
                 // MF-5: Collect tombstones for the address updater.
                 plan.tombstone_count += 1;
+                plan.tombstone_bytes += record_size;
                 plan.tombstone_records.push(LiveRecord {
                     address: current,
                     record_size,
                 });
+
+                // SF-3: Warn when tombstone vector exceeds 100 MB.
+                if plan.tombstone_records.len() % 1024 == 0 {
+                    let estimated_bytes = plan.tombstone_records.len()
+                        * std::mem::size_of::<LiveRecord>();
+                    const TOMBSTONE_WARN_BYTES: usize = 100 * 1024 * 1024;
+                    if estimated_bytes > TOMBSTONE_WARN_BYTES {
+                        log::warn!(
+                            "compaction: tombstone_records ~{} MB ({} entries)",
+                            estimated_bytes / (1024 * 1024),
+                            plan.tombstone_records.len(),
+                        );
+                    }
+                }
             } else if info.is_invalid() {
                 plan.dead_count += 1;
+                plan.dead_bytes += record_size;
             } else {
                 // Classify by checking the hash index.
                 let key: K = K::deserialize(&bytes[KEY_OFFSET..]);
-                if self.is_current_version(&key, current) {
+                let (is_current, hops) = self.is_current_version(&key, current);
+                plan.total_chain_hops += hops;
+                if is_current {
                     plan.live_records.push(LiveRecord {
                         address: current,
                         record_size,
@@ -222,6 +243,7 @@ impl<'a> CompactionScanner<'a> {
                     plan.live_bytes += record_size;
                 } else {
                     plan.dead_count += 1;
+                    plan.dead_bytes += record_size;
                 }
             }
 
@@ -232,6 +254,41 @@ impl<'a> CompactionScanner<'a> {
             // `_MM_HINT_T0` on x86_64 to compensate for data-dependent stride.
 
             advance(&mut current, record_size as u32, page_size);
+        }
+
+
+        // SF-5: Warn on excessive chain walk hops.
+        const HOP_WARN_THRESHOLD: usize = 1_000_000;
+        if plan.total_chain_hops > HOP_WARN_THRESHOLD {
+            log::warn!(
+                "compaction: {} chain hops exceeds threshold {}",
+                plan.total_chain_hops, HOP_WARN_THRESHOLD,
+            );
+        }
+
+        // SF-8: Post-scan byte accounting validation.
+        let expected_range = until_address.raw().saturating_sub(begin_address.raw()) as usize;
+        let accounted = plan.live_bytes + plan.dead_bytes + plan.tombstone_bytes;
+        if expected_range > 0 && plan.total_bytes_scanned > 0 {
+            let diff = if plan.total_bytes_scanned > expected_range {
+                plan.total_bytes_scanned - expected_range
+            } else {
+                expected_range - plan.total_bytes_scanned
+            };
+            let pct = (diff as f64 / expected_range as f64) * 100.0;
+            if pct > 5.0 {
+                log::warn!(
+                    "compaction: scanned={} vs range={} (diff={:.1}%)",
+                    plan.total_bytes_scanned, expected_range, pct,
+                );
+            }
+            if accounted != plan.total_bytes_scanned {
+                log::warn!(
+                    "compaction: live={}+dead={}+tomb={}={} vs scanned={}",
+                    plan.live_bytes, plan.dead_bytes, plan.tombstone_bytes,
+                    accounted, plan.total_bytes_scanned,
+                );
+            }
         }
 
         Ok(plan)
@@ -255,23 +312,23 @@ impl<'a> CompactionScanner<'a> {
     /// performs zero-copy key comparison via [`Key::eq_from_bytes`]. This
     /// is correct even when different records in the same hash bucket have
     /// different serialized sizes.
-    fn is_current_version<K: Key>(&self, key: &K, addr: LogicalAddress) -> bool {
+    fn is_current_version<K: Key>(&self, key: &K, addr: LogicalAddress) -> (bool, usize) {
         let hash = key.hash();
 
         let (entry, _slot) = match self.hash_index.find(hash) {
             Some(pair) => pair,
             // No entry in hash index — conservative: treat as live.
-            None => return true,
+            None => return (true, 0),
         };
 
         let chain_head = entry.address();
         if !chain_head.is_valid() {
-            return true; // Conservative
+            return (true, 0); // Conservative
         }
 
         // Fast path: we are the chain head (most common case for live records).
         if chain_head == addr {
-            return true;
+            return (true, 0);
         }
 
         // Slow path: walk the version chain from the chain head to find the
@@ -287,7 +344,7 @@ impl<'a> CompactionScanner<'a> {
                 Some((ri, key_matches)) => {
                     if key_matches && !ri.is_invalid() {
                         // Found the current version for this key.
-                        return current == addr;
+                        return (current == addr, depth);
                     }
                     // Continue walking the chain.
                     let prev = ri.previous_address();
@@ -297,12 +354,12 @@ impl<'a> CompactionScanner<'a> {
                     current = prev;
                 }
                 // Page not in memory — can't verify, be conservative.
-                None => return true,
+                None => return (true, depth),
             }
         }
 
         // Exhausted chain without finding a key match — conservative.
-        true
+        (true, depth)
     }
 }
 
@@ -642,6 +699,9 @@ mod tests {
             tombstone_count: 1,
             total_bytes_scanned: 144, // 6 records × 24 bytes
             live_bytes: 48,           // 2 records × 24 bytes
+            dead_bytes: 72,
+            tombstone_bytes: 24,
+            total_chain_hops: 0,
         };
 
         assert_eq!(plan.total_records(), 6);
@@ -657,6 +717,9 @@ mod tests {
             tombstone_count: 0,
             total_bytes_scanned: 0,
             live_bytes: 0,
+            dead_bytes: 0,
+            tombstone_bytes: 0,
+            total_chain_hops: 0,
         };
         assert!((plan.live_fraction() - 0.0).abs() < f64::EPSILON);
     }
@@ -903,4 +966,134 @@ mod tests {
             record_size_from_bytes::<Vec<u8>, Vec<u8>>(&page, size1, page_size).unwrap();
         assert_eq!(discovered2, size2, "second record size mismatch");
     }
+
+    // ════════════════════════════════════════════════════════════════
+    // SF-9: Missing test coverage
+    // ════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn record_nearly_fills_page() {
+        use crate::record::{RecordInfo, RecordLayout, write_record};
+        let page_size = 512;
+        let mut page = vec![0u8; page_size];
+        let key: Vec<u8> = vec![0xAA; 4];
+        let val: Vec<u8> = vec![0xBB; 484];
+        let layout = RecordLayout::for_kv(&key, &val);
+        let total = layout.total_size();
+        let gap = page_size - total;
+        assert!(gap < MIN_READABLE as usize, "gap ({gap}) should be < MIN_READABLE");
+        assert!(gap > 0);
+        let info = RecordInfo::default();
+        write_record(&mut page[0..], &info, &key, &val, &layout);
+        let discovered = record_size_from_bytes::<Vec<u8>, Vec<u8>>(&page, 0, page_size).unwrap();
+        assert_eq!(discovered, total);
+        let gap_result = record_size_from_bytes::<Vec<u8>, Vec<u8>>(&page, total, page_size);
+        assert_eq!(gap_result, Err(RecordSizeError::InsufficientPageSpace));
+    }
+
+    #[test]
+    fn moderate_corruption_plausible_wrong_size() {
+        use crate::record::{RecordInfo, RecordLayout, write_record};
+        let page_size = 512;
+        let mut page = vec![0u8; page_size];
+        let k1: Vec<u8> = vec![1, 2];
+        let v1: Vec<u8> = vec![10, 20, 30, 40];
+        let layout1 = RecordLayout::for_kv(&k1, &v1);
+        let size1 = layout1.total_size();
+        let info = RecordInfo::default();
+        write_record(&mut page[0..], &info, &k1, &v1, &layout1);
+        let k2: Vec<u8> = vec![3, 4, 5];
+        let v2: Vec<u8> = vec![50, 60];
+        let layout2 = RecordLayout::for_kv(&k2, &v2);
+        let size2 = layout2.total_size();
+        write_record(&mut page[size1..], &info, &k2, &v2, &layout2);
+        let d1 = record_size_from_bytes::<Vec<u8>, Vec<u8>>(&page, 0, page_size).unwrap();
+        assert_eq!(d1, size1);
+        // Corrupt key length prefix: flip bit 0
+        page[8] ^= 0x01;
+        let corrupted_d1 = record_size_from_bytes::<Vec<u8>, Vec<u8>>(&page, 0, page_size).unwrap();
+        assert_ne!(corrupted_d1, size1, "corrupted key length should change record size");
+        let total_clean = size1 + size2;
+        let total_corrupted = corrupted_d1
+            + record_size_from_bytes::<Vec<u8>, Vec<u8>>(&page, corrupted_d1, page_size).unwrap_or(0);
+        assert_ne!(total_corrupted, total_clean, "corrupted scan total should differ");
+    }
+
+    #[test]
+    fn version_chain_variable_length_different_sizes() {
+        let store = test_store();
+        let mut session = store.new_session();
+        for i in 0u64..20 {
+            let _ = store.upsert(&mut session, &i, &(i * 10), ());
+        }
+        store.allocator.shift_read_only_to_tail();
+        for i in 0u64..10 {
+            assert_eq!(
+                store.upsert(&mut session, &i, &(i * 999), ()),
+                OperationStatus::CopyUpdated,
+            );
+        }
+        for i in 0u64..5 {
+            assert_eq!(
+                store.upsert(&mut session, &i, &(i * 7777), ()),
+                OperationStatus::CopyUpdated,
+            );
+        }
+        {
+            let _guard = session.begin_unsafe();
+            let scanner = CompactionScanner::new(&store.allocator, &store.hash_index);
+            let plan = scanner
+                .scan::<u64, u64>(store.first_data_address(), store.allocator.tail_address())
+                .expect("scan should succeed");
+            assert_eq!(plan.live_records.len(), 20);
+            assert_eq!(plan.dead_count, 15);
+            assert!(plan.total_chain_hops > 0, "should have chain walk hops");
+            assert_eq!(
+                plan.live_bytes + plan.dead_bytes + plan.tombstone_bytes,
+                plan.total_bytes_scanned,
+                "byte accounting mismatch"
+            );
+        }
+        store.dispose_session(session);
+    }
+
+    #[test]
+    fn empty_key_record_size() {
+        use crate::record::{RecordInfo, RecordLayout, write_record};
+        let page_size = 256;
+        let mut page = vec![0u8; page_size];
+        let key: Vec<u8> = Vec::new();
+        let val: Vec<u8> = vec![42, 43];
+        let layout = RecordLayout::for_kv(&key, &val);
+        let size = layout.total_size();
+        let info = RecordInfo::default();
+        write_record(&mut page[0..], &info, &key, &val, &layout);
+        let discovered = record_size_from_bytes::<Vec<u8>, Vec<u8>>(&page, 0, page_size).unwrap();
+        assert_eq!(discovered, size, "empty key should produce correct record size");
+        use crate::record::Key;
+        assert!(key.eq_from_bytes(&page[KEY_OFFSET..]), "empty key should match serialized form");
+    }
+
+    #[test]
+    fn eq_from_bytes_trailing_garbage() {
+        use crate::record::Key;
+        let key_u64: u64 = 0xDEAD_BEEF_CAFE_BABEu64;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&key_u64.to_le_bytes());
+        buf.extend_from_slice(&[0xFF; 4]);
+        assert!(key_u64.eq_from_bytes(&buf), "u64 should ignore trailing garbage");
+        assert!(!42u64.eq_from_bytes(&buf), "different u64 should not match");
+        let key_vec: Vec<u8> = vec![1, 2, 3];
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(key_vec.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&key_vec);
+        buf.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        assert!(key_vec.eq_from_bytes(&buf), "Vec<u8> should ignore trailing garbage");
+        assert!(!vec![1u8, 2, 4].eq_from_bytes(&buf), "different Vec<u8> should not match");
+        assert!(!key_u64.eq_from_bytes(&[0xBE]), "short buffer should be false");
+        assert!(!key_vec.eq_from_bytes(&[0x03]), "short buffer should be false");
+        assert!(!key_u64.eq_from_bytes(&[]), "empty buffer should be false");
+        assert!(!key_vec.eq_from_bytes(&[]), "empty buffer should be false");
+    }
+
 }

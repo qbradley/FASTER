@@ -1,0 +1,24 @@
+[package]
+name = "disk-io-bench"
+version = "0.1.0"
+description = "Disk I/O benchmark comparing FASTER device implementations"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+faster-core = { path = "../../faster-core" }
+faster-tokio = { path = "../../faster-tokio" }
+faster-uring = { path = "../../faster-uring" }
+clap = { version = "4", features = ["derive"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "sync",
+    "time",
+    "macros",
+] }
+rand = "0.9"

@@ -148,3 +148,40 @@
 - Rust: `cargo run -p cross-impl-bench --release -- --workloads A,B,C,F --threads 1,2,4,8,16 --num-keys 2500480`
 - C#: `dotnet run --project cs/benchmark/FASTER.benchmark.csproj -c Release -- -b 0 -t N --synth --sd --rumd R,U,M,D --runsec 10`
 - C++: Requires TBB + libaio + uuid headers; modify benchmark.h constants for key count; use NullDisk for in-memory.
+
+---
+
+## 2026-03-07: Disk I/O Benchmark Suite Delivered
+
+**What:** Built `disk-io-bench` — a disk-bound benchmark binary comparing SyncFileDevice, UringDevice, and TokioFileDevice with sync and Tokio client modes. Includes 4 workloads (overcommit, write-heavy, mixed Zipfian, sequential scan), latency histograms, pending rate tracking, and JSON/CSV/table output.
+
+**Artifacts:**
+- Benchmark crate: `rust/crates/samples/disk-io-bench/`
+- Design doc: `.squad/agents/legolas/disk-io-benchmark-design.md`
+- Runner script: `rust/scripts/disk-io-bench-matrix.sh`
+- Decision: `.squad/decisions/inbox/legolas-disk-io-bench.md`
+
+**Benchmark Matrix:** 3 devices × 2 clients × 4 workloads × 4 thread counts = 96 configurations
+
+**Key Design Decisions:**
+- Used `buffer_size_pages` to control memory pressure (128 pages for overcommit = ~4MB buffer forcing disk reads)
+- Tokio client uses per-thread `current_thread` runtime + `LocalSet` because `AsyncSession` is `!Send`
+- TokioFileDevice requires Tokio runtime context even with sync client — handled with `rt.enter()` guard
+- Track pending rate (ops returning `Pending` / total ops) as key metric for device comparison
+- Sequential workload uses `Distribution::Sequential` (not in cross-impl-bench) for scan patterns
+
+**Pre-existing Bugs Fixed:**
+- `CompactionPlan` initializer in scanner.rs missing 3 fields (dead_bytes, tombstone_bytes, total_chain_hops)
+- Duplicate `let mut drained` and `fetch_sub` lines in drain.rs
+- Added `#[allow(dead_code)]` for `DrainList::has_pending()` not yet used
+
+**Quick Smoke Test Results (i9-10900K, local WSL2, not representative):**
+- sync+sync mixed 2T: 6.42M ops/sec (P50=200ns, no pending — dataset fits in memory)
+- uring+sync write-heavy 2T: 8.58M ops/sec (P50=200ns)
+- tokio+tokio overcommit 2T: 3.42M ops/sec (P50=500ns)
+- Real VM results expected to show much higher pending rates and device differentiation
+
+**Build Command:**
+- `cargo build --release -p disk-io-bench`
+- `./scripts/disk-io-bench-matrix.sh --data-dir /mnt/faster-bench`
+
