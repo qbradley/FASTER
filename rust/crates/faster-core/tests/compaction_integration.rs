@@ -272,7 +272,7 @@ fn maybe_compact_disabled_by_default() {
 
 use faster_core::InMemoryDevice;
 use faster_core::status::OperationStatus;
-use faster_core::store::{Functions, RmwInPlaceResult};
+use faster_core::store::{DeleteInfo, Functions, ReadInfo, RmwInfo, RmwInPlaceResult, UpsertInfo};
 
 /// Functions implementation for variable-length keys and values.
 struct VarLenFunctions;

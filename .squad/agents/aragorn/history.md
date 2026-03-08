@@ -626,3 +626,32 @@ Created `rust/crates/faster-core/examples/cache_store.rs` — a Rust port of the
 - In multi-agent environments, VS Code file watchers aggressively revert file changes. Use `git add` immediately after writing, or write+stage atomically via Python scripts
 - The merge commit d7510d2e created an inconsistency between operations.rs (uses info structs) and functions.rs (doesn't define them). This pre-existing issue blocks --all-targets compilation
 - `KeyHash` must derive `PartialEq` for proptest's `prop_assert_eq!` — it already does
+### Session 3: FFI Callback Function Pointers (W2-06 through W2-11)
+
+**Branch:** `aragorn/ffi-callbacks`
+**Commit:** `feat(ffi): add callback function pointers for RMW, Upsert, Read operations`
+
+**Tasks Completed:**
+- W2-06: RMW callback function pointers (FasterRmwInitialFn, FasterRmwCopyFn, FasterRmwAtomicFn) and faster_rmw_ex()
+- W2-07: Upsert callback function pointers (FasterUpsertPutFn, FasterUpsertPutAtomicFn) and faster_upsert_ex()
+- W2-08: Read callback function pointers (FasterReadGetFn, FasterReadGetAtomicFn) and faster_read_ex()
+- W2-09: faster_refresh() (alias for faster_session_refresh())
+- W2-10: FasterAsyncCallbackFn type definition
+- W2-11: faster_continue_session() (creates fresh session, returns serial 0; true continuation requires core support)
+
+**Architecture Decisions:**
+- CallbackFunctions replaces ByteSliceFunctions as the FFI store type
+- Thread-local storage for per-operation C function pointer dispatch (sessions are thread-affine)
+- RAII guards ensure callback cleanup even on panic
+- Falls back to byte-slice replacement when no callbacks installed
+- Full backward compatibility: faster_rmw() and faster_rmw_ex() work on same store
+
+**Key Learnings:**
+1. Multi-agent environment causes file reverts — MUST git add/commit immediately after editing
+2. Other agents switching branches causes commits to land on wrong branches
+3. The faster-core Functions trait is actively being modified by other agents (info params added/removed)
+4. ByteSliceFunctions uses Output = Option<Vec<u8>> and Context = (), not Vec<u8> and u64
+5. HandleTable accessed via store_handles()/session_handles() functions, not direct static variables
+6. faster_core::store::functions module is private; use re-exports from faster_core::store
+
+**Test Results:** 102 tests pass (83 original + 19 new)
