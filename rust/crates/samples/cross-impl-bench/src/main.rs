@@ -33,7 +33,7 @@ use faster_core::NullDevice;
 use faster_core::hybrid_log::eviction::EvictionPolicy;
 use faster_core::record::Value;
 use faster_core::status::OperationStatus;
-use faster_core::store::{FasterKv, FasterKvConfig, Functions, RmwInPlaceResult, SimpleFunctions};
+use faster_core::store::{FasterKv, FasterKvConfig, DeleteInfo, Functions, ReadInfo, RmwInfo, UpsertInfo, RmwInPlaceResult, SimpleFunctions};
 
 use distribution::{Distribution, KeyGenerator};
 use report::{BenchmarkResult, Reporter};
@@ -174,7 +174,7 @@ impl<V: Value + Copy + 'static> Functions for PaddedFunctions<V> {
     type Output = Option<V>;
     type Context = ();
 
-    fn read(&self, _key: &u64, value: &V, _input: &V, output: &mut Option<V>) {
+    fn read(&self, _key: &u64, value: &V, _input: &V, output: &mut Option<V>, _info: &ReadInfo) {
         *output = Some(*value);
     }
 
@@ -194,6 +194,7 @@ impl<V: Value + Copy + 'static> Functions for PaddedFunctions<V> {
         input: &V,
         _old: Option<&V>,
         _output: &mut Option<V>,
+        _info: &UpsertInfo,
     ) {
         *value = *input;
     }
@@ -204,6 +205,7 @@ impl<V: Value + Copy + 'static> Functions for PaddedFunctions<V> {
         input: &V,
         value: &mut V,
         _output: &mut Option<V>,
+        _info: &RmwInfo,
     ) -> RmwInPlaceResult {
         *value = *input;
         RmwInPlaceResult::InPlaceOk
@@ -216,15 +218,16 @@ impl<V: Value + Copy + 'static> Functions for PaddedFunctions<V> {
         _old: &V,
         new_value: &mut V,
         _output: &mut Option<V>,
+        _info: &RmwInfo,
     ) {
         *new_value = *input;
     }
 
-    fn rmw_initial(&self, _key: &u64, input: &V, value: &mut V, _output: &mut Option<V>) {
+    fn rmw_initial(&self, _key: &u64, input: &V, value: &mut V, _output: &mut Option<V>, _info: &RmwInfo) {
         *value = *input;
     }
 
-    fn delete(&self, _key: &u64, _value: &mut V) {}
+    fn delete(&self, _key: &u64, _value: &mut V, _info: &DeleteInfo) {}
 }
 
 // ── Store construction ───────────────────────────────────────────────

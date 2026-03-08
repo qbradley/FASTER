@@ -23,7 +23,7 @@
 
 use std::cell::Cell;
 
-use faster_core::store::{Functions, RmwInPlaceResult};
+use faster_core::store::{DeleteInfo, Functions, ReadInfo, RmwInfo, RmwInPlaceResult, UpsertInfo};
 
 // ── Minimum buffer capacity ─────────────────────────────────────────
 
@@ -250,6 +250,7 @@ impl Functions for CallbackFunctions {
         value: &Vec<u8>,
         _input: &Vec<u8>,
         output: &mut Option<Vec<u8>>,
+        _info: &ReadInfo,
     ) {
         let cbs = READ_CALLBACKS.with(|c| c.get());
         if let Some(cbs) = cbs {
@@ -284,6 +285,7 @@ impl Functions for CallbackFunctions {
         input: &Vec<u8>,
         _old_value: Option<&Vec<u8>>,
         _output: &mut Option<Vec<u8>>,
+        _info: &UpsertInfo,
     ) {
         let cbs = UPSERT_CALLBACKS.with(|c| c.get());
         if let Some(cbs) = cbs {
@@ -319,6 +321,7 @@ impl Functions for CallbackFunctions {
         input: &Vec<u8>,
         value: &mut Vec<u8>,
         _output: &mut Option<Vec<u8>>,
+        _info: &RmwInfo,
     ) {
         let cbs = RMW_CALLBACKS.with(|c| c.get());
         if let Some(cbs) = cbs {
@@ -349,6 +352,7 @@ impl Functions for CallbackFunctions {
         input: &Vec<u8>,
         value: &mut Vec<u8>,
         _output: &mut Option<Vec<u8>>,
+        _info: &RmwInfo,
     ) -> RmwInPlaceResult {
         let cbs = RMW_CALLBACKS.with(|c| c.get());
         if let Some(cbs) = cbs {
@@ -386,6 +390,7 @@ impl Functions for CallbackFunctions {
         old_value: &Vec<u8>,
         new_value: &mut Vec<u8>,
         _output: &mut Option<Vec<u8>>,
+        _info: &RmwInfo,
     ) {
         let cbs = RMW_CALLBACKS.with(|c| c.get());
         if let Some(cbs) = cbs {
@@ -412,7 +417,7 @@ impl Functions for CallbackFunctions {
         new_value.extend_from_slice(input);
     }
 
-    fn delete(&self, _key: &Vec<u8>, _value: &mut Vec<u8>) {}
+    fn delete(&self, _key: &Vec<u8>, _value: &mut Vec<u8>, _info: &DeleteInfo) {}
 }
 
 // ── Unit tests ──────────────────────────────────────────────────────
@@ -420,6 +425,12 @@ impl Functions for CallbackFunctions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use faster_core::address::LogicalAddress;
+    use faster_core::record::RecordInfo;
+
+    fn dummy_read_info() -> ReadInfo { ReadInfo::new(0, LogicalAddress::INVALID, RecordInfo::default()) }
+    fn dummy_upsert_info() -> UpsertInfo { UpsertInfo::new(0, LogicalAddress::INVALID, RecordInfo::default()) }
+    fn dummy_rmw_info() -> RmwInfo { RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::default(), false) }
 
     // ── RMW callback tests ──────────────────────────────────────────
 
@@ -493,12 +504,12 @@ mod tests {
         // Test initial
         let mut value = Vec::new();
         let mut output = None;
-        f.rmw_initial(&key, &input, &mut value, &mut output);
+        f.rmw_initial(&key, &input, &mut value, &mut output, &dummy_rmw_info());
         assert_eq!(u64::from_le_bytes(value[..8].try_into().unwrap()), 42);
 
         // Test in-place (add 10)
         let input2 = 10u64.to_le_bytes().to_vec();
-        let result = f.rmw_in_place(&key, &input2, &mut value, &mut output);
+        let result = f.rmw_in_place(&key, &input2, &mut value, &mut output, &dummy_rmw_info());
         assert_eq!(result, RmwInPlaceResult::InPlaceOk);
         assert_eq!(u64::from_le_bytes(value[..8].try_into().unwrap()), 52);
 
@@ -506,7 +517,7 @@ mod tests {
         let input3 = 8u64.to_le_bytes().to_vec();
         let old_value = value.clone();
         let mut new_value = Vec::new();
-        f.rmw_copy_update(&key, &input3, &old_value, &mut new_value, &mut output);
+        f.rmw_copy_update(&key, &input3, &old_value, &mut new_value, &mut output, &dummy_rmw_info());
         assert_eq!(u64::from_le_bytes(new_value[..8].try_into().unwrap()), 60);
     }
 
@@ -519,17 +530,17 @@ mod tests {
         // No callbacks installed — should do byte-slice replacement
         let mut value = Vec::new();
         let mut output = None;
-        f.rmw_initial(&key, &input, &mut value, &mut output);
+        f.rmw_initial(&key, &input, &mut value, &mut output, &dummy_rmw_info());
         assert_eq!(value, vec![10, 20]);
 
         let input2 = vec![30u8, 40];
-        let result = f.rmw_in_place(&key, &input2, &mut value, &mut output);
+        let result = f.rmw_in_place(&key, &input2, &mut value, &mut output, &dummy_rmw_info());
         assert_eq!(result, RmwInPlaceResult::InPlaceOk);
         assert_eq!(value, vec![30, 40]);
 
         // Different length → NeedsNewRecord
         let input3 = vec![50u8, 60, 70];
-        let result = f.rmw_in_place(&key, &input3, &mut value, &mut output);
+        let result = f.rmw_in_place(&key, &input3, &mut value, &mut output, &dummy_rmw_info());
         assert_eq!(result, RmwInPlaceResult::NeedsNewRecord);
     }
 
@@ -581,7 +592,7 @@ mod tests {
         });
 
         let mut output = None;
-        f.read(&key, &value, &input, &mut output);
+        f.read(&key, &value, &input, &mut output, &dummy_read_info());
         assert_eq!(output, Some(vec![0xAA, 0xBB, 0xAA, 0xBB]));
     }
 
@@ -592,7 +603,7 @@ mod tests {
         let value = vec![0xDE, 0xAD];
         let input = Vec::new();
         let mut output = None;
-        f.read(&key, &value, &input, &mut output);
+        f.read(&key, &value, &input, &mut output, &dummy_read_info());
         assert_eq!(output, Some(vec![0xDE, 0xAD]));
     }
 
@@ -628,7 +639,7 @@ mod tests {
 
         let mut value = Vec::new();
         let mut output = None;
-        f.upsert(&key, &mut value, &input, None, &mut output);
+        f.upsert(&key, &mut value, &input, None, &mut output, &dummy_upsert_info());
         assert_eq!(value, b"HELLO");
     }
 
@@ -639,7 +650,7 @@ mod tests {
         let input = vec![42u8, 43];
         let mut value = vec![1u8, 2, 3];
         let mut output = None;
-        f.upsert(&key, &mut value, &input, None, &mut output);
+        f.upsert(&key, &mut value, &input, None, &mut output, &dummy_upsert_info());
         assert_eq!(value, vec![42, 43]);
     }
 }

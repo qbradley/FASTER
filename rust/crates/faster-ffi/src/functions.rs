@@ -7,7 +7,7 @@
 //! analogue for variable-length byte data.
 
 use faster_core::status::OperationStatus;
-use faster_core::store::{Functions, RmwInPlaceResult};
+use faster_core::store::{DeleteInfo, Functions, ReadInfo, RmwInfo, RmwInPlaceResult, UpsertInfo};
 
 /// [`Functions`] implementation for `Vec<u8>` keys and values.
 ///
@@ -43,6 +43,7 @@ impl Functions for ByteSliceFunctions {
         value: &Self::Value,
         _input: &Self::Input,
         output: &mut Self::Output,
+        _info: &ReadInfo,
     ) {
         *output = Some(value.clone());
     }
@@ -54,6 +55,7 @@ impl Functions for ByteSliceFunctions {
         input: &Self::Input,
         _old_value: Option<&Self::Value>,
         _output: &mut Self::Output,
+        _info: &UpsertInfo,
     ) {
         value.clear();
         value.extend_from_slice(input);
@@ -65,6 +67,7 @@ impl Functions for ByteSliceFunctions {
         input: &Self::Input,
         value: &mut Self::Value,
         _output: &mut Self::Output,
+        _info: &RmwInfo,
     ) {
         value.clear();
         value.extend_from_slice(input);
@@ -76,6 +79,7 @@ impl Functions for ByteSliceFunctions {
         input: &Self::Input,
         value: &mut Self::Value,
         _output: &mut Self::Output,
+        _info: &RmwInfo,
     ) -> RmwInPlaceResult {
         if input.len() <= value.len() {
             // Fits in existing allocation — update in place.
@@ -95,6 +99,7 @@ impl Functions for ByteSliceFunctions {
         _old_value: &Self::Value,
         new_value: &mut Self::Value,
         _output: &mut Self::Output,
+        _info: &RmwInfo,
     ) {
         new_value.clear();
         new_value.extend_from_slice(input);
