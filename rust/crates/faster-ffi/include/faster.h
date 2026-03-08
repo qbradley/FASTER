@@ -12,6 +12,13 @@
 #include <stdlib.h>
 
 /**
+ * Minimum buffer capacity for callback value buffers.
+ *
+ * Prevents tiny allocations when the input is very small.
+ */
+#define MIN_CALLBACK_BUF_CAPACITY 64
+
+/**
  * C-compatible status codes returned by all FFI functions.
  *
  * # ABI Stability
@@ -93,6 +100,20 @@ typedef enum FasterCheckpointType {
   FasterCheckpointType_Snapshot = 1,
 } FasterCheckpointType;
 
+typedef struct Option_FasterReadGetAtomicFn Option_FasterReadGetAtomicFn;
+
+typedef struct Option_FasterReadGetFn Option_FasterReadGetFn;
+
+typedef struct Option_FasterRmwAtomicFn Option_FasterRmwAtomicFn;
+
+typedef struct Option_FasterRmwCopyFn Option_FasterRmwCopyFn;
+
+typedef struct Option_FasterRmwInitialFn Option_FasterRmwInitialFn;
+
+typedef struct Option_FasterUpsertPutAtomicFn Option_FasterUpsertPutAtomicFn;
+
+typedef struct Option_FasterUpsertPutFn Option_FasterUpsertPutFn;
+
 /**
  * Opaque handle returned to C callers. Never zero (0 = invalid).
  */
@@ -118,6 +139,112 @@ typedef struct FasterCheckpointResult {
    */
   enum FasterStatus status;
 } FasterCheckpointResult;
+
+/**
+ * RMW initial callback: initialize a new value for a key that doesn't exist.
+ *
+ * `value_ptr` points to a pre-allocated buffer of `*value_len` bytes.
+ * The callback writes the initial value and sets `*value_len` to the
+ * actual number of bytes written.
+ *
+ * Returns 0 on success, non-zero on failure.
+ */
+typedef int32_t (*FasterRmwInitialFn)(const uint8_t *key_ptr,
+                                      uintptr_t key_len,
+                                      const uint8_t *input_ptr,
+                                      uintptr_t input_len,
+                                      uint8_t *value_ptr,
+                                      uintptr_t *value_len);
+
+/**
+ * RMW copy-update callback: create a new value by modifying a copy of the old value.
+ *
+ * `new_value_ptr` points to a pre-allocated buffer of `*new_value_len` bytes.
+ * The old value is provided read-only via `old_value_ptr`/`old_value_len`.
+ *
+ * Returns 0 on success, non-zero on failure.
+ */
+typedef int32_t (*FasterRmwCopyFn)(const uint8_t *key_ptr,
+                                   uintptr_t key_len,
+                                   const uint8_t *input_ptr,
+                                   uintptr_t input_len,
+                                   const uint8_t *old_value_ptr,
+                                   uintptr_t old_value_len,
+                                   uint8_t *new_value_ptr,
+                                   uintptr_t *new_value_len);
+
+/**
+ * RMW atomic (in-place) callback: modify the value in the mutable region directly.
+ *
+ * Returns 0 if the update was applied in-place, non-zero if the record
+ * needs to be relocated (e.g., variable-length value grew).
+ */
+typedef int32_t (*FasterRmwAtomicFn)(const uint8_t *key_ptr,
+                                     uintptr_t key_len,
+                                     const uint8_t *input_ptr,
+                                     uintptr_t input_len,
+                                     uint8_t *value_ptr,
+                                     uintptr_t value_len);
+
+/**
+ * Upsert put callback: write an input value into the record.
+ *
+ * `value_ptr` is the destination buffer, `value_len` is its capacity.
+ * The callback writes the value and sets `*actual_len` to the number
+ * of bytes written.
+ *
+ * Returns 0 on success.
+ */
+typedef int32_t (*FasterUpsertPutFn)(const uint8_t *key_ptr,
+                                     uintptr_t key_len,
+                                     const uint8_t *input_ptr,
+                                     uintptr_t input_len,
+                                     uint8_t *value_ptr,
+                                     uintptr_t value_len,
+                                     uintptr_t *actual_len);
+
+/**
+ * Upsert atomic (in-place) callback: modify an existing value in-place.
+ *
+ * Returns 0 on success.
+ */
+typedef int32_t (*FasterUpsertPutAtomicFn)(const uint8_t *key_ptr,
+                                           uintptr_t key_len,
+                                           const uint8_t *input_ptr,
+                                           uintptr_t input_len,
+                                           uint8_t *value_ptr,
+                                           uintptr_t value_len);
+
+/**
+ * Read get callback: extract output from a read record.
+ *
+ * `output_ptr` points to a caller-provided buffer of `*output_len` bytes.
+ * The callback writes the output and sets `*output_len` to the actual
+ * number of bytes written.
+ *
+ * Returns 0 on success, 1 if the buffer was too small.
+ */
+typedef int32_t (*FasterReadGetFn)(const uint8_t *key_ptr,
+                                   uintptr_t key_len,
+                                   const uint8_t *value_ptr,
+                                   uintptr_t value_len,
+                                   uint8_t *output_ptr,
+                                   uintptr_t *output_len);
+
+/**
+ * Read atomic callback: read from a record in-place (same as ReadGetFn
+ * but called for records in the mutable region).
+ */
+typedef FasterReadGetFn FasterReadGetAtomicFn;
+
+/**
+ * Async operation completion callback.
+ *
+ * Called when an asynchronous operation completes.
+ * `status` is the FASTER status code, `context` is the user-provided
+ * opaque context pointer.
+ */
+typedef void (*FasterAsyncCallbackFn)(uint8_t status, uint64_t context);
 
 /**
  * Sentinel value representing an invalid or null handle.
@@ -280,7 +407,7 @@ enum FasterStatus faster_delete(FasterHandle store,
 /**
  * Read-modify-write: atomically read and replace the value for a key.
  *
- * For [`ByteSliceFunctions`], RMW performs full-value replacement (the input
+ * For [`CallbackFunctions`], RMW performs full-value replacement (the input
  * becomes the new value). If the key does not exist, it is created.
  *
  * # Parameters
@@ -440,6 +567,135 @@ enum FasterStatus faster_session_refresh(FasterHandle store,
 enum FasterStatus faster_wait_for_all_pending(FasterHandle store,
                                               FasterHandle session,
                                               uint32_t *completed_out);
+
+/**
+ * Read-modify-write with user-supplied C callback function pointers.
+ *
+ * When callback pointers are non-null, they override the default
+ * byte-slice replacement semantics for this single RMW operation.
+ * Null callback pointers fall back to the standard behavior.
+ *
+ * # Parameters
+ *
+ * - `store` / `session` — Store and session handles.
+ * - `key_ptr` / `key_len` — Key bytes.
+ * - `input_ptr` / `input_len` — Input bytes (the modification delta).
+ * - `initial_cb` — Called to initialize a new value when the key is not found.
+ * - `copy_cb` — Called to create a new value by copying and modifying a read-only record.
+ * - `atomic_cb` — Called for in-place update in the mutable region.
+ *
+ * # Returns
+ *
+ * A [`FasterStatus`] indicating the outcome.
+ *
+ * # Safety
+ *
+ * Same pointer requirements as [`faster_rmw`], plus callback function
+ * pointers (if non-null) must be valid `extern "C"` functions.
+ */
+enum FasterStatus faster_rmw_ex(FasterHandle store,
+                                FasterHandle session,
+                                const uint8_t *key_ptr,
+                                uint32_t key_len,
+                                const uint8_t *input_ptr,
+                                uint32_t input_len,
+                                struct Option_FasterRmwInitialFn initial_cb,
+                                struct Option_FasterRmwCopyFn copy_cb,
+                                struct Option_FasterRmwAtomicFn atomic_cb);
+
+/**
+ * Upsert with user-supplied C callback function pointers.
+ *
+ * When callback pointers are non-null, they override the default
+ * byte-slice replacement semantics for this single Upsert operation.
+ *
+ * # Parameters
+ *
+ * - `store` / `session` — Store and session handles.
+ * - `key_ptr` / `key_len` — Key bytes.
+ * - `input_ptr` / `input_len` — Input bytes (the new value data).
+ * - `put_cb` — Called to write a new value.
+ * - `put_atomic_cb` — Called for in-place update in the mutable region.
+ *
+ * # Safety
+ *
+ * Same pointer requirements as [`faster_upsert`], plus callback function
+ * pointers (if non-null) must be valid `extern "C"` functions.
+ */
+enum FasterStatus faster_upsert_ex(FasterHandle store,
+                                   FasterHandle session,
+                                   const uint8_t *key_ptr,
+                                   uint32_t key_len,
+                                   const uint8_t *input_ptr,
+                                   uint32_t input_len,
+                                   struct Option_FasterUpsertPutFn put_cb,
+                                   struct Option_FasterUpsertPutAtomicFn put_atomic_cb);
+
+/**
+ * Read with user-supplied C callback function pointers.
+ *
+ * When callback pointers are non-null, they override the default
+ * behavior (copy value → output buffer) for this single Read operation.
+ *
+ * # Parameters
+ *
+ * - `store` / `session` — Store and session handles.
+ * - `key_ptr` / `key_len` — Key bytes.
+ * - `output_ptr` / `output_buf_len` — Output buffer and its capacity.
+ * - `output_len` — Written with the actual output length on success.
+ * - `get_cb` — Called to extract output from the read record.
+ * - `get_atomic_cb` — Called for reads from the mutable region.
+ *
+ * # Safety
+ *
+ * Same pointer requirements as [`faster_read`], plus callback function
+ * pointers (if non-null) must be valid `extern "C"` functions.
+ */
+enum FasterStatus faster_read_ex(FasterHandle store,
+                                 FasterHandle session,
+                                 const uint8_t *key_ptr,
+                                 uint32_t key_len,
+                                 uint8_t *output_ptr,
+                                 uint32_t output_buf_len,
+                                 uint32_t *output_len,
+                                 struct Option_FasterReadGetFn get_cb,
+                                 struct Option_FasterReadGetAtomicFn get_atomic_cb);
+
+/**
+ * Refresh the session's epoch, draining completed operations.
+ *
+ * This is an alias for [`faster_session_refresh`] provided for
+ * API symmetry with the C++ `Refresh()` method.
+ *
+ * # Safety
+ *
+ * - `completed_out`, if non-null, must point to a valid, writable `u32`.
+ * - Must be called from the thread that owns `session`.
+ */
+enum FasterStatus faster_refresh(FasterHandle store, FasterHandle session, uint32_t *completed_out);
+
+/**
+ * Create a fresh session (session continuation stub).
+ *
+ * In the C++ FASTER API, `ContinueSession` resumes a session from a
+ * checkpoint token. This Rust implementation does not yet support true
+ * session continuation, so this creates a fresh session and writes
+ * serial number 0 to `serial_out`.
+ *
+ * # Parameters
+ *
+ * - `store` — Store handle from [`faster_open`].
+ * - `serial_out` — If non-null, written with the serial number (always 0).
+ *
+ * # Returns
+ *
+ * A new session handle, or [`INVALID_HANDLE`] on failure.
+ *
+ * # Safety
+ *
+ * - `serial_out`, if non-null, must point to a valid, writable `u64`.
+ */
+FasterHandle faster_continue_session(FasterHandle store, uint64_t *serial_out);
 
 #endif  /* FASTER_H */
 

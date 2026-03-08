@@ -25,7 +25,7 @@ use faster_core::SyncFileDevice;
 use faster_core::hybrid_log::eviction::EvictionPolicy;
 use faster_core::record::Value;
 use faster_core::status::OperationStatus;
-use faster_core::store::{FasterKv, FasterKvConfig, Functions, RmwInPlaceResult};
+use faster_core::store::{FasterKv, FasterKvConfig, Functions, DeleteInfo, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo};
 use serde::Serialize;
 
 use distribution::{Distribution, KeyGenerator};
@@ -163,6 +163,7 @@ impl Functions for BenchFunctions {
         value: &Value1024,
         _input: &Value1024,
         output: &mut Option<Value1024>,
+        _info: &ReadInfo,
     ) {
         *output = Some(*value);
     }
@@ -183,6 +184,7 @@ impl Functions for BenchFunctions {
         input: &Value1024,
         _old: Option<&Value1024>,
         _output: &mut Option<Value1024>,
+        _info: &UpsertInfo,
     ) {
         *value = *input;
     }
@@ -193,6 +195,7 @@ impl Functions for BenchFunctions {
         input: &Value1024,
         value: &mut Value1024,
         _output: &mut Option<Value1024>,
+        _info: &RmwInfo,
     ) -> RmwInPlaceResult {
         *value = *input;
         RmwInPlaceResult::InPlaceOk
@@ -205,6 +208,7 @@ impl Functions for BenchFunctions {
         _old: &Value1024,
         new_value: &mut Value1024,
         _output: &mut Option<Value1024>,
+        _info: &RmwInfo,
     ) {
         *new_value = *input;
     }
@@ -215,11 +219,12 @@ impl Functions for BenchFunctions {
         input: &Value1024,
         value: &mut Value1024,
         _output: &mut Option<Value1024>,
+        _info: &RmwInfo,
     ) {
         *value = *input;
     }
 
-    fn delete(&self, _key: &u64, _value: &mut Value1024) {}
+    fn delete(&self, _key: &u64, _value: &mut Value1024, _info: &DeleteInfo) {}
 }
 
 // ── Configuration types ──────────────────────────────────────────────

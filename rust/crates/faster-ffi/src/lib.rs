@@ -1079,7 +1079,9 @@ pub unsafe extern "C" fn faster_read_ex(
 
         match with_store_session(store, session, |kv, sess| {
             let input = Vec::new();
-            kv.read(sess, &key, &input, ())
+            let mut output: Option<Vec<u8>> = None;
+            let status = kv.read(sess, &key, &input, &mut output, ());
+            (status, output)
         }) {
             Ok((status, output_opt)) => {
                 let ffi_status = to_ffi_status(status);
@@ -1152,13 +1154,14 @@ pub unsafe extern "C" fn faster_continue_session(
     serial_out: *mut u64,
 ) -> FasterHandle {
     panic::catch_unwind(AssertUnwindSafe(|| {
-        let store_lock = store_handles().read();
-        let kv = match store_lock.get(store) {
-            Some(s) => s,
+        let handle = match store_handles().with::<FfiStore, _>(store, |kv| {
+            let session = kv.new_session();
+            let cell = SessionCell::new(session);
+            session_handles().insert(cell)
+        }) {
+            Some(h) => h,
             None => return INVALID_HANDLE,
         };
-        let session = kv.start_session();
-        let handle = session_handles().write().insert(SessionCell::new(session));
 
         if !serial_out.is_null() {
             // SAFETY: Caller guarantees serial_out is valid and writable.
