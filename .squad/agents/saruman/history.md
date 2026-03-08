@@ -196,3 +196,31 @@
 - Test 5: String keys and values
 - Test 6: Move semantics (Session + FasterKv)
 
+---
+
+## 2026-03-07T22:22: C++ Integration Test Suite (Iteration 6, A6)
+
+**What:** Built comprehensive C++ integration test suite for the FASTER Rust FFI wrapper. 5 test suites, 76 tests, 163 assertions — all green.
+
+**Files delivered (branch `saruman/cpp-integration-tests`):**
+- `rust/crates/faster-ffi/cpp/tests/test_harness.h` — Lightweight test framework (CHECK/REQUIRE/CHECK_THROWS)
+- `rust/crates/faster-ffi/cpp/tests/test_basic_ops.cpp` — 18 tests: CRUD with uint64_t, string, vector<uint8_t>, bulk ops, mixed types
+- `rust/crates/faster-ffi/cpp/tests/test_lifecycle.cpp` — 14 tests: session management, checkpoint/recover, continue_session, move semantics
+- `rust/crates/faster-ffi/cpp/tests/test_threading.cpp` — 6 tests: concurrent sessions, parallel ops, thread-affinity enforcement, session churn
+- `rust/crates/faster-ffi/cpp/tests/test_callbacks.cpp` — 10 tests: RMW (sum-store, multiply), Upsert (custom put), Read (custom get), error propagation
+- `rust/crates/faster-ffi/cpp/tests/test_error_handling.cpp` — 28 tests: invalid handles, null pointers, buffer-too-small, double-free, exception safety
+- `rust/crates/faster-ffi/cpp/CMakeLists.txt` — CMake build with CTest integration
+- `rust/crates/faster-ffi/cpp/run_tests.sh` — End-to-end build + test runner
+- `rust/crates/faster-ffi/cpp/tests/FFI_GAPS.md` — FFI surface gap documentation
+
+**FFI Surface Gaps Discovered:**
+1. **Snapshot checkpoint not wired** — `FasterCheckpointType::Snapshot` returns `CheckpointError` through `FasterKv::checkpoint()`. FoldOver works fine.
+2. **ContinueSession is a stub** — Always returns serial 0. No true session resume from checkpoint tokens.
+3. **No Session::raw_handle()** — Can't mix high-level Session with low-level FFI calls on same session.
+4. **No compaction/scan/statistics FFI** — Not yet exposed through FFI surface.
+
+**Key Testing Insight:**
+- Thread-affinity enforcement (ThreadMismatch) works correctly across FFI boundary.
+- The Rust static library requires `-lpthread -ldl -lm` system library dependencies when linked into C++.
+- Pre-existing Rust compilation issues in faster-core (unrelated to FFI) prevent `cargo clippy` from passing on squad branch.
+
