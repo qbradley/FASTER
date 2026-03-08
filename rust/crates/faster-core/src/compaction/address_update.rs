@@ -169,8 +169,7 @@ impl<'a> AddressUpdater<'a> {
             }
         };
 
-        let key: K = K::deserialize(&accessor.as_slice()[key_offset..]);
-        let hash = key.hash();
+        let hash = K::hash_from_bytes(&accessor.as_slice()[key_offset..]);
 
         // Find the current hash entry for this key.
         let (entry, slot) = match self.hash_index.find(hash) {
@@ -220,8 +219,7 @@ impl<'a> AddressUpdater<'a> {
             }
         };
 
-        let key: K = K::deserialize(&accessor.as_slice()[key_offset..]);
-        let hash = key.hash();
+        let hash = K::hash_from_bytes(&accessor.as_slice()[key_offset..]);
 
         let (entry, slot) = match self.hash_index.find(hash) {
             Some(pair) => pair,

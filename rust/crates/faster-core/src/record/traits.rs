@@ -14,11 +14,11 @@
 //! serialization: a 4-byte little-endian `u32` length followed by the data
 //! bytes.
 //!
-//! # Compaction contract — `serialized_size_from_bytes` and `eq_from_bytes`
+//! # Compaction contract — `serialized_size_from_bytes`, `eq_from_bytes`, and `hash_from_bytes`
 //!
-//! The compaction scanner reads raw log pages and must compute record sizes
-//! and compare keys **without fully deserializing** them. Two trait methods
-//! enable this:
+//! The compaction scanner reads raw log pages and must compute record sizes,
+//! compare keys, and compute hashes **without fully deserializing** them.
+//! Three trait methods enable this:
 //!
 //! - [`Key::serialized_size_from_bytes`] / [`Value::serialized_size_from_bytes`]
 //!   — compute the on-disk size by reading only the length prefix (for
@@ -30,6 +30,11 @@
 //! - [`Key::eq_from_bytes`] — compare an in-memory key against a serialized
 //!   key in a page buffer without allocating. Used during version chain
 //!   walks to determine which record is the current version.
+//!
+//! - [`Key::hash_from_bytes`] — compute a key's [`KeyHash`](crate::hash::KeyHash)
+//!   directly from its serialized bytes. Used during compaction pointer swing
+//!   and tombstone removal to look up the hash index entry without
+//!   deserializing (and, for variable-length types, without heap allocating).
 //!
 //! ## Override patterns
 //!
@@ -74,7 +79,7 @@
 //! }
 //! ```
 
-use crate::hash::Hashable;
+use crate::hash::{Hashable, KeyHash, faster_hash_bytes};
 
 /// Trait for types that can be used as FASTER keys.
 ///
@@ -158,6 +163,43 @@ pub trait Key: Hashable + Eq + Clone + Send + Sync + 'static {
     /// reading.
     fn eq_from_bytes(&self, buf: &[u8]) -> bool {
         *self == Self::deserialize(buf)
+    }
+
+    /// Computes a key's [`KeyHash`] directly from its serialized byte
+    /// representation, without deserializing into `Self`.
+    ///
+    /// During compaction and log scanning, FASTER reads records from disk as
+    /// raw bytes. The hash is needed for hash-index lookups (pointer swing,
+    /// tombstone removal), but deserializing the key just to hash it wastes
+    /// CPU cycles and, for variable-length types, allocates on the heap.
+    ///
+    /// # Contract
+    ///
+    /// - Must return the same [`KeyHash`] as `Self::deserialize(buf).hash()`.
+    /// - `buf` contains at least `Self::serialized_size_from_bytes(buf)` bytes
+    ///   of a valid serialized key.
+    ///
+    /// # Default implementation
+    ///
+    /// Deserializes and hashes — correct but not zero-copy. Override for
+    /// types where the hash can be computed directly from the serialized
+    /// format (all built-in types already do this).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use faster_core::record::Key;
+    /// use faster_core::hash::Hashable;
+    ///
+    /// let key: u64 = 42;
+    /// let mut buf = vec![0u8; 8];
+    /// key.serialize(&mut buf);
+    ///
+    /// // hash_from_bytes must agree with deserialize-then-hash
+    /// assert_eq!(u64::hash_from_bytes(&buf), key.hash());
+    /// ```
+    fn hash_from_bytes(buf: &[u8]) -> KeyHash {
+        Self::deserialize(buf).hash()
     }
 }
 
@@ -271,6 +313,16 @@ macro_rules! impl_key_value_for_numeric {
                 buf.len() >= core::mem::size_of::<$t>()
                     && buf[..core::mem::size_of::<$t>()] == self.to_le_bytes()
             }
+
+            #[inline]
+            fn hash_from_bytes(buf: &[u8]) -> KeyHash {
+                Self::from_le_bytes(
+                    buf[..core::mem::size_of::<$t>()]
+                        .try_into()
+                        .expect("buffer too short for numeric Key::hash_from_bytes"),
+                )
+                .hash()
+            }
         }
 
         impl FixedSizeKey for $t {
@@ -361,6 +413,17 @@ impl Key for Vec<u8> {
             && buf.len() >= LENGTH_PREFIX_SIZE + len
             && buf[LENGTH_PREFIX_SIZE..LENGTH_PREFIX_SIZE + len] == self[..]
     }
+
+    /// Hashes the raw data bytes directly — no heap allocation.
+    #[inline]
+    fn hash_from_bytes(buf: &[u8]) -> KeyHash {
+        let len = u32::from_le_bytes(
+            buf[..LENGTH_PREFIX_SIZE]
+                .try_into()
+                .expect("buffer too short for Vec<u8> Key::hash_from_bytes"),
+        ) as usize;
+        KeyHash::new(faster_hash_bytes(&buf[LENGTH_PREFIX_SIZE..LENGTH_PREFIX_SIZE + len]))
+    }
 }
 
 impl Value for Vec<u8> {
@@ -440,6 +503,18 @@ impl Key for String {
         len == self.len()
             && buf.len() >= LENGTH_PREFIX_SIZE + len
             && buf[LENGTH_PREFIX_SIZE..LENGTH_PREFIX_SIZE + len] == *self.as_bytes()
+    }
+
+    /// Hashes the raw UTF-8 bytes directly — no heap allocation or UTF-8
+    /// validation.
+    #[inline]
+    fn hash_from_bytes(buf: &[u8]) -> KeyHash {
+        let len = u32::from_le_bytes(
+            buf[..LENGTH_PREFIX_SIZE]
+                .try_into()
+                .expect("buffer too short for String Key::hash_from_bytes"),
+        ) as usize;
+        KeyHash::new(faster_hash_bytes(&buf[LENGTH_PREFIX_SIZE..LENGTH_PREFIX_SIZE + len]))
     }
 }
 
@@ -948,6 +1023,157 @@ mod tests {
                 let restored = <String as Key>::deserialize(&buf);
                 prop_assert_eq!(restored, v);
             }
+
+            // ── hash_from_bytes property tests ─────────────────────────
+
+            #[test]
+            fn u64_hash_from_bytes_matches_hash(v in any::<u64>()) {
+                let mut buf = vec![0u8; 8];
+                Key::serialize(&v, &mut buf);
+                prop_assert_eq!(
+                    <u64 as Key>::hash_from_bytes(&buf),
+                    v.hash(),
+                );
+            }
+
+            #[test]
+            fn u32_hash_from_bytes_matches_hash(v in any::<u32>()) {
+                let mut buf = vec![0u8; 4];
+                Key::serialize(&v, &mut buf);
+                prop_assert_eq!(
+                    <u32 as Key>::hash_from_bytes(&buf),
+                    v.hash(),
+                );
+            }
+
+            #[test]
+            fn i64_hash_from_bytes_matches_hash(v in any::<i64>()) {
+                let mut buf = vec![0u8; 8];
+                Key::serialize(&v, &mut buf);
+                prop_assert_eq!(
+                    <i64 as Key>::hash_from_bytes(&buf),
+                    v.hash(),
+                );
+            }
+
+            #[test]
+            fn i32_hash_from_bytes_matches_hash(v in any::<i32>()) {
+                let mut buf = vec![0u8; 4];
+                Key::serialize(&v, &mut buf);
+                prop_assert_eq!(
+                    <i32 as Key>::hash_from_bytes(&buf),
+                    v.hash(),
+                );
+            }
+
+            #[test]
+            fn vec_u8_hash_from_bytes_matches_hash(v in proptest::collection::vec(any::<u8>(), 0..1024)) {
+                let mut buf = vec![0u8; Key::serialized_size(&v)];
+                Key::serialize(&v, &mut buf);
+                prop_assert_eq!(
+                    <Vec<u8> as Key>::hash_from_bytes(&buf),
+                    v.hash(),
+                );
+            }
+
+            #[test]
+            fn string_hash_from_bytes_matches_hash(v in ".*") {
+                let mut buf = vec![0u8; Key::serialized_size(&v)];
+                Key::serialize(&v, &mut buf);
+                prop_assert_eq!(
+                    <String as Key>::hash_from_bytes(&buf),
+                    v.hash(),
+                );
+            }
+        }
+    }
+
+    // ── hash_from_bytes unit tests ──────────────────────────────────
+
+    #[test]
+    fn hash_from_bytes_u64_specific_values() {
+        for key in [0u64, 1, 42, u64::MAX, 0xCAFE_BABE_DEAD_BEEF] {
+            let mut buf = vec![0u8; 8];
+            Key::serialize(&key, &mut buf);
+            assert_eq!(
+                <u64 as Key>::hash_from_bytes(&buf),
+                key.hash(),
+                "hash_from_bytes mismatch for u64 key {key}",
+            );
+        }
+    }
+
+    #[test]
+    fn hash_from_bytes_u32_specific_values() {
+        for key in [0u32, 1, 42, u32::MAX, 0xDEAD_BEEF] {
+            let mut buf = vec![0u8; 4];
+            Key::serialize(&key, &mut buf);
+            assert_eq!(
+                <u32 as Key>::hash_from_bytes(&buf),
+                key.hash(),
+                "hash_from_bytes mismatch for u32 key {key}",
+            );
+        }
+    }
+
+    #[test]
+    fn hash_from_bytes_i64_specific_values() {
+        for key in [0i64, -1, i64::MIN, i64::MAX, 42] {
+            let mut buf = vec![0u8; 8];
+            Key::serialize(&key, &mut buf);
+            assert_eq!(
+                <i64 as Key>::hash_from_bytes(&buf),
+                key.hash(),
+                "hash_from_bytes mismatch for i64 key {key}",
+            );
+        }
+    }
+
+    #[test]
+    fn hash_from_bytes_i32_specific_values() {
+        for key in [0i32, -1, i32::MIN, i32::MAX, -12345] {
+            let mut buf = vec![0u8; 4];
+            Key::serialize(&key, &mut buf);
+            assert_eq!(
+                <i32 as Key>::hash_from_bytes(&buf),
+                key.hash(),
+                "hash_from_bytes mismatch for i32 key {key}",
+            );
+        }
+    }
+
+    #[test]
+    fn hash_from_bytes_vec_u8() {
+        let cases: Vec<Vec<u8>> = vec![
+            vec![],
+            vec![0],
+            vec![1, 2, 3, 4, 5],
+            vec![0xFF; 256],
+        ];
+        for key in cases {
+            let mut buf = vec![0u8; Key::serialized_size(&key)];
+            Key::serialize(&key, &mut buf);
+            assert_eq!(
+                <Vec<u8> as Key>::hash_from_bytes(&buf),
+                key.hash(),
+                "hash_from_bytes mismatch for Vec<u8> key len={}",
+                key.len(),
+            );
+        }
+    }
+
+    #[test]
+    fn hash_from_bytes_string() {
+        let cases = ["", "a", "hello world"];
+        for s in cases {
+            let key = String::from(s);
+            let mut buf = vec![0u8; Key::serialized_size(&key)];
+            Key::serialize(&key, &mut buf);
+            assert_eq!(
+                <String as Key>::hash_from_bytes(&buf),
+                key.hash(),
+                "hash_from_bytes mismatch for String key {s:?}",
+            );
         }
     }
 }
