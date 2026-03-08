@@ -55,6 +55,7 @@ pub mod pending_io; // contains unsafe: I/O completion callback reconstruction
 #[deny(unsafe_code)]
 mod session;
 
+pub use batch::{BatchOp, BatchResult};
 pub use builder::FasterKvBuilder;
 pub use functions::{CounterFunctions, DeleteInfo, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, SimpleFunctions, UpsertInfo};
 pub use kv::{FasterKv, FasterKvConfig, RecoveryInfo};

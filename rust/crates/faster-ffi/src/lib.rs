@@ -138,6 +138,8 @@ fn to_ffi_status(status: OperationStatus) -> FasterStatus {
         OperationStatus::Created => FasterStatus::Created,
         OperationStatus::InPlaceUpdated => FasterStatus::InPlaceUpdated,
         OperationStatus::CopyUpdated => FasterStatus::CopyUpdated,
+        // Revivified is semantically an in-place update (sealed record reused).
+        OperationStatus::Revivified => FasterStatus::InPlaceUpdated,
         // Deleted and Aborted map to Ok — from the C caller's perspective the
         // operation completed successfully. Aborted is an internal detail.
         OperationStatus::Deleted => FasterStatus::Ok,

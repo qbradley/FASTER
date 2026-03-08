@@ -137,6 +137,7 @@ impl<K: Hashable, I> BatchOp<K, I> {
 
 // -- Batch methods on UnsafeContext --
 
+#[allow(clippy::needless_range_loop)]
 impl<'a, F: Functions> UnsafeContext<'a, F> {
     /// Execute a batch of reads under single-epoch protection.
     ///

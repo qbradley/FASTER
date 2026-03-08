@@ -655,3 +655,42 @@ Created `rust/crates/faster-core/examples/cache_store.rs` — a Rust port of the
 6. faster_core::store::functions module is private; use re-exports from faster_core::store
 
 **Test Results:** 102 tests pass (83 original + 19 new)
+
+### Session 4: Batch Operation API (A12)
+
+**Branch:** `aragorn/batch-api`
+**Commits:** 
+- `feat(faster-core): implement batch operation API (A12)` — core types + methods
+- `test(faster-core): add batch API integration tests (A12)` — 8 integration tests
+
+**Tasks Completed:**
+- A12: Batch Operation API design and implementation
+
+**Files Created:**
+- `rust/crates/faster-core/src/store/batch.rs` — BatchResult, BatchOp, UnsafeContext batch methods
+- `rust/crates/faster-core/tests/batch_tests.rs` — 8 integration tests
+
+**Files Modified:**
+- `rust/crates/faster-core/src/store/mod.rs` — batch module declaration + re-exports
+- `rust/crates/faster-core/src/lib.rs` — crate-level re-exports
+- `rust/crates/faster-core/src/store/kv.rs` — FasterKv batch method wrappers
+- `rust/crates/faster-core/src/store/session.rs` — UnsafeContext.session field to pub(super)
+
+**Architecture Decisions:**
+- Slice-based API (not builder pattern) — most idiomatic for Rust, zero-cost, natural borrowing
+- impl UnsafeContext block in batch.rs — keeps batch logic self-contained without modifying session.rs
+- UnsafeContext.session changed to pub(super) to enable cross-module impl block
+- BATCH_REFRESH_INTERVAL = 256 — balances throughput vs epoch responsiveness
+- No atomicity — each op independently succeeds/fails, BatchResult tracks per-op status
+- F::Context: Default bound on all batch methods (uses default context for each op)
+- Hash-and-prefetch-all-keys phase runs before any operations execute
+
+**Key Learnings:**
+1. Multi-agent environment CRITICALLY requires working on committed branch — other agents switch HEAD
+2. session.rs gets overwritten repeatedly by concurrent agents; restore from squad baseline each time
+3. Rust allows impl blocks for a struct in a different module within the same crate
+4. #[allow(clippy::needless_range_loop)] needed when indexing into multiple parallel slices
+5. Python scripts for file edits are more reliable than edit tool in contested environments
+6. git stash/pop interacts badly with concurrent branch switching by other agents
+
+**Test Results:** 1189 lib tests + 135 doctests + 8 integration tests pass
