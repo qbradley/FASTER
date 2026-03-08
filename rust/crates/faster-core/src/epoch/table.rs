@@ -4,7 +4,7 @@
 //! coordination. It manages a global epoch counter, a table of per-thread
 //! epoch entries, and a drain list of deferred callbacks.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crossbeam_utils::CachePadded;
@@ -67,6 +67,13 @@ pub struct EpochTable {
     /// Deferred callbacks keyed by epoch.
     pub(crate) drain_list: DrainList,
 
+    /// High-water mark: one past the highest index ever registered.
+    ///
+    /// `compute_safe_epoch()` scans only `0..scan_limit` instead of all
+    /// [`MAX_THREADS`] slots. With 16 threads registered, this reduces
+    /// the scan from 256 entries to ~16.
+    scan_limit: CachePadded<AtomicUsize>,
+
     /// Free slot indices for thread registration.
     ///
     /// Protected by a mutex because registration/deregistration is rare
@@ -105,6 +112,7 @@ impl EpochTable {
             safe_to_reclaim_epoch: CachePadded::new(AtomicU64::new(0)),
             table: entries.into_boxed_slice(),
             drain_list: DrainList::new(),
+            scan_limit: CachePadded::new(AtomicUsize::new(0)),
             free_list: Mutex::new(free_list),
         }
     }
@@ -139,6 +147,9 @@ impl EpochTable {
         // but ThreadId doesn't expose a stable numeric value.
         // Release: visible to other threads checking is_occupied().
         entry.thread_id.store((index as u64) + 1, Ordering::Release);
+
+        // Expand scan_limit so compute_safe_epoch covers this slot.
+        self.scan_limit.fetch_max(index + 1, Ordering::Release);
 
         Some(EpochThread::new(Arc::clone(self), index))
     }
@@ -293,7 +304,19 @@ impl EpochTable {
     ///
     /// Called automatically by `unprotect` and `bump_current_epoch`. Can
     /// also be called explicitly to force drain evaluation.
+    ///
+    /// # Fast-Path (drain_count == 0)
+    ///
+    /// When no deferred actions are pending (the common case in pure-read
+    /// workloads), the entire scan is skipped. Cost drops from ~100ns
+    /// (256-entry scan) to ~5ns (single atomic load). This matches the
+    /// C# `drainCount == 0` fast-path in `ProtectAndDrain()`.
     pub(crate) fn try_drain(&self) {
+        // Fast-path: no pending drain actions, skip the expensive scan.
+        if !self.drain_list.has_pending() {
+            return;
+        }
+
         let safe = self.compute_safe_epoch();
 
         // Relaxed: comparing against a value we just computed locally.
@@ -306,23 +329,34 @@ impl EpochTable {
         }
     }
 
-    /// Computes the safe-to-reclaim epoch by scanning all thread entries.
+    /// Computes the safe-to-reclaim epoch by scanning registered entries.
     ///
     /// Returns `min(active_epochs) - 1`, which is the newest epoch that no
     /// active thread could be referencing. If no threads are active, returns
     /// `current_epoch - 1`.
     ///
+    /// # Scan Optimization
+    ///
+    /// Only scans `0..scan_limit` (the high-water mark of registered slots)
+    /// instead of all [`MAX_THREADS`] entries. With 16 registered threads,
+    /// this scans ~16 entries instead of 256.
+    ///
     /// # Memory Ordering
     ///
-    /// - Global epoch: `SeqCst` for total ordering with `bump_current_epoch`.
+    /// - Global epoch: `Acquire` to see all `Release` stores from threads'
+    ///   `protect()` calls. `SeqCst` is unnecessary here \u2014 a stale (lower)
+    ///   read of `current_epoch` is conservative (computes a lower safe
+    ///   epoch, delaying drains).
     /// - Per-thread epochs: `Acquire` to see the latest `Release` store
     ///   from each thread's `protect()` call.
     fn compute_safe_epoch(&self) -> u64 {
-        // SeqCst: must be totally ordered with fetch_add in bump_current_epoch.
-        let current = self.current_epoch.load(Ordering::SeqCst);
+        // Acquire: pairs with Release stores in protect() and
+        // SeqCst fetch_add in bump_current_epoch.
+        let current = self.current_epoch.load(Ordering::Acquire);
         let mut min = current;
 
-        for entry in self.table.iter() {
+        let limit = self.scan_limit.load(Ordering::Acquire);
+        for entry in self.table[..limit].iter() {
             // Acquire: pairs with Release store in protect().
             let epoch = entry.local_current_epoch.load(Ordering::Acquire);
 

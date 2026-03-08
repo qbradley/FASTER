@@ -68,9 +68,11 @@ fn bump_epoch_advances_counter() {
 fn safe_epoch_with_no_active_threads() {
     let table = Arc::new(EpochTable::new());
 
-    // Bump epoch a few times — no threads active
+    // Bump epoch with callbacks — triggers drain path that updates safe_epoch.
+    // With the drain_count fast-path, safe_epoch only advances when pending
+    // drains exist (matching C# LightEpoch behavior).
     for _ in 0..5 {
-        table.bump_current_epoch_no_callback();
+        table.bump_current_epoch(|| {});
     }
 
     // After try_drain (called by bump), safe_epoch should be current - 1
@@ -87,9 +89,11 @@ fn safe_epoch_held_back_by_active_thread() {
     let guard = thread.protect();
     assert_eq!(guard.epoch(), 1);
 
-    // Bump epoch several times
+    // Bump epoch several times with callbacks to trigger drain path.
+    // The drain_count fast-path means safe_epoch only updates when
+    // pending drains exist — matching C# LightEpoch behavior.
     for _ in 0..5 {
-        table.bump_current_epoch_no_callback();
+        table.bump_current_epoch(|| {});
     }
     assert_eq!(table.current_epoch(), 6);
 
