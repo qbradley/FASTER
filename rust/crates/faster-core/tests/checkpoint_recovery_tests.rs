@@ -32,6 +32,7 @@ fn sample_token(val: u128) -> CheckpointToken {
 
 fn sample_index_info() -> IndexRecoveryInfo {
     IndexRecoveryInfo {
+        format_version: 2,
         version: 1,
         table_size: 1 << 10,
         num_ht_bytes: (1 << 10) * 64,
@@ -44,6 +45,7 @@ fn sample_index_info() -> IndexRecoveryInfo {
 
 fn fold_over_log_info() -> LogRecoveryInfo {
     LogRecoveryInfo {
+        format_version: 2,
         version: 1,
         checkpoint_type: CheckpointType::FoldOver,
         begin_address: LogicalAddress::ZERO,
@@ -59,6 +61,7 @@ fn fold_over_log_info() -> LogRecoveryInfo {
 
 fn snapshot_log_info() -> LogRecoveryInfo {
     LogRecoveryInfo {
+        format_version: 2,
         version: 1,
         checkpoint_type: CheckpointType::Snapshot,
         begin_address: LogicalAddress::new(Page(0), Offset(64)),
@@ -327,6 +330,7 @@ fn multiple_sequential_checkpoints_recover_from_either() {
         excluded_serial_numbers: vec![],
     }];
     let index_info_1 = IndexRecoveryInfo {
+        format_version: 2,
         version: 1,
         table_size: 1024,
         num_ht_bytes: 1024 * 64,
@@ -352,6 +356,7 @@ fn multiple_sequential_checkpoints_recover_from_either() {
         excluded_serial_numbers: vec![],
     }];
     let index_info_2 = IndexRecoveryInfo {
+        format_version: 2,
         version: 2,
         table_size: 1024,
         num_ht_bytes: 1024 * 64,
@@ -501,6 +506,7 @@ fn index_checkpoint_recovery_roundtrip_small() {
     let plan = make_index_plan(
         token,
         IndexRecoveryInfo {
+            format_version: 2,
             version: 1,
             table_size: 1 << log2,
             num_ht_bytes: (1u64 << log2) * 64,
@@ -566,6 +572,7 @@ fn index_checkpoint_recovery_preserves_entries() {
     let plan = make_index_plan(
         token,
         IndexRecoveryInfo {
+            format_version: 2,
             version: 3,
             table_size: 1 << log2,
             num_ht_bytes: (1u64 << log2) * 64,
@@ -611,6 +618,7 @@ fn index_recovery_with_many_entries_per_bucket() {
     let plan = make_index_plan(
         token,
         IndexRecoveryInfo {
+            format_version: 2,
             version: 0,
             table_size: 1 << log2,
             num_ht_bytes: (1u64 << log2) * 64,
@@ -639,6 +647,7 @@ fn large_scale_index_checkpoint_recovery() {
     let plan = make_index_plan(
         token,
         IndexRecoveryInfo {
+            format_version: 2,
             version: 7,
             table_size: 1 << log2,
             num_ht_bytes: (1u64 << log2) * 64,
@@ -828,6 +837,7 @@ fn corrupt_index_checkpoint_file_detected_by_crc() {
     let plan = make_index_plan(
         token,
         IndexRecoveryInfo {
+            format_version: 2,
             version: 0,
             table_size: 1 << log2,
             num_ht_bytes: (1u64 << log2) * 64,
@@ -1065,6 +1075,7 @@ fn log_recovery_fold_over_empty_log() {
     let token = sample_token(120);
 
     let log_info = LogRecoveryInfo {
+        format_version: 2,
         version: 1,
         checkpoint_type: CheckpointType::FoldOver,
         begin_address: LogicalAddress::ZERO,
@@ -1414,6 +1425,7 @@ fn full_index_cycle_checkpoint_recover_verify_all_entries() {
     let plan = make_index_plan(
         token,
         IndexRecoveryInfo {
+            format_version: 2,
             version: 5,
             table_size: 1 << log2,
             num_ht_bytes: (1u64 << log2) * 64,
@@ -1558,6 +1570,7 @@ fn index_recovery_with_shared_epoch() {
     let plan = make_index_plan(
         token,
         IndexRecoveryInfo {
+            format_version: 2,
             version: 2,
             table_size: 1 << log2,
             num_ht_bytes: (1u64 << log2) * 64,
@@ -1594,6 +1607,7 @@ fn empty_index_checkpoint_recovery() {
     let plan = make_index_plan(
         token,
         IndexRecoveryInfo {
+            format_version: 2,
             version: 0,
             table_size: 1 << log2,
             num_ht_bytes: (1u64 << log2) * 64,

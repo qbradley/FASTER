@@ -607,6 +607,7 @@ mod tests {
 
     fn sample_index_info() -> IndexRecoveryInfo {
         IndexRecoveryInfo {
+            format_version: 2,
             version: 1,
             table_size: 1 << 16,
             num_ht_bytes: (1 << 16) * 64,
@@ -623,6 +624,7 @@ mod tests {
         tail: LogicalAddress,
     ) -> LogRecoveryInfo {
         LogRecoveryInfo {
+            format_version: 2,
             version: 1,
             checkpoint_type: CheckpointType::FoldOver,
             begin_address: begin,
@@ -1066,6 +1068,7 @@ mod tests {
         snap_final: LogicalAddress,
     ) -> LogRecoveryInfo {
         LogRecoveryInfo {
+            format_version: 2,
             version: 1,
             checkpoint_type: CheckpointType::Snapshot,
             begin_address: begin,

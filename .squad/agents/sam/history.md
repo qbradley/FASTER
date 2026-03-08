@@ -305,3 +305,32 @@
 
 **Branch:** `sam/sealed-bit-p03`
 **Commit:** `f2d516c1` — `feat(record): add sealed bit to RecordInfo (P-03)`
+
+---
+
+### Session: EPVS Implementation (Iteration 6 A1)
+
+**Date:** $(date +%Y-%m-%d)
+**Task:** Implement EPVS — pack (phase, version) into AtomicU64 CAS word
+
+**What was done:**
+- Created new `state` module (Phase, SystemState, AtomicSystemState) with 48 unit tests
+- Rewrote `CheckpointStateMachine` to use `AtomicSystemState` internally (EPVS)
+- Widened checkpoint metadata version from u32→u64 with format_version field for backward compat
+- Increased epoch PHASE_COUNT from 8→16 for unified phase numbering
+- Fixed all downstream compilation in checkpoint writers, recovery, and integration tests
+- Fixed pre-existing clippy `clone_on_copy` in store/functions.rs
+
+**Results:**
+- 1215 lib tests passing (1185 pre-existing + 30 new state/state_machine tests)
+- 42 integration tests passing (checkpoint_recovery_tests)
+- Clippy clean (`-D warnings`)
+
+**Lessons learned:**
+- Sub-agent (general-purpose task) destructively reverted critical files — had to recreate entire state module from memory. Always verify sub-agent changes didn't revert unrelated files.
+- Bash heredocs are reliable for recreating deleted files; the edit tool can fail silently.
+- Two-phase intermediate CAS protocol prevents ABA — the intermediate bit blocks concurrent transitions.
+- Keep version bumps strictly on Prepare→InProgress to match C# Tsavorite exactly.
+
+**Branch:** `sam/epvs-implementation`
+**Commit:** `88010752` — `feat(faster-core): implement EPVS (Epoch-Protected Version Scheme)`

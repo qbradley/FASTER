@@ -160,7 +160,7 @@ impl IndexRecoveryEngine {
         self.load_buckets(&index_path, &index, num_buckets)?;
 
         // Step 6: Set version and entry count from recovery metadata.
-        index.set_version(plan.index_info.version);
+        index.set_version(plan.index_info.version as u32);
 
         // Step 7: Verify loaded entry count matches expected.
         let scanned = index.scan_entry_count();
@@ -207,7 +207,7 @@ impl IndexRecoveryEngine {
 
         self.load_buckets(&index_path, &index, num_buckets)?;
 
-        index.set_version(plan.index_info.version);
+        index.set_version(plan.index_info.version as u32);
 
         let scanned = index.scan_entry_count();
         if scanned != expected_entry_count {
@@ -341,6 +341,7 @@ mod tests {
             checkpoint_type: CheckpointType::Snapshot,
             index_info,
             log_info: LogRecoveryInfo {
+                format_version: 2,
                 version: 0,
                 checkpoint_type: CheckpointType::Snapshot,
                 flushed_until_address: LogicalAddress::ZERO,
@@ -426,6 +427,7 @@ mod tests {
         let plan = make_plan(
             token,
             IndexRecoveryInfo {
+                format_version: 2,
                 version: 0,
                 table_size: 1 << log2,
                 num_ht_bytes: (1u64 << log2) * 64,
@@ -452,6 +454,7 @@ mod tests {
         let plan = make_plan(
             token,
             IndexRecoveryInfo {
+                format_version: 2,
                 version: 1,
                 table_size: 1 << log2,
                 num_ht_bytes: (1u64 << log2) * 64,
@@ -514,6 +517,7 @@ mod tests {
         let plan = make_plan(
             token,
             IndexRecoveryInfo {
+                format_version: 2,
                 version: 1,
                 table_size: 1 << log2,
                 num_ht_bytes: (1u64 << log2) * 64,
@@ -554,6 +558,7 @@ mod tests {
         let plan = make_plan(
             token,
             IndexRecoveryInfo {
+                format_version: 2,
                 version: 0,
                 table_size: 1 << log2,
                 num_ht_bytes: (1u64 << log2) * 64,
@@ -584,7 +589,8 @@ mod tests {
             let plan = make_plan(
                 token,
                 IndexRecoveryInfo {
-                    version,
+                    format_version: 2,
+                    version: version as u64,
                     table_size: 1 << log2,
                     num_ht_bytes: (1u64 << log2) * 64,
                     num_ofb_bytes: 0,
@@ -621,6 +627,7 @@ mod tests {
         let plan = make_plan(
             token,
             IndexRecoveryInfo {
+                format_version: 2,
                 version: 0,
                 table_size: 1 << log2,
                 num_ht_bytes: (1u64 << log2) * 64,
@@ -672,6 +679,7 @@ mod tests {
         let plan = make_plan(
             token,
             IndexRecoveryInfo {
+                format_version: 2,
                 version: 0,
                 table_size: 1 << log2,
                 num_ht_bytes: (1u64 << log2) * 64,
@@ -714,6 +722,7 @@ mod tests {
         let plan = make_plan(
             token,
             IndexRecoveryInfo {
+                format_version: 2,
                 version: 0,
                 table_size: 16,
                 num_ht_bytes: 16 * 64,
@@ -771,6 +780,7 @@ mod tests {
         let plan = make_plan(
             token,
             IndexRecoveryInfo {
+                format_version: 2,
                 version: 0,
                 table_size: 1 << log2,
                 num_ht_bytes: (1u64 << log2) * 64,
@@ -867,6 +877,7 @@ mod tests {
         let plan = make_plan(
             token,
             IndexRecoveryInfo {
+                format_version: 2,
                 version: 0,
                 table_size: 1 << log2,
                 num_ht_bytes: (1u64 << log2) * 64,

@@ -20,7 +20,7 @@ use crate::address::LogicalAddress;
 use crate::hybrid_log::HybridLogAllocator;
 
 use super::snapshot_writer::SnapshotCheckpointContext;
-use super::{CheckpointError, CheckpointToken, CheckpointType, LogRecoveryInfo};
+use super::{CheckpointError, CheckpointToken, CheckpointType, LogRecoveryInfo, FORMAT_VERSION_CURRENT};
 
 // ---------------------------------------------------------------------------
 // LogCheckpointContext
@@ -200,6 +200,7 @@ impl LogCheckpointWriter {
         }
 
         Ok(LogRecoveryInfo {
+            format_version: FORMAT_VERSION_CURRENT,
             version: 1,
             checkpoint_type: ctx.checkpoint_type,
             begin_address: ctx.start_begin,

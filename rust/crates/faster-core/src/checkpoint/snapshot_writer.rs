@@ -29,7 +29,7 @@ use std::time::Instant;
 use crate::address::LogicalAddress;
 use crate::hybrid_log::HybridLogAllocator;
 
-use super::{CheckpointError, CheckpointToken, CheckpointType, LogRecoveryInfo};
+use super::{CheckpointError, CheckpointToken, CheckpointType, LogRecoveryInfo, FORMAT_VERSION_CURRENT};
 
 // ---------------------------------------------------------------------------
 // SnapshotCheckpointContext
@@ -103,6 +103,7 @@ impl SnapshotCheckpointContext {
     /// the snapshot file.
     pub fn into_recovery_info(self) -> LogRecoveryInfo {
         LogRecoveryInfo {
+            format_version: FORMAT_VERSION_CURRENT,
             version: 1,
             checkpoint_type: CheckpointType::Snapshot,
             begin_address: self.begin_address,

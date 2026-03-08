@@ -646,7 +646,7 @@ mod tests {
         let meta = store.read_checkpoint_metadata(&result_token).unwrap();
 
         // Index recovery info
-        assert_eq!(meta.index_info.version, index.version());
+        assert_eq!(meta.index_info.version, index.version() as u64);
         assert_eq!(meta.index_info.table_size, index.num_buckets());
 
         // Log recovery info
