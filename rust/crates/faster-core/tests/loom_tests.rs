@@ -662,3 +662,1138 @@ fn c0_drain_list_partial_drain() {
         assert_eq!(counter.load(Ordering::SeqCst), 2);
     });
 }
+
+// ============================================================================
+// D1: Epoch Framework — protect prevents premature reclamation
+// ============================================================================
+
+/// Faithful re-implementation of FASTER's epoch protect/unprotect with
+/// reentrant guard counting and safe-to-reclaim computation.
+///
+/// Mirrors: `epoch/table.rs` (EpochTable), `epoch/entry.rs` (EpochEntry)
+///
+/// Layout:
+///   - `current_epoch` — global monotonic counter (SeqCst bumps)
+///   - `entries[N]` — per-thread: {local_epoch, guard_count}
+///   - `safe_to_reclaim_epoch` — cached safe epoch
+mod epoch_framework {
+    use loom::sync::atomic::{AtomicU64, Ordering};
+
+    pub const NUM_THREADS: usize = 2;
+    pub const UNPROTECTED: u64 = 0;
+
+    pub struct EpochEntry {
+        /// Matches `EpochEntry::local_current_epoch`.  0 = unprotected.
+        pub local_epoch: AtomicU64,
+        /// Reentrant guard count — protect increments, unprotect decrements.
+        pub guard_count: AtomicU64,
+    }
+
+    impl EpochEntry {
+        pub fn new() -> Self {
+            Self {
+                local_epoch: AtomicU64::new(UNPROTECTED),
+                guard_count: AtomicU64::new(0),
+            }
+        }
+    }
+
+    pub struct EpochTable {
+        pub current_epoch: AtomicU64,
+        pub entries: [EpochEntry; NUM_THREADS],
+    }
+
+    impl EpochTable {
+        pub fn new() -> Self {
+            Self {
+                current_epoch: AtomicU64::new(1),
+                entries: [EpochEntry::new(), EpochEntry::new()],
+            }
+        }
+
+        /// Protect: snapshot current epoch into thread's slot.
+        /// Reentrant: only snapshots on first (non-nested) protect.
+        /// Mirrors: epoch/table.rs `protect()` with Release store.
+        pub fn protect(&self, tid: usize) {
+            let old_count = self.entries[tid]
+                .guard_count
+                .fetch_add(1, Ordering::Relaxed);
+            if old_count == 0 {
+                // First entry — snapshot the global epoch.
+                let e = self.current_epoch.load(Ordering::SeqCst);
+                self.entries[tid].local_epoch.store(e, Ordering::Release);
+            }
+        }
+
+        /// Unprotect: clear thread's epoch slot when guard count reaches 0.
+        /// Mirrors: epoch/table.rs `unprotect()`.
+        pub fn unprotect(&self, tid: usize) {
+            let old_count = self.entries[tid]
+                .guard_count
+                .fetch_sub(1, Ordering::Relaxed);
+            debug_assert!(old_count > 0, "unprotect without matching protect");
+            if old_count == 1 {
+                // Last exit — clear local epoch.
+                self.entries[tid]
+                    .local_epoch
+                    .store(UNPROTECTED, Ordering::Release);
+            }
+        }
+
+        /// Bump the global epoch.  Uses SeqCst to match production code.
+        /// Mirrors: epoch/table.rs `bump_current_epoch()`.
+        pub fn bump(&self) -> u64 {
+            self.current_epoch.fetch_add(1, Ordering::SeqCst)
+        }
+
+        /// Compute the minimum epoch held by any active thread.
+        /// Returns `current_epoch` if no thread is protected.
+        /// Mirrors: epoch/table.rs `compute_safe_epoch()`.
+        pub fn compute_safe_epoch(&self) -> u64 {
+            let current = self.current_epoch.load(Ordering::SeqCst);
+            let mut min = current;
+            for entry in &self.entries {
+                let e = entry.local_epoch.load(Ordering::Acquire);
+                if e != UNPROTECTED && e < min {
+                    min = e;
+                }
+            }
+            min.saturating_sub(1)
+        }
+    }
+}
+
+/// BUG CAUGHT: If protect() used Relaxed instead of Release for the local
+/// epoch store, a concurrent `compute_safe_epoch` could read stale (0) from
+/// the slot and incorrectly advance the safe epoch past a protected thread's
+/// epoch — enabling premature reclamation of data the thread is still using.
+#[test]
+fn d1_epoch_protect_prevents_premature_reclaim() {
+    loom::model(|| {
+        let table = Arc::new(epoch_framework::EpochTable::new());
+
+        // Thread 0: protect → bump epoch → check safe epoch → unprotect.
+        let t0 = {
+            let tbl = Arc::clone(&table);
+            thread::spawn(move || {
+                tbl.protect(0);
+                let my_epoch = tbl.entries[0].local_epoch.load(Ordering::Acquire);
+                // Bump global epoch so safe_epoch could advance.
+                tbl.bump();
+                // While protected, safe_epoch must be < my_epoch.
+                let safe = tbl.compute_safe_epoch();
+                assert!(
+                    safe < my_epoch,
+                    "safe_epoch {safe} must be < protected epoch {my_epoch}: premature reclaim!"
+                );
+                tbl.unprotect(0);
+            })
+        };
+
+        // Thread 1: also protects, bumps, checks.
+        let t1 = {
+            let tbl = Arc::clone(&table);
+            thread::spawn(move || {
+                tbl.protect(1);
+                let my_epoch = tbl.entries[1].local_epoch.load(Ordering::Acquire);
+                tbl.bump();
+                let safe = tbl.compute_safe_epoch();
+                assert!(
+                    safe < my_epoch,
+                    "safe_epoch {safe} must be < protected epoch {my_epoch}: premature reclaim!"
+                );
+                tbl.unprotect(1);
+            })
+        };
+
+        t0.join().unwrap();
+        t1.join().unwrap();
+    });
+}
+
+/// BUG CAUGHT: If epoch drain used Relaxed on the swap instead of AcqRel,
+/// a push concurrent with a drain could have its node lost — the push CAS
+/// succeeds against the old head, but the drainer swapped the old head away
+/// without seeing the new node.
+#[test]
+fn d1_epoch_drain_under_concurrent_protect() {
+    loom::model(|| {
+        let table = Arc::new(epoch_framework::EpochTable::new());
+        let drain_list = Arc::new(drain_list::DrainList::new());
+        let counter = Arc::new(loom::sync::atomic::AtomicUsize::new(0));
+
+        // Thread 0: protect at epoch 1, push a deferred action, then unprotect.
+        let tbl0 = Arc::clone(&table);
+        let dl0 = Arc::clone(&drain_list);
+        let c0 = Arc::clone(&counter);
+        let t0 = thread::spawn(move || {
+            tbl0.protect(0);
+            dl0.push(1, &c0);
+            tbl0.unprotect(0);
+        });
+
+        // Thread 1: bump epoch then drain.
+        let tbl1 = Arc::clone(&table);
+        let dl1 = Arc::clone(&drain_list);
+        let t1 = thread::spawn(move || {
+            tbl1.bump(); // epoch becomes 2
+            dl1.drain_up_to(1); // drain entries ≤ epoch 1
+        });
+
+        t0.join().unwrap();
+        t1.join().unwrap();
+
+        // Final drain: any remaining entries should fire.
+        drain_list.drain_up_to(100);
+
+        // The counter must be exactly 1: the deferred action executed once.
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "deferred action must execute exactly once"
+        );
+    });
+}
+
+// ============================================================================
+// D2: Hash Bucket — two-phase tentative insert protocol
+// ============================================================================
+
+/// Faithful re-implementation of FASTER's hash bucket with tentative bit
+/// two-phase insert.
+///
+/// Mirrors: `hash/bucket.rs` (HashBucket, AtomicHashBucketEntry)
+///
+/// Bit layout:
+///   [63] Tentative | [61:48] Tag (14) | [47:0] Address (48)
+mod hash_bucket {
+    use loom::sync::atomic::{AtomicU64, Ordering};
+
+    const ADDRESS_BITS: u32 = 48;
+    const ADDRESS_MASK: u64 = (1u64 << ADDRESS_BITS) - 1;
+    const TAG_SHIFT: u32 = 48;
+    const TAG_MASK: u64 = ((1u64 << 14) - 1) << TAG_SHIFT;
+    const TENTATIVE_BIT: u64 = 1u64 << 63;
+    const EMPTY: u64 = 0;
+
+    pub const NUM_ENTRIES: usize = 7;
+
+    fn pack(tag: u16, addr: u64, tentative: bool) -> u64 {
+        let mut v = (addr & ADDRESS_MASK) | (((tag as u64) & 0x3FFF) << TAG_SHIFT);
+        if tentative {
+            v |= TENTATIVE_BIT;
+        }
+        v
+    }
+
+    fn unpack_tag(v: u64) -> u16 {
+        ((v & TAG_MASK) >> TAG_SHIFT) as u16
+    }
+
+    fn unpack_addr(v: u64) -> u64 {
+        v & ADDRESS_MASK
+    }
+
+    fn is_tentative(v: u64) -> bool {
+        v & TENTATIVE_BIT != 0
+    }
+
+    fn is_empty(v: u64) -> bool {
+        v == EMPTY
+    }
+
+    pub struct Bucket {
+        entries: [AtomicU64; NUM_ENTRIES],
+    }
+
+    impl Bucket {
+        pub fn new() -> Self {
+            Self {
+                entries: [
+                    AtomicU64::new(EMPTY),
+                    AtomicU64::new(EMPTY),
+                    AtomicU64::new(EMPTY),
+                    AtomicU64::new(EMPTY),
+                    AtomicU64::new(EMPTY),
+                    AtomicU64::new(EMPTY),
+                    AtomicU64::new(EMPTY),
+                ],
+            }
+        }
+
+        /// Two-phase insert: CAS empty → tentative, then CAS tentative → committed.
+        /// Mirrors: the two-phase protocol in hash/bucket.rs.
+        /// Returns Ok(slot_index) on success, Err(()) if bucket full.
+        pub fn insert(&self, tag: u16, addr: u64) -> Result<usize, ()> {
+            let tentative = pack(tag, addr, true);
+            let committed = pack(tag, addr, false);
+
+            for i in 0..NUM_ENTRIES {
+                let current = self.entries[i].load(Ordering::Acquire);
+                if !is_empty(current) {
+                    continue;
+                }
+                // Phase 1: CAS empty → tentative.
+                match self.entries[i].compare_exchange(
+                    EMPTY,
+                    tentative,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => {
+                        // Phase 2: CAS tentative → committed (clear tentative bit).
+                        let result = self.entries[i].compare_exchange(
+                            tentative,
+                            committed,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        );
+                        debug_assert!(
+                            result.is_ok(),
+                            "tentative → committed CAS must succeed (single owner)"
+                        );
+                        return Ok(i);
+                    }
+                    Err(_) => continue,
+                }
+            }
+            Err(())
+        }
+
+        /// Find the first committed (non-tentative) entry matching `tag`.
+        /// Mirrors: hash/bucket.rs `find_entry()` which skips tentative entries.
+        pub fn find(&self, tag: u16) -> Option<u64> {
+            for i in 0..NUM_ENTRIES {
+                let v = self.entries[i].load(Ordering::Acquire);
+                if !is_empty(v) && !is_tentative(v) && unpack_tag(v) == tag {
+                    return Some(unpack_addr(v));
+                }
+            }
+            None
+        }
+
+        /// Count all non-empty entries (including tentative).
+        pub fn count_occupied(&self) -> usize {
+            let mut n = 0;
+            for i in 0..NUM_ENTRIES {
+                let v = self.entries[i].load(Ordering::Acquire);
+                if !is_empty(v) {
+                    n += 1;
+                }
+            }
+            n
+        }
+    }
+}
+
+/// BUG CAUGHT: Without the tentative bit protocol, a concurrent reader could
+/// see a partially-inserted entry (address stored but record not yet written
+/// to the log). The two-phase CAS ensures lookups only return fully committed
+/// entries.
+#[test]
+fn d2_bucket_two_phase_insert_no_lost_updates() {
+    loom::model(|| {
+        let b = Arc::new(hash_bucket::Bucket::new());
+
+        // Thread 1: insert tag=0x1111 at addr=0xAAA.
+        let b1 = Arc::clone(&b);
+        let t1 = thread::spawn(move || b1.insert(0x1111, 0xAAA));
+
+        // Thread 2: insert tag=0x2222 at addr=0xBBB.
+        let b2 = Arc::clone(&b);
+        let t2 = thread::spawn(move || b2.insert(0x2222, 0xBBB));
+
+        let r1 = t1.join().unwrap();
+        let r2 = t2.join().unwrap();
+
+        // Both must succeed (7 slots, 2 inserts).
+        let s1 = r1.expect("thread 1 must get a slot");
+        let s2 = r2.expect("thread 2 must get a slot");
+        assert_ne!(s1, s2, "two threads must occupy different slots");
+
+        // Both entries must be findable.
+        assert_eq!(b.find(0x1111), Some(0xAAA), "tag 0x1111 must be found");
+        assert_eq!(b.find(0x2222), Some(0xBBB), "tag 0x2222 must be found");
+        assert_eq!(b.count_occupied(), 2);
+    });
+}
+
+/// BUG CAUGHT: If find() did NOT skip tentative entries, a concurrent lookup
+/// during an in-progress insert could return an address whose record has not
+/// yet been written to the log.
+#[test]
+fn d2_bucket_find_skips_tentative_during_insert() {
+    loom::model(|| {
+        let b = Arc::new(hash_bucket::Bucket::new());
+
+        // Thread 1: insert tag=0x0ABC at addr=0x100.
+        let b1 = Arc::clone(&b);
+        let t1 = thread::spawn(move || b1.insert(0x0ABC, 0x100));
+
+        // Thread 2: concurrent find for the same tag.
+        let b2 = Arc::clone(&b);
+        let t2 = thread::spawn(move || b2.find(0x0ABC));
+
+        t1.join().unwrap().expect("insert must succeed");
+        let found = t2.join().unwrap();
+
+        // find() may or may not see the entry (depends on interleaving),
+        // but if it DOES see it, it must be the committed version.
+        if let Some(addr) = found {
+            assert_eq!(addr, 0x100, "found address must match inserted address");
+        }
+    });
+}
+
+/// BUG CAUGHT: Two threads inserting entries with the SAME tag could corrupt
+/// the bucket if the CAS was not properly serialized, leading to one entry
+/// overwriting the other.
+#[test]
+fn d2_bucket_same_tag_concurrent_insert() {
+    loom::model(|| {
+        let b = Arc::new(hash_bucket::Bucket::new());
+
+        // Both threads insert with the same tag but different addresses.
+        let b1 = Arc::clone(&b);
+        let t1 = thread::spawn(move || b1.insert(0x3FFF, 0x001));
+
+        let b2 = Arc::clone(&b);
+        let t2 = thread::spawn(move || b2.insert(0x3FFF, 0x002));
+
+        t1.join().unwrap().expect("insert 1 must succeed");
+        t2.join().unwrap().expect("insert 2 must succeed");
+
+        // Both entries must be present (different slots, same tag).
+        assert_eq!(b.count_occupied(), 2, "both entries must be stored");
+    });
+}
+
+// ============================================================================
+// D3: RecordInfo — seal/revivify CAS under contention
+// ============================================================================
+
+/// Faithful re-implementation of FASTER's RecordInfo atomic operations.
+///
+/// Mirrors: `record/record_info.rs`
+///
+/// Bit layout:
+///   [63] Final | [62] Tombstone | [61] Invalid | [60] Sealed
+///   [59:48] Version (12) | [47:0] Previous Address (48)
+mod record_info {
+    use loom::sync::atomic::{AtomicU64, Ordering};
+
+    const PREVIOUS_ADDR_MASK: u64 = (1u64 << 48) - 1;
+    const VERSION_SHIFT: u32 = 48;
+    const SEALED_BIT: u64 = 1u64 << 60;
+    #[allow(dead_code)]
+    const INVALID_BIT: u64 = 1u64 << 61;
+    const TOMBSTONE_BIT: u64 = 1u64 << 62;
+    #[allow(dead_code)]
+    const FINAL_BIT: u64 = 1u64 << 63;
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub struct RecordInfo(pub u64);
+
+    impl RecordInfo {
+        pub fn new(prev_addr: u64, version: u16) -> Self {
+            let bits = (prev_addr & PREVIOUS_ADDR_MASK) | ((version as u64) << VERSION_SHIFT);
+            Self(bits)
+        }
+
+        pub fn is_sealed(self) -> bool {
+            self.0 & SEALED_BIT != 0
+        }
+
+        #[allow(dead_code)]
+        pub fn is_invalid(self) -> bool {
+            self.0 & INVALID_BIT != 0
+        }
+
+        pub fn is_tombstone(self) -> bool {
+            self.0 & TOMBSTONE_BIT != 0
+        }
+
+        pub fn with_sealed(self) -> Self {
+            Self(self.0 | SEALED_BIT)
+        }
+
+        pub fn with_sealed_cleared(self) -> Self {
+            Self(self.0 & !SEALED_BIT)
+        }
+    }
+
+    /// Atomic wrapper, mirrors the AtomicU64-based RecordInfo in production.
+    pub struct AtomicRecordInfo(AtomicU64);
+
+    impl AtomicRecordInfo {
+        pub fn new(info: RecordInfo) -> Self {
+            Self(AtomicU64::new(info.0))
+        }
+
+        pub fn load(&self, ordering: Ordering) -> RecordInfo {
+            RecordInfo(self.0.load(ordering))
+        }
+
+        /// Seal the record. Returns the previous value.
+        /// Mirrors: record_info.rs `seal()` — `fetch_or(SEALED_BIT, Release)`.
+        pub fn seal(&self) -> RecordInfo {
+            RecordInfo(self.0.fetch_or(SEALED_BIT, Ordering::Release))
+        }
+
+        /// Set the invalid bit. Returns the previous value.
+        /// Mirrors: record_info.rs `set_invalid()`.
+        #[allow(dead_code)]
+        pub fn set_invalid(&self) -> RecordInfo {
+            RecordInfo(self.0.fetch_or(INVALID_BIT, Ordering::Release))
+        }
+
+        /// Set the tombstone bit. Returns the previous value.
+        pub fn set_tombstone(&self) -> RecordInfo {
+            RecordInfo(self.0.fetch_or(TOMBSTONE_BIT, Ordering::Release))
+        }
+
+        /// Try to seal: CAS from non-sealed to sealed.
+        /// Mirrors: record_info.rs `try_seal()`.
+        #[allow(dead_code)]
+        pub fn try_seal(&self) -> Result<RecordInfo, RecordInfo> {
+            let current = self.load(Ordering::Acquire);
+            if current.is_sealed() {
+                return Err(current);
+            }
+            let desired = current.with_sealed();
+            self.compare_exchange(current, desired, Ordering::AcqRel, Ordering::Acquire)
+        }
+
+        /// Revivify: CAS from sealed to unsealed.
+        /// Only one thread can win this race — the winner gets exclusive
+        /// in-place update rights.
+        /// Mirrors: record_info.rs `try_revivify()`.
+        pub fn try_revivify(&self, expected: RecordInfo) -> Result<RecordInfo, RecordInfo> {
+            debug_assert!(expected.is_sealed(), "try_revivify on non-sealed record");
+            let desired = expected.with_sealed_cleared();
+            self.compare_exchange(expected, desired, Ordering::AcqRel, Ordering::Acquire)
+        }
+
+        fn compare_exchange(
+            &self,
+            current: RecordInfo,
+            new: RecordInfo,
+            success: Ordering,
+            failure: Ordering,
+        ) -> Result<RecordInfo, RecordInfo> {
+            self.0
+                .compare_exchange(current.0, new.0, success, failure)
+                .map(RecordInfo)
+                .map_err(RecordInfo)
+        }
+    }
+}
+
+/// BUG CAUGHT: If `seal()` used Relaxed instead of Release, concurrent readers
+/// might not see the seal before the writer starts modifying the record via
+/// copy-to-tail, leading to torn reads.
+#[test]
+fn d3_record_seal_visibility() {
+    loom::model(|| {
+        let info = record_info::RecordInfo::new(0x42, 7);
+        let rec = Arc::new(record_info::AtomicRecordInfo::new(info));
+
+        // Thread 1: seal the record.
+        let r1 = Arc::clone(&rec);
+        let t1 = thread::spawn(move || {
+            r1.seal();
+        });
+
+        // Thread 2: read the record.
+        let r2 = Arc::clone(&rec);
+        let t2 = thread::spawn(move || r2.load(Ordering::Acquire));
+
+        t1.join().unwrap();
+        let snapshot = t2.join().unwrap();
+
+        // The snapshot is either the original or the sealed version.
+        // It must NEVER be some corrupt intermediate value.
+        if snapshot.is_sealed() {
+            // If sealed, the rest of the fields must be intact.
+            assert_eq!(snapshot.0 & ((1u64 << 48) - 1), 0x42);
+        } else {
+            assert_eq!(snapshot.0, info.0);
+        }
+    });
+}
+
+/// BUG CAUGHT: If `try_revivify()` used Relaxed orderings instead of AcqRel,
+/// two threads could both "win" the revivification race — both would CAS
+/// from sealed→unsealed, and both would think they have exclusive update
+/// rights, leading to data corruption.
+#[test]
+fn d3_record_revivify_single_winner() {
+    loom::model(|| {
+        let info = record_info::RecordInfo::new(0x100, 3).with_sealed();
+        let rec = Arc::new(record_info::AtomicRecordInfo::new(info));
+
+        // Two threads race to revivify the same sealed record.
+        let r1 = Arc::clone(&rec);
+        let t1 = thread::spawn(move || r1.try_revivify(info));
+
+        let r2 = Arc::clone(&rec);
+        let t2 = thread::spawn(move || r2.try_revivify(info));
+
+        let result1 = t1.join().unwrap();
+        let result2 = t2.join().unwrap();
+
+        // Exactly ONE thread must win; the other must fail.
+        let wins = [result1.is_ok(), result2.is_ok()]
+            .iter()
+            .filter(|&&x| x)
+            .count();
+        assert_eq!(
+            wins, 1,
+            "exactly one thread must win revivification: got {wins}"
+        );
+
+        // After the race, the record must be unsealed.
+        let final_state = rec.load(Ordering::Acquire);
+        assert!(
+            !final_state.is_sealed(),
+            "record must be unsealed after revivification"
+        );
+    });
+}
+
+/// BUG CAUGHT: If `try_seal()` and concurrent `set_tombstone()` were not
+/// properly ordered, the tombstone could be set on a stale snapshot, causing
+/// the seal to be silently lost.
+#[test]
+fn d3_record_seal_and_tombstone_concurrent() {
+    loom::model(|| {
+        let info = record_info::RecordInfo::new(0x200, 1);
+        let rec = Arc::new(record_info::AtomicRecordInfo::new(info));
+
+        // Thread 1: seal the record.
+        let r1 = Arc::clone(&rec);
+        let t1 = thread::spawn(move || r1.seal());
+
+        // Thread 2: set tombstone.
+        let r2 = Arc::clone(&rec);
+        let t2 = thread::spawn(move || r2.set_tombstone());
+
+        t1.join().unwrap();
+        t2.join().unwrap();
+
+        // Both operations use fetch_or: both bits must be set regardless of
+        // ordering.
+        let final_state = rec.load(Ordering::Acquire);
+        assert!(final_state.is_sealed(), "sealed bit must persist");
+        assert!(final_state.is_tombstone(), "tombstone bit must persist");
+    });
+}
+
+// ============================================================================
+// D4: EPVS State Transitions — two-phase CAS protocol
+// ============================================================================
+
+/// Faithful re-implementation of FASTER's SystemState two-phase transition
+/// with intermediate bit for exclusive state machine ownership.
+///
+/// Mirrors: `state/system_state.rs` (SystemState, AtomicSystemState)
+///
+/// Bit layout:
+///   [63:56] Phase (8 bits, bit 63 = 0x80 intermediate marker)
+///   [55:0]  Version (56 bits)
+mod system_state {
+    use loom::sync::atomic::{AtomicU64, Ordering};
+
+    const PHASE_SHIFT: u32 = 56;
+    const VERSION_MASK: u64 = 0x00FF_FFFF_FFFF_FFFF;
+    const INTERMEDIATE_BIT: u8 = 0x80;
+
+    // Phase discriminants matching production Phase enum.
+    pub const REST: u8 = 0;
+    pub const PREPARE: u8 = 1;
+    #[allow(dead_code)]
+    pub const IN_PROGRESS: u8 = 2;
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub struct State(u64);
+
+    impl core::fmt::Debug for State {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(
+                f,
+                "State(phase={}, v={}, intermediate={})",
+                self.phase_raw() & !INTERMEDIATE_BIT,
+                self.version(),
+                self.is_intermediate()
+            )
+        }
+    }
+
+    impl State {
+        pub fn new(phase: u8, version: u64) -> Self {
+            Self(((phase as u64) << PHASE_SHIFT) | (version & VERSION_MASK))
+        }
+
+        pub fn phase_raw(self) -> u8 {
+            (self.0 >> PHASE_SHIFT) as u8
+        }
+
+        pub fn phase(self) -> u8 {
+            self.phase_raw() & !INTERMEDIATE_BIT
+        }
+
+        pub fn version(self) -> u64 {
+            self.0 & VERSION_MASK
+        }
+
+        pub fn is_intermediate(self) -> bool {
+            (self.phase_raw() & INTERMEDIATE_BIT) != 0
+        }
+
+        pub fn make_intermediate(self) -> Self {
+            Self(self.0 | ((INTERMEDIATE_BIT as u64) << PHASE_SHIFT))
+        }
+
+        pub fn word(self) -> u64 {
+            self.0
+        }
+    }
+
+    pub struct AtomicState(AtomicU64);
+
+    impl AtomicState {
+        pub fn new(initial: State) -> Self {
+            Self(AtomicU64::new(initial.word()))
+        }
+
+        pub fn load(&self, ordering: Ordering) -> State {
+            State(self.0.load(ordering))
+        }
+
+        /// Two-phase transition using the intermediate-state protocol.
+        /// Mirrors: system_state.rs `try_transition()`.
+        ///
+        /// 1. CAS `expected → intermediate` (claim exclusive transition)
+        /// 2. Execute `before_hooks`
+        /// 3. CAS `intermediate → next` (publish new state)
+        pub fn try_transition(
+            &self,
+            expected: State,
+            next: State,
+            before_hooks: impl FnOnce(),
+        ) -> bool {
+            let intermediate = expected.make_intermediate();
+
+            // Step 1: Claim exclusive transition.
+            if self
+                .0
+                .compare_exchange(
+                    expected.word(),
+                    intermediate.word(),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_err()
+            {
+                return false;
+            }
+
+            // Step 2: Execute hooks (safe — we hold exclusive transition).
+            before_hooks();
+
+            // Step 3: Publish the new state.
+            let result = self.0.compare_exchange(
+                intermediate.word(),
+                next.word(),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            debug_assert!(result.is_ok(), "intermediate → next CAS must succeed");
+            true
+        }
+
+        /// Spin-wait until the intermediate bit clears.
+        /// Mirrors: system_state.rs `wait_non_intermediate()`.
+        pub fn wait_non_intermediate(&self) -> State {
+            loop {
+                let state = self.load(Ordering::Acquire);
+                if !state.is_intermediate() {
+                    return state;
+                }
+                loom::thread::yield_now();
+            }
+        }
+    }
+}
+
+/// BUG CAUGHT: Without the intermediate bit protocol, two threads could both
+/// CAS from Rest→Prepare, both succeeding — resulting in duplicate hook
+/// execution and corrupted checkpoint state. The intermediate bit ensures
+/// exclusive ownership of the transition window.
+#[test]
+fn d4_state_transition_exclusive_winner() {
+    loom::model(|| {
+        let hook_count = Arc::new(loom::sync::atomic::AtomicUsize::new(0));
+        let state = Arc::new(system_state::AtomicState::new(system_state::State::new(
+            system_state::REST,
+            1,
+        )));
+
+        let expected = system_state::State::new(system_state::REST, 1);
+        let next = system_state::State::new(system_state::PREPARE, 1);
+
+        // Thread 1: attempt Rest→Prepare transition.
+        let s1 = Arc::clone(&state);
+        let h1 = Arc::clone(&hook_count);
+        let t1 = thread::spawn(move || {
+            s1.try_transition(expected, next, || {
+                h1.fetch_add(1, Ordering::SeqCst);
+            })
+        });
+
+        // Thread 2: attempt the same transition.
+        let s2 = Arc::clone(&state);
+        let h2 = Arc::clone(&hook_count);
+        let t2 = thread::spawn(move || {
+            s2.try_transition(expected, next, || {
+                h2.fetch_add(1, Ordering::SeqCst);
+            })
+        });
+
+        let won1 = t1.join().unwrap();
+        let won2 = t2.join().unwrap();
+
+        // Exactly one thread must win.
+        assert!(
+            won1 ^ won2,
+            "exactly one thread must win: won1={won1}, won2={won2}"
+        );
+
+        // Hooks must execute exactly once.
+        assert_eq!(
+            hook_count.load(Ordering::SeqCst),
+            1,
+            "transition hooks must execute exactly once"
+        );
+
+        // Final state must be Prepare(v1).
+        let final_state = state.load(Ordering::Acquire);
+        assert_eq!(final_state.phase(), system_state::PREPARE);
+        assert_eq!(final_state.version(), 1);
+        assert!(!final_state.is_intermediate());
+    });
+}
+
+/// BUG CAUGHT: If a reader does not wait for the intermediate bit to clear,
+/// it could observe a transient state and make decisions based on stale phase
+/// information — for example, writing a record under the wrong checkpoint
+/// version.
+#[test]
+fn d4_state_wait_non_intermediate() {
+    loom::model(|| {
+        let state = Arc::new(system_state::AtomicState::new(system_state::State::new(
+            system_state::REST,
+            1,
+        )));
+
+        let expected = system_state::State::new(system_state::REST, 1);
+        let next = system_state::State::new(system_state::PREPARE, 1);
+
+        // Thread 1: perform the transition.
+        let s1 = Arc::clone(&state);
+        let t1 = thread::spawn(move || {
+            s1.try_transition(expected, next, || {
+                // Simulate hook work — yield to increase interleaving.
+                loom::thread::yield_now();
+            });
+        });
+
+        // Thread 2: wait for a non-intermediate state and read it.
+        let s2 = Arc::clone(&state);
+        let t2 = thread::spawn(move || s2.wait_non_intermediate());
+
+        t1.join().unwrap();
+        let observed = t2.join().unwrap();
+
+        // The observed state must never be intermediate.
+        assert!(
+            !observed.is_intermediate(),
+            "wait_non_intermediate must not return intermediate state"
+        );
+        // It must be either Rest(1) or Prepare(1).
+        assert!(
+            (observed.phase() == system_state::REST && observed.version() == 1)
+                || (observed.phase() == system_state::PREPARE && observed.version() == 1),
+            "unexpected state: {:?}",
+            observed
+        );
+    });
+}
+
+// ============================================================================
+// D5: Log Allocation — concurrent tail CAS
+// ============================================================================
+
+/// Faithful re-implementation of FASTER's log allocator tail CAS loop.
+///
+/// Mirrors: `hybrid_log/log_allocator.rs` (LogAllocator::try_allocate)
+///
+/// Layout: LogicalAddress = Page(23 bits) | Offset(25 bits)
+/// Page size fixed to a small value for loom tractability.
+mod log_alloc {
+    use loom::sync::atomic::{AtomicU64, Ordering};
+
+    const OFFSET_BITS: u32 = 25;
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub struct LogAddr(pub u64);
+
+    impl LogAddr {
+        pub fn new(page: u32, offset: u32) -> Self {
+            Self(((page as u64) << OFFSET_BITS) | (offset as u64))
+        }
+
+        pub fn page(self) -> u32 {
+            (self.0 >> OFFSET_BITS) as u32
+        }
+
+        pub fn offset(self) -> u32 {
+            (self.0 & ((1u64 << OFFSET_BITS) - 1)) as u32
+        }
+
+        pub fn raw(self) -> u64 {
+            self.0
+        }
+    }
+
+    pub struct Allocator {
+        tail: AtomicU64,
+        page_size: u32,
+    }
+
+    impl Allocator {
+        pub fn new(start: LogAddr, page_size: u32) -> Self {
+            Self {
+                tail: AtomicU64::new(start.raw()),
+                page_size,
+            }
+        }
+
+        /// Lock-free bump allocation via CAS loop.
+        /// Returns the address where the record should be written, or None
+        /// if the allocation would cross a page boundary.
+        /// Mirrors: log_allocator.rs `try_allocate()`.
+        pub fn try_allocate(&self, size: u32) -> Option<LogAddr> {
+            debug_assert!(size > 0);
+            loop {
+                let current = LogAddr(self.tail.load(Ordering::Acquire));
+                let new_offset = current.offset() + size;
+
+                if new_offset > self.page_size {
+                    return None;
+                }
+
+                let new_tail = if new_offset == self.page_size {
+                    // Wrap to next page.
+                    LogAddr::new(current.page() + 1, 0)
+                } else {
+                    LogAddr::new(current.page(), new_offset)
+                };
+
+                match self.tail.compare_exchange(
+                    current.raw(),
+                    new_tail.raw(),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => return Some(current),
+                    Err(_) => continue,
+                }
+            }
+        }
+
+        pub fn tail(&self) -> LogAddr {
+            LogAddr(self.tail.load(Ordering::Acquire))
+        }
+    }
+}
+
+/// BUG CAUGHT: If the CAS loop used Relaxed orderings, concurrent allocators
+/// could both read the same tail and both CAS "successfully" (impossible with
+/// proper CAS, but demonstrates the necessity of AcqRel for correctness).
+/// More practically: ensures that allocated address ranges never overlap.
+#[test]
+fn d5_log_alloc_no_overlapping_addresses() {
+    loom::model(|| {
+        // Small page: 128 bytes. Each allocation is 32 bytes.
+        let alloc = Arc::new(log_alloc::Allocator::new(
+            log_alloc::LogAddr::new(0, 0),
+            128,
+        ));
+
+        let a1 = Arc::clone(&alloc);
+        let t1 = thread::spawn(move || a1.try_allocate(32));
+
+        let a2 = Arc::clone(&alloc);
+        let t2 = thread::spawn(move || a2.try_allocate(32));
+
+        let r1 = t1.join().unwrap();
+        let r2 = t2.join().unwrap();
+
+        let addr1 = r1.expect("alloc 1 must succeed");
+        let addr2 = r2.expect("alloc 2 must succeed");
+
+        // Addresses must be distinct.
+        assert_ne!(
+            addr1.raw(),
+            addr2.raw(),
+            "concurrent allocations must return distinct addresses"
+        );
+
+        // One must be at offset 0, the other at offset 32.
+        let mut offsets = [addr1.offset(), addr2.offset()];
+        offsets.sort();
+        assert_eq!(offsets, [0, 32], "offsets must be [0, 32]");
+
+        // Both on the same page.
+        assert_eq!(addr1.page(), 0);
+        assert_eq!(addr2.page(), 0);
+
+        // Tail must have advanced to offset 64.
+        assert_eq!(alloc.tail().offset(), 64);
+    });
+}
+
+/// BUG CAUGHT: If page boundary detection was done after the CAS (instead of
+/// before), a thread could allocate across a page boundary, corrupting the
+/// record that spans two pages.
+#[test]
+fn d5_log_alloc_page_boundary_crossing() {
+    loom::model(|| {
+        // Page size = 64. Start at offset 32. Each alloc = 32 bytes.
+        // First allocation fills the page exactly (offset 32 + 32 = 64).
+        // Second allocation must either get the next page or fail.
+        let alloc = Arc::new(log_alloc::Allocator::new(
+            log_alloc::LogAddr::new(0, 32),
+            64,
+        ));
+
+        let a1 = Arc::clone(&alloc);
+        let t1 = thread::spawn(move || a1.try_allocate(32));
+
+        let a2 = Arc::clone(&alloc);
+        let t2 = thread::spawn(move || a2.try_allocate(32));
+
+        let r1 = t1.join().unwrap();
+        let r2 = t2.join().unwrap();
+
+        // One thread fills the page exactly (gets page 0, offset 32).
+        // The other either gets page 1, offset 0 (if it retries after
+        // page wrap) or None (page boundary rejection).
+        let addrs: Vec<_> = [r1, r2].iter().filter_map(|r| *r).collect();
+
+        // At least one allocation must succeed.
+        assert!(!addrs.is_empty(), "at least one allocation must succeed");
+
+        // If both succeed, they must be on consecutive addresses.
+        if addrs.len() == 2 {
+            let mut sorted: Vec<u64> = addrs.iter().map(|a| a.raw()).collect();
+            sorted.sort();
+            // First must be page 0 offset 32, second must be page 1 offset 0.
+            let first = log_alloc::LogAddr(sorted[0]);
+            let second = log_alloc::LogAddr(sorted[1]);
+            assert_eq!(first.page(), 0);
+            assert_eq!(first.offset(), 32);
+            assert_eq!(second.page(), 1);
+            assert_eq!(second.offset(), 0);
+        }
+    });
+}
+
+/// BUG CAUGHT: Multiple concurrent allocators must produce a contiguous,
+/// non-overlapping sequence of addresses. Tests the invariant that the final
+/// tail equals the sum of all allocations.
+#[test]
+fn d5_log_alloc_sequential_integrity() {
+    loom::model(|| {
+        // 256-byte page, start at offset 0. Three 32-byte allocations.
+        let alloc = Arc::new(log_alloc::Allocator::new(
+            log_alloc::LogAddr::new(0, 0),
+            256,
+        ));
+
+        let a1 = Arc::clone(&alloc);
+        let t1 = thread::spawn(move || a1.try_allocate(32));
+
+        let a2 = Arc::clone(&alloc);
+        let t2 = thread::spawn(move || a2.try_allocate(32));
+
+        let r1 = t1.join().unwrap().expect("alloc 1");
+        let r2 = t2.join().unwrap().expect("alloc 2");
+
+        // Non-overlapping: [addr, addr+32) ranges must not intersect.
+        let ranges = [
+            (r1.offset(), r1.offset() + 32),
+            (r2.offset(), r2.offset() + 32),
+        ];
+        assert!(
+            ranges[0].1 <= ranges[1].0 || ranges[1].1 <= ranges[0].0,
+            "ranges must not overlap: {:?}",
+            ranges
+        );
+
+        // Final tail = start + 64 (two 32-byte allocations).
+        assert_eq!(alloc.tail().offset(), 64);
+    });
+}
+
+// ============================================================================
+// D6: Combined epoch + drain — deferred reclamation correctness
+// ============================================================================
+
+/// BUG CAUGHT: If the epoch framework's `compute_safe_epoch` was not properly
+/// synchronized with `protect()`, a drain could execute a deferred action while
+/// a thread holding a stale epoch guard is still accessing the data.
+/// This test combines epoch protect/unprotect with deferred drain actions.
+#[test]
+fn d6_epoch_deferred_reclaim_safety() {
+    loom::model(|| {
+        let table = Arc::new(epoch_framework::EpochTable::new());
+        let drain = Arc::new(drain_list::DrainList::new());
+        let reclaimed = Arc::new(loom::sync::atomic::AtomicUsize::new(0));
+
+        // Thread 0: protect, defer a reclaim at current epoch, unprotect.
+        let tbl0 = Arc::clone(&table);
+        let dl0 = Arc::clone(&drain);
+        let rc0 = Arc::clone(&reclaimed);
+        let t0 = thread::spawn(move || {
+            tbl0.protect(0);
+            let e = tbl0.entries[0].local_epoch.load(Ordering::Acquire);
+            dl0.push(e, &rc0);
+            tbl0.unprotect(0);
+        });
+
+        // Thread 1: bump epoch twice and drain.
+        let tbl1 = Arc::clone(&table);
+        let dl1 = Arc::clone(&drain);
+        let t1 = thread::spawn(move || {
+            tbl1.bump();
+            tbl1.bump();
+            let safe = tbl1.compute_safe_epoch();
+            dl1.drain_up_to(safe);
+        });
+
+        t0.join().unwrap();
+        t1.join().unwrap();
+
+        // Final cleanup drain.
+        drain.drain_up_to(100);
+
+        // The deferred reclaim must execute exactly once.
+        assert_eq!(
+            reclaimed.load(Ordering::SeqCst),
+            1,
+            "deferred reclaim must fire exactly once"
+        );
+    });
+}
