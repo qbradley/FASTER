@@ -368,6 +368,16 @@ impl Device for TokioFileDevice {
 
         let registry = Arc::clone(&self.registry);
         let segment_size = self.segment_size;
+
+        // TOKIO-01: The raw-pointer-to-usize cast below is the core of the
+        // temporal-safety argument for spawn_blocking. The Device trait
+        // contract requires that `dest` and `context` remain valid until
+        // the completion callback fires. Because the callback is invoked
+        // *inside* the spawn_blocking closure (before it returns), the
+        // pointers cannot be invalidated during the window.
+        debug_assert!(!dest.is_null(), "read_async: dest pointer is null");
+        debug_assert!(!context.is_null(), "read_async: context pointer is null");
+
         // Cast raw pointers to usize so the closure is Send
         // (raw pointers are !Send, usize is Send).
         let dest_addr = dest as usize;
@@ -412,6 +422,11 @@ impl Device for TokioFileDevice {
 
         let registry = Arc::clone(&self.registry);
         let segment_size = self.segment_size;
+
+        // TOKIO-01: Same temporal-safety argument as read_async above.
+        debug_assert!(!source.is_null(), "write_async: source pointer is null");
+        debug_assert!(!context.is_null(), "write_async: context pointer is null");
+
         // Cast raw pointers to usize so the closure is Send.
         let src_addr = source as usize;
         let ctx_addr = context as usize;
