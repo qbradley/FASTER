@@ -50,3 +50,7 @@ harness = false
 [[bench]]
 name = "ycsb"
 harness = false
+
+[[bench]]
+name = "hash_layout_bench"
+harness = false
