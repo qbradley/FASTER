@@ -214,3 +214,26 @@
 - **Shared working directory hazard**: Multiple agents modify the same files concurrently. `git checkout -- <file>` restores to HEAD and wipes ALL uncommitted changes including yours. Always stage + commit immediately after editing.
 - **Atomic commit workflow**: In a multi-agent environment, the only safe workflow is: edit → stage → commit in rapid succession. Never leave changes unstaged.
 - **Unicode in Python string matching**: Box-drawing characters (──) and em-dashes (—) match fine when using proper Python Unicode escapes (\u2500, \u2014), not raw byte sequences.
+
+---
+
+## 2026-03-07: Wave 3 Comprehensive Benchmarking Suite
+
+**What:** Merged all Wave 2 feature branches (hash-prefetch, sealed-bit, ffi-callbacks) into squad and ran full YCSB + disk I/O benchmark matrix.
+
+**Key Results:**
+- **A/F regressions recovered:** Workload A 16T: 40.93M → 47.47M (+16.0%), Workload F 16T: 43.70M → 48.03M (+9.9%)
+- **Workload C new peak:** 45.98M → 49.17M (+6.9%) at 16T, total +114.5% from pre-epoch baseline (22.93M)
+- **C# gap narrowing:** Workload C gap vs C# narrowed from -60% (pre-epoch) → -19.6% (epoch-fix) → -14.0% (Wave 3)
+- **Hash prefetch impact:** +6-7% throughput on reads, +39% P99.9 latency improvement. Below predicted 20-40% — prefetch distance tuning needed.
+- **Disk I/O baseline:** All workloads in-memory (0% pending rate) on this 32GB VM. Need more keys or less buffer for true disk benchmarks.
+
+**Artifacts:**
+- Wave 3 results: `.squad/agents/legolas/wave3-benchmark-results.md`
+- CSV: `/tmp/wave3-ycsb-results.csv`
+
+**Optimization Priorities (updated):**
+1. Two-level prefetching (hash bucket + record) — expected +10-20%
+2. Hash table layout optimization (open addressing) — expected +15-30%
+3. Per-thread log tail allocation — expected +5-10% writes
+4. True disk-bound benchmarks with 100M+ keys
