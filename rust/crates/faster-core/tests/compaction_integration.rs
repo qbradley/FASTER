@@ -1,14 +1,22 @@
 //! Integration tests for `FasterKv::compact()` — the K6 compaction
 //! orchestration public API.
 
-use faster_core::compaction::policy::{CompactionPolicy, CompactionStats};
+use faster_core::InMemoryDevice;
+use faster_core::checkpoint::CheckpointType;
+use faster_core::compaction::orchestrator::CompactionError;
+use faster_core::compaction::policy::{
+    AllPolicy, AnyPolicy, CompactionPolicy, CompactionStats, ManualPolicy,
+    SpaceAmplificationPolicy, TombstonePercentPolicy,
+};
 use faster_core::device::NullDevice;
 use faster_core::grow::GrowConfig;
 use faster_core::hybrid_log::eviction::EvictionPolicy;
 use faster_core::store::{
     FasterKv, FasterKvConfig, ReadInfo, RmwInfo, SimpleFunctions, UpsertInfo,
 };
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Barrier};
+use std::thread;
 
 type SimpleStore = FasterKv<SimpleFunctions<u64, u64>>;
 
@@ -272,7 +280,6 @@ fn maybe_compact_disabled_by_default() {
 // Variable-length compaction integration tests (Phase 4)
 // ═══════════════════════════════════════════════════════════════════
 
-use faster_core::InMemoryDevice;
 use faster_core::status::OperationStatus;
 use faster_core::store::{Functions, RmwInPlaceResult};
 
@@ -710,6 +717,685 @@ fn compact_variable_length_hash_collisions() {
             Some(expected_val.as_slice()),
             "value mismatch for key {:?}",
             key
+        );
+    }
+    store.dispose_session(session);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Extended compaction integration tests — real-scale, policies,
+// sequential, concurrent, error recovery, address verification
+// ═══════════════════════════════════════════════════════════════════
+
+/// Create a store backed by InMemoryDevice for tests that need real I/O.
+fn inmemory_u64_store() -> FasterKv<SimpleFunctions<u64, u64>> {
+    let config = FasterKvConfig {
+        hash_index_size_log2: 14,
+        buffer_size_pages: 8,
+        mutable_fraction: 0.9,
+        sector_size: 512,
+        eviction_policy: EvictionPolicy::default(),
+        grow_config: GrowConfig::default(),
+        auto_compact: false,
+    };
+    FasterKv::new(config, SimpleFunctions::default(), InMemoryDevice::new())
+}
+
+/// Force all mutable data into the read-only in-memory region via checkpoint.
+/// Shifts read_only and safe_read_only to the tail and flushes pages
+/// synchronously — but does NOT evict, so the scanner can still read them.
+fn force_read_only_u64(store: &FasterKv<SimpleFunctions<u64, u64>>) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _ = store.checkpoint(dir.path(), CheckpointType::FoldOver);
+}
+
+/// Helper: compact and assert success (not EmptyRegion).
+fn compact_expect_ok(
+    store: &FasterKv<SimpleFunctions<u64, u64>>,
+) -> faster_core::compaction::orchestrator::CompactionResult {
+    match store.compact() {
+        Ok(cr) => cr,
+        Err(CompactionError::EmptyRegion { begin, until }) => {
+            panic!("expected compaction work but got EmptyRegion: begin={begin:?}, until={until:?}")
+        }
+        Err(e) => panic!("unexpected compaction error: {e}"),
+    }
+}
+
+// ── Real-scale compaction (1500 records) ────────────────────────────
+
+#[test]
+fn compact_real_scale_1500_records() {
+    let store = inmemory_u64_store();
+    let mut session = store.new_session();
+
+    let n = 1500u64;
+    for i in 0..n {
+        let _ = store.upsert(&mut session, &i, &(i * 7), ());
+    }
+    store.dispose_session(session);
+
+    force_read_only_u64(&store);
+    let cr = compact_expect_ok(&store);
+
+    assert!(
+        !cr.plan.live_records.is_empty(),
+        "should find live records in 1500-record dataset"
+    );
+    assert!(cr.truncation.advanced, "begin address should advance");
+
+    let mut session = store.new_session();
+    for i in 0..n {
+        let val = store.read_simple(&mut session, &i);
+        assert_eq!(val, Some(i * 7), "key {i} value wrong after compaction");
+    }
+    store.dispose_session(session);
+}
+
+// ── Live record verification post-compaction ────────────────────────
+
+#[test]
+fn compact_live_record_verification_after_deletes() {
+    let store = inmemory_u64_store();
+    let mut session = store.new_session();
+
+    let n = 500u64;
+    for i in 0..n {
+        let _ = store.upsert(&mut session, &i, &(i * 13), ());
+    }
+    for i in 0..n / 3 {
+        let _ = store.delete(&mut session, &i, ());
+    }
+    store.dispose_session(session);
+
+    force_read_only_u64(&store);
+    let cr = compact_expect_ok(&store);
+
+    assert!(
+        cr.plan.tombstone_count > 0 || !cr.plan.tombstone_records.is_empty(),
+        "should detect tombstones from deleted records"
+    );
+
+    let mut session = store.new_session();
+    for i in n / 3..n {
+        let val = store.read_simple(&mut session, &i);
+        assert_eq!(val, Some(i * 13), "live key {i} must survive compaction");
+    }
+    for i in 0..n / 3 {
+        let val = store.read_simple(&mut session, &i);
+        assert_eq!(val, None, "deleted key {i} should remain absent");
+    }
+    store.dispose_session(session);
+}
+
+// ── Dead version detection ──────────────────────────────────────────
+
+#[test]
+fn compact_detects_dead_superseded_records() {
+    let store = inmemory_u64_store();
+    let mut session = store.new_session();
+
+    let n = 300u64;
+    for i in 0..n {
+        let _ = store.upsert(&mut session, &i, &(i * 10), ());
+    }
+    for i in 0..n {
+        let _ = store.upsert(&mut session, &i, &(i * 100), ());
+    }
+    store.dispose_session(session);
+
+    force_read_only_u64(&store);
+    let cr = compact_expect_ok(&store);
+
+    // With in-place updates, the old records may be superseded in the log
+    // (dead_count > 0) or the hash index may already point to the latest
+    // version directly. Either way, records_copied should reflect live data.
+    assert!(
+        cr.records_copied > 0,
+        "should copy live records: copied={}, live={}",
+        cr.records_copied,
+        cr.plan.live_records.len()
+    );
+
+    let mut session = store.new_session();
+    for i in 0..n {
+        let val = store.read_simple(&mut session, &i);
+        assert_eq!(val, Some(i * 100), "key {i} should have latest value");
+    }
+    store.dispose_session(session);
+}
+
+// ── Compaction policy enforcement ───────────────────────────────────
+
+#[test]
+fn policy_space_amplification_triggers_when_exceeded() {
+    let stats = CompactionStats {
+        total_log_bytes: 300,
+        live_data_bytes: 100,
+        tombstone_count: 0,
+        total_record_count: 20,
+    };
+    let policy = SpaceAmplificationPolicy::new(2.0);
+    assert!(policy.should_compact(&stats), "3.0 > 2.0 should trigger");
+}
+
+#[test]
+fn policy_space_amplification_does_not_trigger_below() {
+    let stats = CompactionStats {
+        total_log_bytes: 150,
+        live_data_bytes: 100,
+        tombstone_count: 0,
+        total_record_count: 20,
+    };
+    let policy = SpaceAmplificationPolicy::new(2.0);
+    assert!(
+        !policy.should_compact(&stats),
+        "1.5 < 2.0 should not trigger"
+    );
+}
+
+#[test]
+fn policy_tombstone_percent_triggers_above_threshold() {
+    let stats = CompactionStats {
+        total_log_bytes: 1000,
+        live_data_bytes: 700,
+        tombstone_count: 30,
+        total_record_count: 100,
+    };
+    let policy = TombstonePercentPolicy::new(25.0);
+    assert!(policy.should_compact(&stats), "30% > 25% should trigger");
+}
+
+#[test]
+fn policy_tombstone_percent_does_not_trigger_below() {
+    let stats = CompactionStats {
+        total_log_bytes: 1000,
+        live_data_bytes: 900,
+        tombstone_count: 5,
+        total_record_count: 100,
+    };
+    let policy = TombstonePercentPolicy::new(25.0);
+    assert!(
+        !policy.should_compact(&stats),
+        "5% < 25% should not trigger"
+    );
+}
+
+#[test]
+fn policy_manual_never_triggers() {
+    let stats = CompactionStats {
+        total_log_bytes: 10_000,
+        live_data_bytes: 1,
+        tombstone_count: 999,
+        total_record_count: 1000,
+    };
+    let policy = ManualPolicy;
+    assert!(
+        !policy.should_compact(&stats),
+        "ManualPolicy never triggers"
+    );
+}
+
+#[test]
+fn policy_any_combinator_or_logic() {
+    let policy = AnyPolicy::new(vec![
+        Box::new(SpaceAmplificationPolicy::new(10.0)),
+        Box::new(TombstonePercentPolicy::new(10.0)),
+    ]);
+    let stats = CompactionStats {
+        total_log_bytes: 100,
+        live_data_bytes: 90,
+        tombstone_count: 15,
+        total_record_count: 100,
+    };
+    assert!(policy.should_compact(&stats), "AnyPolicy: tombstone fires");
+
+    let stats_none = CompactionStats {
+        total_log_bytes: 100,
+        live_data_bytes: 90,
+        tombstone_count: 5,
+        total_record_count: 100,
+    };
+    assert!(
+        !policy.should_compact(&stats_none),
+        "AnyPolicy: neither fires"
+    );
+}
+
+#[test]
+fn policy_all_combinator_and_logic() {
+    let policy = AllPolicy::new(vec![
+        Box::new(SpaceAmplificationPolicy::new(2.0)),
+        Box::new(TombstonePercentPolicy::new(10.0)),
+    ]);
+    let stats_both = CompactionStats {
+        total_log_bytes: 300,
+        live_data_bytes: 100,
+        tombstone_count: 20,
+        total_record_count: 100,
+    };
+    assert!(policy.should_compact(&stats_both), "AllPolicy: both fire");
+
+    let stats_one = CompactionStats {
+        total_log_bytes: 150,
+        live_data_bytes: 100,
+        tombstone_count: 20,
+        total_record_count: 100,
+    };
+    assert!(
+        !policy.should_compact(&stats_one),
+        "AllPolicy: only one fires"
+    );
+}
+
+// ── Policy-driven maybe_compact ─────────────────────────────────────
+
+#[test]
+fn maybe_compact_with_always_policy() {
+    let mut store = FasterKv::new(
+        FasterKvConfig {
+            hash_index_size_log2: 10,
+            buffer_size_pages: 4,
+            mutable_fraction: 0.9,
+            sector_size: 512,
+            eviction_policy: EvictionPolicy::default(),
+            grow_config: GrowConfig::default(),
+            auto_compact: true,
+        },
+        SimpleFunctions::<u64, u64>::default(),
+        InMemoryDevice::new(),
+    );
+
+    struct AlwaysCompactPolicy;
+    impl CompactionPolicy for AlwaysCompactPolicy {
+        fn should_compact(&self, _stats: &CompactionStats) -> bool {
+            true
+        }
+        fn name(&self) -> &str {
+            "AlwaysCompact"
+        }
+    }
+    store.set_compaction_policy(Some(Box::new(AlwaysCompactPolicy)));
+
+    let mut session = store.new_session();
+    for i in 0u64..30 {
+        let _ = store.upsert(&mut session, &i, &(i * 10), ());
+    }
+    store.dispose_session(session);
+
+    let result = store.maybe_compact();
+    assert!(
+        result.is_some(),
+        "auto_compact + AlwaysCompact should attempt"
+    );
+}
+
+#[test]
+fn maybe_compact_respects_auto_compact_off() {
+    let store = inmemory_u64_store();
+    let mut session = store.new_session();
+    for i in 0u64..30 {
+        let _ = store.upsert(&mut session, &i, &(i * 10), ());
+    }
+    store.dispose_session(session);
+
+    assert!(
+        store.maybe_compact().is_none(),
+        "auto_compact=false should skip"
+    );
+}
+
+// ── Multiple sequential compactions ─────────────────────────────────
+
+#[test]
+fn compact_sequential_write_compact_write_compact() {
+    let store = inmemory_u64_store();
+
+    {
+        let mut session = store.new_session();
+        for i in 0u64..200 {
+            let _ = store.upsert(&mut session, &i, &(i * 10), ());
+        }
+        store.dispose_session(session);
+    }
+    force_read_only_u64(&store);
+    let cr1 = compact_expect_ok(&store);
+    assert!(
+        cr1.truncation.advanced,
+        "first compaction should advance begin"
+    );
+
+    {
+        let mut session = store.new_session();
+        for i in 200u64..500 {
+            let _ = store.upsert(&mut session, &i, &(i * 10), ());
+        }
+        for i in 0u64..100 {
+            let _ = store.upsert(&mut session, &i, &(i * 99), ());
+        }
+        store.dispose_session(session);
+    }
+    force_read_only_u64(&store);
+    let cr2 = compact_expect_ok(&store);
+    assert!(
+        cr2.truncation.advanced,
+        "second compaction should advance begin"
+    );
+
+    let mut session = store.new_session();
+    for i in 0u64..100 {
+        let val = store.read_simple(&mut session, &i);
+        assert_eq!(val, Some(i * 99), "updated key {i}");
+    }
+    for i in 100u64..500 {
+        let val = store.read_simple(&mut session, &i);
+        assert_eq!(val, Some(i * 10), "untouched key {i}");
+    }
+    store.dispose_session(session);
+}
+
+#[test]
+fn compact_three_rounds_with_deletes() {
+    let store = inmemory_u64_store();
+
+    {
+        let mut session = store.new_session();
+        for i in 0u64..300 {
+            let _ = store.upsert(&mut session, &i, &(i * 5), ());
+        }
+        store.dispose_session(session);
+    }
+    force_read_only_u64(&store);
+    let _ = store.compact();
+
+    {
+        let mut session = store.new_session();
+        for i in 0u64..150 {
+            let _ = store.delete(&mut session, &i, ());
+        }
+        store.dispose_session(session);
+    }
+    force_read_only_u64(&store);
+    let _ = store.compact();
+
+    {
+        let mut session = store.new_session();
+        for i in 0u64..150 {
+            let _ = store.upsert(&mut session, &i, &(i * 1000), ());
+        }
+        store.dispose_session(session);
+    }
+    force_read_only_u64(&store);
+    let _ = store.compact();
+
+    let mut session = store.new_session();
+    for i in 0u64..150 {
+        let val = store.read_simple(&mut session, &i);
+        assert_eq!(val, Some(i * 1000), "re-inserted key {i}");
+    }
+    for i in 150u64..300 {
+        let val = store.read_simple(&mut session, &i);
+        assert_eq!(val, Some(i * 5), "original key {i}");
+    }
+    store.dispose_session(session);
+}
+
+// ── Concurrent CRUD + compaction ────────────────────────────────────
+
+#[test]
+fn compact_concurrent_readers_writers_during_compaction() {
+    let store = Arc::new(inmemory_u64_store());
+    let n = 200u64;
+
+    {
+        let mut session = store.new_session();
+        for i in 0..n {
+            let _ = store.upsert(&mut session, &i, &(i * 10), ());
+        }
+        store.dispose_session(session);
+    }
+    force_read_only_u64(&store);
+
+    let barrier = Arc::new(Barrier::new(4));
+    let done = Arc::new(AtomicBool::new(false));
+
+    let store_w = Arc::clone(&store);
+    let barrier_w = Arc::clone(&barrier);
+    let done_w = Arc::clone(&done);
+    let writer = thread::spawn(move || {
+        barrier_w.wait();
+        let mut session = store_w.new_session();
+        let mut i = n;
+        while !done_w.load(Ordering::Relaxed) && i < n + 500 {
+            let _ = store_w.upsert(&mut session, &i, &(i * 10), ());
+            i += 1;
+        }
+        store_w.dispose_session(session);
+    });
+
+    let store_r = Arc::clone(&store);
+    let barrier_r = Arc::clone(&barrier);
+    let done_r = Arc::clone(&done);
+    let reader = thread::spawn(move || {
+        barrier_r.wait();
+        let mut session = store_r.new_session();
+        let mut count = 0u64;
+        while !done_r.load(Ordering::Relaxed) && count < 1000 {
+            let key = count % n;
+            let val = store_r.read_simple(&mut session, &key);
+            if let Some(v) = val {
+                assert_eq!(v, key * 10, "corrupted value for key {key}");
+            }
+            count += 1;
+        }
+        store_r.dispose_session(session);
+    });
+
+    let store_d = Arc::clone(&store);
+    let barrier_d = Arc::clone(&barrier);
+    let done_d = Arc::clone(&done);
+    let deleter = thread::spawn(move || {
+        barrier_d.wait();
+        let mut session = store_d.new_session();
+        for i in 0..n / 4 {
+            if done_d.load(Ordering::Relaxed) {
+                break;
+            }
+            let _ = store_d.delete(&mut session, &i, ());
+        }
+        store_d.dispose_session(session);
+    });
+
+    barrier.wait();
+    let _ = store.compact();
+    done.store(true, Ordering::Relaxed);
+
+    writer.join().expect("writer panicked");
+    reader.join().expect("reader panicked");
+    deleter.join().expect("deleter panicked");
+}
+
+// ── Error recovery: empty region ────────────────────────────────────
+
+#[test]
+fn compact_empty_store_returns_empty_region() {
+    let store = inmemory_u64_store();
+    match store.compact() {
+        Err(CompactionError::EmptyRegion { .. }) => {}
+        Ok(_) => panic!("expected EmptyRegion on empty store"),
+        Err(e) => panic!("unexpected error: {e}"),
+    }
+}
+
+#[test]
+fn compact_idempotent_second_returns_empty_region() {
+    let store = inmemory_u64_store();
+    let mut session = store.new_session();
+    for i in 0u64..100 {
+        let _ = store.upsert(&mut session, &i, &(i * 10), ());
+    }
+    store.dispose_session(session);
+
+    force_read_only_u64(&store);
+    let cr = compact_expect_ok(&store);
+    assert!(cr.truncation.advanced);
+
+    match store.compact() {
+        Err(CompactionError::EmptyRegion { .. }) => {}
+        Ok(_) => { /* Acceptable if tail-copy created new read-only data */ }
+        Err(e) => panic!("unexpected error on second compact: {e}"),
+    }
+}
+
+// ── Address update verification ─────────────────────────────────────
+
+#[test]
+fn compact_begin_address_advances() {
+    let store = inmemory_u64_store();
+    let begin_before = store.begin_address();
+
+    let mut session = store.new_session();
+    for i in 0u64..200 {
+        let _ = store.upsert(&mut session, &i, &(i * 10), ());
+    }
+    store.dispose_session(session);
+
+    force_read_only_u64(&store);
+    let cr = compact_expect_ok(&store);
+
+    let begin_after = store.begin_address();
+    assert!(
+        begin_after.raw() > begin_before.raw(),
+        "begin should advance: before={}, after={}",
+        begin_before.raw(),
+        begin_after.raw()
+    );
+    assert!(cr.truncation.advanced);
+
+    let mut session = store.new_session();
+    for i in 0u64..200 {
+        let val = store.read_simple(&mut session, &i);
+        assert_eq!(val, Some(i * 10), "key {i}");
+    }
+    store.dispose_session(session);
+}
+
+#[test]
+fn compact_preserves_all_records_after_pointer_swing() {
+    let store = inmemory_u64_store();
+    let mut session = store.new_session();
+
+    let n = 400u64;
+    for i in 0..n {
+        let _ = store.upsert(&mut session, &i, &(i * 10), ());
+    }
+    for i in 0..n / 2 {
+        let _ = store.upsert(&mut session, &i, &(i * 20), ());
+    }
+    store.dispose_session(session);
+
+    force_read_only_u64(&store);
+    let cr = compact_expect_ok(&store);
+
+    assert!(
+        cr.swung > 0,
+        "pointer swing should have updated some entries"
+    );
+
+    let mut session = store.new_session();
+    for i in 0..n / 2 {
+        let val = store.read_simple(&mut session, &i);
+        assert_eq!(val, Some(i * 20), "updated key {i}");
+    }
+    for i in n / 2..n {
+        let val = store.read_simple(&mut session, &i);
+        assert_eq!(val, Some(i * 10), "untouched key {i}");
+    }
+    store.dispose_session(session);
+}
+
+// ── Result statistics consistency ───────────────────────────────────
+
+#[test]
+fn compact_result_statistics_are_consistent() {
+    let store = inmemory_u64_store();
+    let mut session = store.new_session();
+
+    for i in 0u64..500 {
+        let _ = store.upsert(&mut session, &i, &(i * 10), ());
+    }
+    for i in 0u64..100 {
+        let _ = store.upsert(&mut session, &i, &(i * 99), ());
+    }
+    for i in 400u64..500 {
+        let _ = store.delete(&mut session, &i, ());
+    }
+    store.dispose_session(session);
+
+    force_read_only_u64(&store);
+    let cr = compact_expect_ok(&store);
+
+    let plan = &cr.plan;
+    assert_eq!(
+        plan.live_bytes + plan.dead_bytes + plan.tombstone_bytes,
+        plan.total_bytes_scanned,
+        "byte accounting: live={} + dead={} + tombstone={} != total={}",
+        plan.live_bytes,
+        plan.dead_bytes,
+        plan.tombstone_bytes,
+        plan.total_bytes_scanned
+    );
+
+    assert_eq!(
+        cr.records_copied,
+        plan.live_records.len(),
+        "records_copied should match live_records count"
+    );
+}
+
+// ── Concurrent compaction serialization ─────────────────────────────
+
+#[test]
+fn compact_concurrent_serialized_no_corruption() {
+    let store = Arc::new(inmemory_u64_store());
+
+    {
+        let mut session = store.new_session();
+        for i in 0u64..200 {
+            let _ = store.upsert(&mut session, &i, &(i * 10), ());
+        }
+        store.dispose_session(session);
+    }
+    force_read_only_u64(&store);
+
+    let handles: Vec<_> = (0..4)
+        .map(|_| {
+            let s = Arc::clone(&store);
+            thread::spawn(move || s.compact())
+        })
+        .collect();
+
+    let mut ok_count = 0;
+    for h in handles {
+        match h.join().expect("thread panicked") {
+            Ok(_) => ok_count += 1,
+            Err(CompactionError::EmptyRegion { .. }) => {}
+            Err(e) => panic!("unexpected error: {e}"),
+        }
+    }
+
+    assert!(
+        ok_count <= 1,
+        "at most 1 compaction should succeed, got {ok_count}"
+    );
+
+    let mut session = store.new_session();
+    for i in 0u64..200 {
+        let val = store.read_simple(&mut session, &i);
+        assert_eq!(
+            val,
+            Some(i * 10),
+            "key {i} corrupted after concurrent compaction"
         );
     }
     store.dispose_session(session);

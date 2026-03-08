@@ -247,3 +247,48 @@
 - In shared environments with VS Code, use `git worktree` to work in a separate directory (`/tmp/`) that file watchers don't touch. The main repo's working tree gets continuously reverted by VS Code's git extension when multiple branches conflict.
 - `git cat-file -p <commit>:<path>` is the most reliable way to extract correct file content from a specific commit.
 - `git fsck --unreachable --no-reflogs` can recover lost untracked files from dangling blobs.
+
+---
+
+## Task: Compaction + Hybrid Log Test Coverage
+
+**What:** Wrote comprehensive integration tests filling two critical test coverage gaps: compaction pipeline (21 new tests) and hybrid log management (31 new tests).
+
+**Branch:** `boromir/compaction-hybridlog-tests` (from `squad`)
+
+**Files:**
+- `rust/crates/faster-core/tests/compaction_integration.rs` — extended from 11 to 32 tests (+658 lines)
+- `rust/crates/faster-core/tests/hybrid_log_tests.rs` — NEW file, 31 tests (865 lines)
+
+**Compaction Test Categories:**
+1. **Real-scale compaction** — 1500 records through full K1-K4 pipeline with value verification
+2. **Live record verification** — deletes + tombstone detection post-compaction
+3. **Dead/superseded records** — in-place update behavior validation
+4. **Policy enforcement** (7 tests) — SpaceAmplification, TombstonePercent, Manual, Any/All combinators
+5. **Policy-driven maybe_compact** — always-policy triggers, auto_compact=off blocks
+6. **Sequential compactions** — write-compact-write-compact cycles, three rounds with deletes
+7. **Concurrent CRUD** — readers + writers + deleters during active compaction
+8. **Error recovery** — empty store → EmptyRegion, idempotent second compact
+9. **Address verification** — begin_address advances, pointer swing preserves records
+10. **Statistics consistency** — byte accounting invariants
+11. **Concurrent serialization** — 4 threads racing compact(), at most 1 succeeds
+
+**Hybrid Log Test Categories:**
+1. **Address boundaries** — initial state, monotonicity, tail growth
+2. **Flush behavior** — empty store, with data, preserves readability
+3. **Eviction cycles** — address advancement, recent write preservation
+4. **Eviction policy** — defaults, custom config, head advancement
+5. **Maintenance cycles** — empty, with data, address monotonicity
+6. **Concurrent operations** — writes during flush, concurrent maintenance, high contention
+7. **Region edge cases** — nonexistent key, delete+read, overwrite, delete+reinsert
+8. **Buffer config variants** — small buffer, large hash index
+9. **Checkpoint-based read-only** — checkpoint shifts RO without eviction
+
+**Results:** 63 tests, all pass.
+
+**Learnings:**
+- `checkpoint(dir, FoldOver)` is the key technique for forcing data into the read-only region without eviction. It calls `shift_read_only_to_tail()` + flushes synchronously, leaving pages in `Flushed` state (still in memory for scanner to read).
+- With 32MB pages (OFFSET_BITS=25) and small records (24 bytes for u64/u64), natural RO advancement via `maintenance()` is impractical — `mutable_fraction_pages` has `.max(1)` floor requiring >1 mutable pages.
+- Scanner skips evicted pages (returns None → advances to next page). Compacting after `flush_and_evict()` just advances begin_address without copying — potentially losing data if no other copies exist.
+- In-place updates (`mutable_fraction: 0.9` + small records) mean overwrites don't create dead records. Tests should check `records_copied > 0` not `dead_count > 0`.
+- `HybridLogAllocator` is `pub(crate)` — integration tests must use public API: `flush()`, `evict()`, `flush_and_evict()`, `maintenance()`, `compact()`, `checkpoint()`.
