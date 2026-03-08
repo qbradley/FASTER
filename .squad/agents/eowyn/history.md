@@ -12,6 +12,35 @@
 
 ---
 
+### 2026-03-08: Fuzz Testing Infrastructure Established
+
+**What:** Created a complete cargo-fuzz testing framework for FASTER Rust with 5 high-value fuzz targets covering record parsing, record layout arithmetic, compaction record size discovery, hash functions, and store CRUD operations.
+
+**Files Created:**
+- `rust/fuzz/` — standalone cargo-fuzz workspace (excluded from parent workspace)
+- `rust/fuzz/Cargo.toml` — dependencies: libfuzzer-sys, arbitrary, faster-core (path)
+- `rust/fuzz/fuzz_targets/fuzz_record_parsing.rs` — RecordInfo + Key/Value deserialization
+- `rust/fuzz/fuzz_targets/fuzz_record_layout.rs` — RecordLayout::compute arithmetic safety
+- `rust/fuzz/fuzz_targets/fuzz_compaction_record_size.rs` — record_size_from_bytes corruption resilience
+- `rust/fuzz/fuzz_targets/fuzz_hash.rs` — Hashable trait + KeyHash invariants
+- `rust/fuzz/fuzz_targets/fuzz_store_ops.rs` — FasterKv Read/Upsert/RMW/Delete sequences
+- `rust/scripts/fuzz` — CI-compatible runner (configurable duration)
+- `rust/FUZZING.md` — full documentation
+
+**Key Design Decisions:**
+- Fuzz crate uses `[workspace]` in its own Cargo.toml to be fully independent from the parent workspace, avoiding race conditions with concurrent workspace edits
+- String::deserialize is NOT fuzzed with arbitrary bytes (it panics on invalid UTF-8 by design) — instead only valid UTF-8 data is fed
+- Store ops target limits to 2048 operations and small hash tables (4-14 log2) to avoid timeouts
+- All 5 targets verified: zero crashes across millions of iterations in smoke tests
+
+**What This Means:**
+- **Éowyn:** Fuzz testing is now available. Run `cd rust && ./scripts/fuzz` for CI mode, or `cd rust/fuzz && cargo fuzz run <target>` for individual targets.
+- **Aragorn/Sam:** The record parsing and compaction targets found no panics — the deserialization code is robust against random input.
+- **Galadriel:** The hash function target exercises all unsafe-adjacent paths in hash/table.rs through the Hashable trait.
+- **Frodo:** Fuzz testing can be integrated into CI with configurable duration (default 60s/target).
+
+---
+
 ## 2026-03-05T18:33: Gandalf Rust FASTER Architecture Finalized
 
 **What:** Gandalf completed 288 KB comprehensive Rust FASTER architecture specification (6101 lines, 14 sections). 3-part parallel document (Gandalf-A/B/C) due to massive context requirements.
