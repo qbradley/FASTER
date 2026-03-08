@@ -266,3 +266,33 @@
 - **Concurrent agent /tmp file collision:** Multiple agents share `/tmp/commit-msg.txt` — files get overwritten between write and use. Use `git commit --amend` to fix after the fact.
 - **Branch switching by concurrent agents:** Other agents can `git checkout` while you're working. Always verify branch immediately before commit and chain git operations atomically.
 - **Memory budget for disk benchmarks:** `buffer_pages * 32KiB` is the FASTER in-memory window, but the OS page cache also matters. Even with tiny buffer_pages, the OS may cache the entire dataset. True disk-bound behavior requires either: (a) dataset >> RAM, (b) O_DIRECT, or (c) explicit cache flushing.
+## 2026-03-08: Two-Level Prefetch Pipeline (Task A4)
+
+**What:** Implemented two-level prefetching for the FASTER Rust hash index to hide pointer-chase latency (hash bucket → record = two serial cache misses).
+
+**Architecture:**
+- **L1 (existing):** `HashIndex::prefetch(key_hash)` — prefetches 64-byte hash bucket cache line
+- **L2 (new):** `prefetch_record(allocator, addr, is_write)` — prefetches record data at the logical address extracted from the bucket entry
+- L2 is issued after `find()`/`find_or_create()` returns but before `allocator.snapshot()` and `classify()`, giving ~20-50ns of latency cover
+- Writes use `prefetch_write()` (`_MM_HINT_ET0`) for exclusive MESI state; reads use `prefetch_read()` (`_MM_HINT_T0`) for shared state
+
+**Batch API:**
+- `PrefetchPipeline` struct with sliding window: L1=8 ops ahead, L2=4 ops ahead
+- Batch methods: `batch_read`, `batch_upsert`, `batch_rmw`, `batch_delete`, `batch_execute` on `UnsafeContext`
+- Convenience wrappers on `FasterKv`
+- Epoch refresh every 256 operations
+
+**Files Changed:**
+- `rust/crates/faster-core/src/hash/prefetch.rs` — added `prefetch_write()` + 3 tests
+- `rust/crates/faster-core/src/store/operations.rs` — added `prefetch_record()` helper + L2 calls in 4 CRUD paths
+- `rust/crates/faster-core/src/store/batch.rs` — NEW: PrefetchPipeline, BatchResult, BatchOp
+- `rust/crates/faster-core/src/store/session.rs` — added 6 batch methods on UnsafeContext
+- `rust/crates/faster-core/src/store/kv.rs` — added 4 batch convenience methods on FasterKv
+- `rust/crates/faster-core/src/store/mod.rs` — registered batch module
+
+**Test Results:** All 1192 lib tests pass (7 new from prefetch_write tests)
+
+**Learnings:**
+- Multi-agent interference requires atomic copy→stage→branch-check→commit workflow
+- Missing closing brace caused all types after that point to appear "nested", producing cryptic "not found in module" errors
+- `git commit --amend` on wrong branch (due to another agent switching branches mid-command) can corrupt other agents' history — always verify branch before commit
