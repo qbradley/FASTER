@@ -533,7 +533,7 @@ impl<F: Functions> Drop for FasterSession<F> {
 /// The lifetime `'a` ties this guard to the session borrow, preventing
 /// use-after-end_unsafe scenarios at compile time.
 pub struct SessionGuard<'a, F: Functions> {
-    session: &'a mut FasterSession<F>,
+    pub(super) session: &'a mut FasterSession<F>,
 }
 
 impl<'a, F: Functions> SessionGuard<'a, F> {
@@ -816,6 +816,183 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
             store.dispatch_pending_io(self.session);
         }
         status
+    }
+
+    // ── Two-Level Prefetch Batch Operations ─────────────────────────
+
+    /// Batch read with two-level prefetch pipeline.
+    pub fn batch_read(
+        &mut self,
+        store: &FasterKv<F>,
+        keys: &[F::Key],
+        outputs: &mut [F::Output],
+    ) -> super::batch::BatchResult
+    where
+        F::Input: Default,
+        F::Context: Default,
+    {
+        use super::batch::{BatchResult, PrefetchPipeline, DEFAULT_L1_WINDOW, DEFAULT_L2_WINDOW};
+        let n = keys.len();
+        assert_eq!(n, outputs.len(), "keys and outputs must have same length");
+        let mut result = BatchResult::with_capacity(n);
+        if n == 0 { return result; }
+        let ctx = InternalContext { hash_index: &store.hash_index, allocator: &store.allocator };
+        let input = F::Input::default();
+        let mut pipeline = PrefetchPipeline::new(n, DEFAULT_L1_WINDOW, DEFAULT_L2_WINDOW);
+        pipeline.prime_l1(keys, &store.hash_index);
+        pipeline.prime_l2(&store.hash_index, &store.allocator, false);
+        for i in 0..n {
+            let l1_target = i + pipeline.l1_window;
+            if l1_target < n { pipeline.issue_l1(l1_target, &keys[l1_target], &store.hash_index); }
+            let l2_target = i + pipeline.l2_window;
+            if l2_target < n { pipeline.issue_l2(l2_target, &store.hash_index, &store.allocator, false); }
+            let status = internal_read(&ctx, self.session, &store.functions, &keys[i], &input, &mut outputs[i], F::Context::default());
+            if status == crate::status::OperationStatus::Pending { store.dispatch_pending_io(self.session); }
+            result.statuses.push(status);
+            if (i + 1) % super::batch::refresh_interval() == 0 { self.refresh(); }
+        }
+        result
+    }
+
+    /// Batch upsert with two-level prefetch pipeline.
+    pub fn batch_upsert(
+        &mut self,
+        store: &FasterKv<F>,
+        keys: &[F::Key],
+        inputs: &[F::Input],
+    ) -> super::batch::BatchResult
+    where
+        F::Context: Default,
+    {
+        use super::batch::{BatchResult, PrefetchPipeline, DEFAULT_L1_WINDOW, DEFAULT_L2_WINDOW};
+        let n = keys.len();
+        assert_eq!(n, inputs.len(), "keys and inputs must have same length");
+        let mut result = BatchResult::with_capacity(n);
+        if n == 0 { return result; }
+        let ctx = InternalContext { hash_index: &store.hash_index, allocator: &store.allocator };
+        let mut pipeline = PrefetchPipeline::new(n, DEFAULT_L1_WINDOW, DEFAULT_L2_WINDOW);
+        pipeline.prime_l1(keys, &store.hash_index);
+        pipeline.prime_l2(&store.hash_index, &store.allocator, true);
+        for i in 0..n {
+            let l1_target = i + pipeline.l1_window;
+            if l1_target < n { pipeline.issue_l1(l1_target, &keys[l1_target], &store.hash_index); }
+            let l2_target = i + pipeline.l2_window;
+            if l2_target < n { pipeline.issue_l2(l2_target, &store.hash_index, &store.allocator, true); }
+            let status = internal_upsert(&ctx, self.session, &store.functions, &keys[i], &inputs[i], F::Context::default());
+            if status == crate::status::OperationStatus::Pending { store.dispatch_pending_io(self.session); }
+            result.statuses.push(status);
+            if (i + 1) % super::batch::refresh_interval() == 0 { self.refresh(); }
+        }
+        result
+    }
+
+    /// Batch RMW with two-level prefetch pipeline.
+    pub fn batch_rmw(
+        &mut self,
+        store: &FasterKv<F>,
+        keys: &[F::Key],
+        inputs: &[F::Input],
+        outputs: &mut [F::Output],
+    ) -> super::batch::BatchResult
+    where
+        F::Context: Default,
+    {
+        use super::batch::{BatchResult, PrefetchPipeline, DEFAULT_L1_WINDOW, DEFAULT_L2_WINDOW};
+        let n = keys.len();
+        assert_eq!(n, inputs.len(), "keys and inputs must have same length");
+        assert_eq!(n, outputs.len(), "keys and outputs must have same length");
+        let mut result = BatchResult::with_capacity(n);
+        if n == 0 { return result; }
+        let ctx = InternalContext { hash_index: &store.hash_index, allocator: &store.allocator };
+        let mut pipeline = PrefetchPipeline::new(n, DEFAULT_L1_WINDOW, DEFAULT_L2_WINDOW);
+        pipeline.prime_l1(keys, &store.hash_index);
+        pipeline.prime_l2(&store.hash_index, &store.allocator, true);
+        for i in 0..n {
+            let l1_target = i + pipeline.l1_window;
+            if l1_target < n { pipeline.issue_l1(l1_target, &keys[l1_target], &store.hash_index); }
+            let l2_target = i + pipeline.l2_window;
+            if l2_target < n { pipeline.issue_l2(l2_target, &store.hash_index, &store.allocator, true); }
+            let status = internal_rmw(&ctx, self.session, &store.functions, &keys[i], &inputs[i], &mut outputs[i], F::Context::default());
+            if status == crate::status::OperationStatus::Pending { store.dispatch_pending_io(self.session); }
+            result.statuses.push(status);
+            if (i + 1) % super::batch::refresh_interval() == 0 { self.refresh(); }
+        }
+        result
+    }
+
+    /// Batch delete with two-level prefetch pipeline.
+    pub fn batch_delete(
+        &mut self,
+        store: &FasterKv<F>,
+        keys: &[F::Key],
+    ) -> super::batch::BatchResult
+    where
+        F::Context: Default,
+    {
+        use super::batch::{BatchResult, PrefetchPipeline, DEFAULT_L1_WINDOW, DEFAULT_L2_WINDOW};
+        let n = keys.len();
+        let mut result = BatchResult::with_capacity(n);
+        if n == 0 { return result; }
+        let ctx = InternalContext { hash_index: &store.hash_index, allocator: &store.allocator };
+        let mut pipeline = PrefetchPipeline::new(n, DEFAULT_L1_WINDOW, DEFAULT_L2_WINDOW);
+        pipeline.prime_l1(keys, &store.hash_index);
+        pipeline.prime_l2(&store.hash_index, &store.allocator, true);
+        for i in 0..n {
+            let l1_target = i + pipeline.l1_window;
+            if l1_target < n { pipeline.issue_l1(l1_target, &keys[l1_target], &store.hash_index); }
+            let l2_target = i + pipeline.l2_window;
+            if l2_target < n { pipeline.issue_l2(l2_target, &store.hash_index, &store.allocator, true); }
+            let status = internal_delete(&ctx, self.session, &store.functions, &keys[i], F::Context::default());
+            if status == crate::status::OperationStatus::Pending { store.dispatch_pending_io(self.session); }
+            result.statuses.push(status);
+            if (i + 1) % super::batch::refresh_interval() == 0 { self.refresh(); }
+        }
+        result
+    }
+
+    /// Mixed batch execution with two-level prefetch pipeline.
+    pub fn batch_execute(
+        &mut self,
+        store: &FasterKv<F>,
+        ops: &[super::batch::BatchOp<F::Key, F::Input>],
+        outputs: &mut [F::Output],
+    ) -> super::batch::BatchResult
+    where
+        F::Context: Default,
+    {
+        use super::batch::{BatchOp, BatchResult, PrefetchPipeline, DEFAULT_L1_WINDOW, DEFAULT_L2_WINDOW};
+        let n = ops.len();
+        assert_eq!(n, outputs.len(), "ops and outputs must have same length");
+        let mut result = BatchResult::with_capacity(n);
+        if n == 0 { return result; }
+        let ctx = InternalContext { hash_index: &store.hash_index, allocator: &store.allocator };
+        let mut pipeline = PrefetchPipeline::new(n, DEFAULT_L1_WINDOW, DEFAULT_L2_WINDOW);
+        let end_l1 = n.min(pipeline.l1_window);
+        for j in 0..end_l1 { pipeline.issue_l1(j, ops[j].key(), &store.hash_index); }
+        let end_l2 = pipeline.hashes.len().min(pipeline.l2_window);
+        for j in 0..end_l2 {
+            let is_write = !matches!(ops[j], BatchOp::Read { .. });
+            pipeline.issue_l2(j, &store.hash_index, &store.allocator, is_write);
+        }
+        for i in 0..n {
+            let l1_target = i + pipeline.l1_window;
+            if l1_target < n { pipeline.issue_l1(l1_target, ops[l1_target].key(), &store.hash_index); }
+            let l2_target = i + pipeline.l2_window;
+            if l2_target < n {
+                let is_write = !matches!(ops[l2_target], BatchOp::Read { .. });
+                pipeline.issue_l2(l2_target, &store.hash_index, &store.allocator, is_write);
+            }
+            let status = match &ops[i] {
+                BatchOp::Read { key, input } => internal_read(&ctx, self.session, &store.functions, key, input, &mut outputs[i], F::Context::default()),
+                BatchOp::Upsert { key, input } => internal_upsert(&ctx, self.session, &store.functions, key, input, F::Context::default()),
+                BatchOp::Rmw { key, input } => internal_rmw(&ctx, self.session, &store.functions, key, input, &mut outputs[i], F::Context::default()),
+                BatchOp::Delete { key } => internal_delete(&ctx, self.session, &store.functions, key, F::Context::default()),
+            };
+            if status == crate::status::OperationStatus::Pending { store.dispatch_pending_io(self.session); }
+            result.statuses.push(status);
+            if (i + 1) % super::batch::refresh_interval() == 0 { self.refresh(); }
+        }
+        result
     }
 }
 

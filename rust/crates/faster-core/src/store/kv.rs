@@ -506,6 +506,36 @@ impl<F: Functions> FasterKv<F> {
         UnsafeContext::new(session)
     }
 
+    // ── Two-Level Prefetch Batch Methods ────────────────────────────
+
+    /// Batch read with two-level prefetch.
+    pub fn batch_read(&self, session: &mut FasterSession<F>, keys: &[F::Key], outputs: &mut [F::Output]) -> super::batch::BatchResult
+    where F::Input: Default, F::Context: Default {
+        let mut ctx = self.unsafe_context(session);
+        ctx.batch_read(self, keys, outputs)
+    }
+
+    /// Batch upsert with two-level prefetch.
+    pub fn batch_upsert(&self, session: &mut FasterSession<F>, keys: &[F::Key], inputs: &[F::Input]) -> super::batch::BatchResult
+    where F::Context: Default {
+        let mut ctx = self.unsafe_context(session);
+        ctx.batch_upsert(self, keys, inputs)
+    }
+
+    /// Batch RMW with two-level prefetch.
+    pub fn batch_rmw(&self, session: &mut FasterSession<F>, keys: &[F::Key], inputs: &[F::Input], outputs: &mut [F::Output]) -> super::batch::BatchResult
+    where F::Context: Default {
+        let mut ctx = self.unsafe_context(session);
+        ctx.batch_rmw(self, keys, inputs, outputs)
+    }
+
+    /// Batch delete with two-level prefetch.
+    pub fn batch_delete(&self, session: &mut FasterSession<F>, keys: &[F::Key]) -> super::batch::BatchResult
+    where F::Context: Default {
+        let mut ctx = self.unsafe_context(session);
+        ctx.batch_delete(self, keys)
+    }
+
     // ── Convenience Methods ─────────────────────────────────────────
 
     /// Simplified upsert that uses default context (`Default::default()`).

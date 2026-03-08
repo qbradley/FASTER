@@ -42,6 +42,7 @@ use crate::address::{LogicalAddress, OFFSET_BITS};
 use crate::hash::Hashable;
 use crate::hash::bucket::HashBucketEntry;
 use crate::hash::index::HashIndex;
+use crate::hash::prefetch;
 use crate::hybrid_log::log_allocator::HybridLogAllocator;
 use crate::hybrid_log::record_ops::{LogRecordReader, LogRecordWriter, MutableRecordAccessor};
 use crate::hybrid_log::regions::{AddressInfo, AddressRegion};
@@ -68,6 +69,32 @@ pub(crate) struct InternalContext<'a> {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+/// Issue a Level-2 prefetch for the record at `addr`.
+///
+/// After the hash bucket lookup returns a record address, this function
+/// prefetches the record's cache line(s) so the data is in L1 by the
+/// time we walk the version chain and access the record.
+///
+/// This is the "second level" of the two-level prefetch pipeline:
+///   L1: hash bucket prefetch (issued before find/find_or_create)
+///   L2: record prefetch (issued after find returns the entry address)
+///
+/// For writes (`is_write = true`) we use `prefetch_write` to bring the
+/// line into exclusive MESI state, avoiding a read-for-ownership stall.
+#[inline(always)]
+fn prefetch_record(allocator: &HybridLogAllocator, addr: LogicalAddress, is_write: bool) {
+    if !addr.is_valid() {
+        return;
+    }
+    if let Some(ptr) = allocator.get_physical_address(addr) {
+        if is_write {
+            prefetch::prefetch_write(ptr);
+        } else {
+            prefetch::prefetch_read(ptr as *const u8);
+        }
+    }
+}
 
 /// Compute the [`RecordLayout`] for a key/value pair using the fixed-size
 /// approach: `std::mem::size_of::<V>()` for the value size.
@@ -219,6 +246,10 @@ pub(crate) fn internal_read<F: Functions>(
         return OperationStatus::NotFound;
     }
 
+    // L2 prefetch: bring the record cache line into L1 while we
+    // compute the snapshot and classify the address region.
+    prefetch_record(ctx.allocator, addr, false);
+
     // 2. Classify the address region.
     let info = ctx.allocator.snapshot();
     let region = info.classify(addr);
@@ -335,6 +366,10 @@ pub(crate) fn internal_upsert<F: Functions>(
     if !addr.is_valid() {
         return OperationStatus::NotFound;
     }
+
+    // L2 prefetch: bring the record into L1 in exclusive state for
+    // the likely in-place write while we snapshot and classify.
+    prefetch_record(ctx.allocator, addr, true);
 
     let snap = ctx.allocator.snapshot();
     let region = snap.classify(addr);
@@ -600,6 +635,10 @@ pub(crate) fn internal_rmw<F: Functions>(
     if !addr.is_valid() {
         return OperationStatus::NotFound;
     }
+
+    // L2 prefetch: bring the record into L1 in exclusive state
+    // (RMW will likely modify in-place).
+    prefetch_record(ctx.allocator, addr, true);
 
     let snap = ctx.allocator.snapshot();
     let region = snap.classify(addr);
@@ -896,6 +935,10 @@ pub(crate) fn internal_delete<F: Functions>(
     if !addr.is_valid() {
         return OperationStatus::NotFound;
     }
+
+    // L2 prefetch: bring the record into L1 in exclusive state
+    // (delete writes a tombstone flag).
+    prefetch_record(ctx.allocator, addr, true);
 
     let snap = ctx.allocator.snapshot();
     let region = snap.classify(addr);
