@@ -123,3 +123,27 @@
 - `disk-io-bench`: Suppressed dead code warnings
 
 **Performance:** Smoke test ~513K ops/s (3-second run, single thread, NullDevice).
+
+---
+
+## 2026-03-07T19:20: Event Counter (Tokio) Sample — Wave 2 Complete
+
+**What:** Created `rust/crates/samples/event-counter-tokio/` — a complete async ad-click aggregator demonstrating FASTER + Tokio integration.
+
+**Files:** Cargo.toml, src/{main,functions,workload,checkpoint,verify}.rs (6 files, ~1400 lines)
+
+**Key Patterns:**
+- `spawn_blocking` for workers (FasterSession is !Send)
+- Partitioned key space per worker (avoids concurrent RMW race)
+- `TokioFileDevice` with "log." prefix for checkpoint-compatible segments
+- Data + checkpoint in same directory for recovery compatibility
+- Value/FixedSizeValue impl for CampaignStats (24-byte LE)
+
+**Learnings:**
+1. Concurrent RMW on the same key loses updates — partition keys among workers
+2. Recovery expects `log.{n}` segment names — device prefix must be `"log."`
+3. Checkpoint dir must contain the log segments (same as data dir)
+4. `git show commit:path > file` can fail silently when file is already open by cargo
+5. During merge state, `git add` can reset file contents — always backup to /tmp first
+
+**Commit:** 659b29b1 on squad branch
