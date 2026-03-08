@@ -204,6 +204,10 @@ pub(crate) fn internal_read<F: Functions>(
 ) -> OperationStatus {
     let key_hash = key.hash();
 
+    // Prefetch the hash bucket — the CPU begins fetching the cache line
+    // while we reach the find() call below.
+    ctx.hash_index.prefetch(key_hash);
+
     // 1. Look up committed entry in the hash index.
     let (entry, _slot) = match ctx.hash_index.find(key_hash) {
         Some(pair) => pair,
@@ -282,6 +286,9 @@ pub(crate) fn internal_upsert<F: Functions>(
 ) -> OperationStatus {
     let key_hash = key.hash();
     let layout = layout_for_fixed::<F::Key, F::Value>(key);
+
+    // Prefetch the hash bucket — layout computation provides latency cover.
+    ctx.hash_index.prefetch(key_hash);
 
     // Phase 1: Probe the hash index.  `find_or_create` either finds an
     // existing committed entry or CAS-inserts a tentative one.
@@ -527,6 +534,9 @@ pub(crate) fn internal_rmw<F: Functions>(
 ) -> OperationStatus {
     let key_hash = key.hash();
     let layout = layout_for_fixed::<F::Key, F::Value>(key);
+
+    // Prefetch the hash bucket — layout computation provides latency cover.
+    ctx.hash_index.prefetch(key_hash);
 
     let result = ctx
         .hash_index
@@ -833,6 +843,9 @@ pub(crate) fn internal_delete<F: Functions>(
 ) -> OperationStatus {
     let key_hash = key.hash();
     let layout = layout_for_fixed::<F::Key, F::Value>(key);
+
+    // Prefetch the hash bucket — layout computation provides latency cover.
+    ctx.hash_index.prefetch(key_hash);
 
     // Look up an existing entry — delete does not create new entries.
     let (entry, slot) = match ctx.hash_index.find(key_hash) {

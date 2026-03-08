@@ -248,6 +248,25 @@ impl HashTable {
         unsafe { self.buckets.get_unchecked(idx) }
     }
 
+    /// Issues a software prefetch hint for the primary bucket that `hash`
+    /// maps to.
+    ///
+    /// Call this *before* [`bucket()`](Self::bucket) (or the higher-level
+    /// `find_entry` / `find_or_create_entry`) to give the memory subsystem
+    /// time to pull the cache line into L1 while the caller performs other
+    /// work (e.g. computing the record layout).
+    ///
+    /// The hint is purely advisory — correctness is unaffected if the
+    /// hardware ignores it.
+    #[inline(always)]
+    pub fn prefetch_bucket(&self, hash: KeyHash) {
+        let idx = hash.index(self.num_buckets) as usize;
+        // SAFETY: idx is always < num_buckets because hash.index() masks
+        // with (num_buckets - 1), identical invariant to `bucket()`.
+        let ptr = unsafe { self.buckets.get_unchecked(idx) as *const HashBucket };
+        super::prefetch::prefetch_read(ptr);
+    }
+
     // -----------------------------------------------------------------------
     // Core operations
     // -----------------------------------------------------------------------
@@ -534,6 +553,14 @@ impl HashTable {
     ) -> Option<(HashBucketEntry, &'a AtomicHashBucketEntry)> {
         let mut current = bucket;
         loop {
+            // Eagerly load the overflow address so the CPU can begin
+            // fetching the next bucket while we scan the current one.
+            let overflow_addr = current.overflow_address().load(Ordering::Acquire);
+            if overflow_addr != LogicalAddress::ZERO {
+                let next = self.overflow_pool.get(overflow_addr);
+                super::prefetch::prefetch_read(next as *const HashBucket);
+            }
+
             // Scan all 7 entries in this bucket.
             for i in 0..BUCKET_NUM_ENTRIES {
                 let entry = current.entry(i).load(Ordering::Acquire);
@@ -542,7 +569,6 @@ impl HashTable {
                 }
             }
             // Follow overflow chain.
-            let overflow_addr = current.overflow_address().load(Ordering::Acquire);
             if overflow_addr == LogicalAddress::ZERO {
                 return None;
             }
@@ -1397,5 +1423,44 @@ mod proptests {
             // Not found
             prop_assert!(table.find_entry(hash).is_none());
         }
+    }
+
+    // ── Prefetch tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn prefetch_bucket_does_not_panic() {
+        let table = HashTable::new(10); // 1024 buckets
+        let hash = KeyHash::new(0xDEAD_BEEF);
+        table.prefetch_bucket(hash); // must not panic
+    }
+
+    #[test]
+    fn prefetch_bucket_all_indices() {
+        let table = HashTable::new(10);
+        for i in 0..1024u64 {
+            table.prefetch_bucket(KeyHash::new(i));
+        }
+    }
+
+    #[test]
+    fn prefetch_bucket_same_bucket_as_bucket() {
+        let table = HashTable::new(10);
+        let hash = KeyHash::new(42);
+        let bucket_ref = table.bucket(hash) as *const HashBucket;
+        table.prefetch_bucket(hash);
+        let bucket_ref2 = table.bucket(hash) as *const HashBucket;
+        assert_eq!(bucket_ref, bucket_ref2);
+    }
+
+    #[test]
+    fn find_entry_with_overflow_chain_prefetch() {
+        let table = HashTable::new(10);
+        let hash = KeyHash::new(999);
+        let result = table.find_or_create_entry(hash, LogicalAddress::INVALID);
+        assert!(result.created);
+        let committed = HashBucketEntry::new(result.entry.tag(), LogicalAddress::new(Page(1), Offset(100)), false);
+        assert!(table.update_entry(result.slot, result.entry, committed));
+        let found = table.find_entry(hash);
+        assert!(found.is_some());
     }
 }
