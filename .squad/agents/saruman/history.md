@@ -166,3 +166,61 @@
 
 **Next Steps:** Risk mitigation task force (Éowyn lead), unsafe audit planning (Galadriel lead), Phase 1 sprint (Frodo lead), async adapter spike (Elrond lead).
 
+---
+
+## 2026-03-07: C++ Wrapper Header over Rust FFI (W3-04)
+
+**What:** Built `faster_cpp.h`, a header-only C++17 wrapper over the Rust FASTER C FFI layer. Delivered on branch `saruman/cpp-wrapper`.
+
+**Files delivered:**
+- `rust/crates/faster-ffi/cpp/faster_cpp.h` — 725-line header-only wrapper
+- `rust/crates/faster-ffi/cpp/example.cpp` — 6-test, 23-check verification suite
+- `rust/crates/faster-ffi/cpp/Makefile` — builds against `libfaster_ffi.so` / `.a`
+
+**Architecture decisions:**
+1. **Self-contained C FFI redeclaration** — The header redeclares the FFI surface with proper C++ types instead of including `faster.h`. The cbindgen-generated header renders `Option<extern "C" fn(...)>` as opaque `struct Option_*Fn` types that cannot be constructed from C/C++. Since the Rust ABI guarantees these are nullable function pointers, we declare them as such.
+2. **RAII all the way** — `FasterKv` owns the store handle (calls `faster_close` on destroy), `Session` owns the session handle (calls `faster_session_end` on destroy). Both are move-only.
+3. **Serializer<T> trait** — Defaults to `memcpy` for trivially-copyable types; specialized for `std::string` and `std::vector<uint8_t>`. Users can specialize for custom types.
+4. **Callbacks via C function pointers** — `RmwWithCallbacks()`, `UpsertWithCallbacks()`, `ReadWithCallbacks()` accept raw `extern "C"` function pointers, matching the `_ex()` FFI surface. C++ lambdas cannot be used directly (no captures), but stateless lambdas decay to function pointers.
+
+**Key findings:**
+- Checkpoint and recovery must use the **same directory** as the store path. The Rust implementation writes checkpoint files to `{dir}/checkpoints/{token}/`.
+- The Rust target directory uses a platform-specific triple (`x86_64-unknown-linux-gnu`) in the path — the Makefile handles this with a fallback.
+- Merge conflicts in the FFI source files (from `sam/sealed-bit-p03` branch) had to be resolved before building.
+
+**Verification results:** 23/23 checks pass:
+- Test 1: Basic CRUD (upsert, read, delete, RMW replacement)
+- Test 2: Custom RMW callbacks (sum-store pattern: 10+5+3=18)
+- Test 3: Bulk operations (1000 records)
+- Test 4: Checkpoint and recovery (FoldOver)
+- Test 5: String keys and values
+- Test 6: Move semantics (Session + FasterKv)
+
+---
+
+## 2026-03-07T22:22: C++ Integration Test Suite (Iteration 6, A6)
+
+**What:** Built comprehensive C++ integration test suite for the FASTER Rust FFI wrapper. 5 test suites, 76 tests, 163 assertions — all green.
+
+**Files delivered (branch `saruman/cpp-integration-tests`):**
+- `rust/crates/faster-ffi/cpp/tests/test_harness.h` — Lightweight test framework (CHECK/REQUIRE/CHECK_THROWS)
+- `rust/crates/faster-ffi/cpp/tests/test_basic_ops.cpp` — 18 tests: CRUD with uint64_t, string, vector<uint8_t>, bulk ops, mixed types
+- `rust/crates/faster-ffi/cpp/tests/test_lifecycle.cpp` — 14 tests: session management, checkpoint/recover, continue_session, move semantics
+- `rust/crates/faster-ffi/cpp/tests/test_threading.cpp` — 6 tests: concurrent sessions, parallel ops, thread-affinity enforcement, session churn
+- `rust/crates/faster-ffi/cpp/tests/test_callbacks.cpp` — 10 tests: RMW (sum-store, multiply), Upsert (custom put), Read (custom get), error propagation
+- `rust/crates/faster-ffi/cpp/tests/test_error_handling.cpp` — 28 tests: invalid handles, null pointers, buffer-too-small, double-free, exception safety
+- `rust/crates/faster-ffi/cpp/CMakeLists.txt` — CMake build with CTest integration
+- `rust/crates/faster-ffi/cpp/run_tests.sh` — End-to-end build + test runner
+- `rust/crates/faster-ffi/cpp/tests/FFI_GAPS.md` — FFI surface gap documentation
+
+**FFI Surface Gaps Discovered:**
+1. **Snapshot checkpoint not wired** — `FasterCheckpointType::Snapshot` returns `CheckpointError` through `FasterKv::checkpoint()`. FoldOver works fine.
+2. **ContinueSession is a stub** — Always returns serial 0. No true session resume from checkpoint tokens.
+3. **No Session::raw_handle()** — Can't mix high-level Session with low-level FFI calls on same session.
+4. **No compaction/scan/statistics FFI** — Not yet exposed through FFI surface.
+
+**Key Testing Insight:**
+- Thread-affinity enforcement (ThreadMismatch) works correctly across FFI boundary.
+- The Rust static library requires `-lpthread -ldl -lm` system library dependencies when linked into C++.
+- Pre-existing Rust compilation issues in faster-core (unrelated to FFI) prevent `cargo clippy` from passing on squad branch.
+
