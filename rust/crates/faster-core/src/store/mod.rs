@@ -54,7 +54,7 @@ pub mod pending_io; // contains unsafe: I/O completion callback reconstruction
 mod session;
 
 pub use builder::FasterKvBuilder;
-pub use functions::{CounterFunctions, Functions, RmwInPlaceResult, SimpleFunctions};
+pub use functions::{CounterFunctions, DeleteInfo, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, SimpleFunctions, UpsertInfo};
 pub use kv::{FasterKv, FasterKvConfig, RecoveryInfo};
 pub use pending_io::{
     CompletedIo, PendingIoConfig, PendingIoContext, PendingIoError, PendingIoManager,

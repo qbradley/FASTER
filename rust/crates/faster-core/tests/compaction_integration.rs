@@ -272,7 +272,7 @@ fn maybe_compact_disabled_by_default() {
 
 use faster_core::InMemoryDevice;
 use faster_core::status::OperationStatus;
-use faster_core::store::{Functions, RmwInPlaceResult};
+use faster_core::store::{DeleteInfo, Functions, ReadInfo, RmwInfo, RmwInPlaceResult, UpsertInfo};
 
 /// Functions implementation for variable-length keys and values.
 struct VarLenFunctions;
@@ -290,6 +290,7 @@ impl Functions for VarLenFunctions {
         value: &Vec<u8>,
         _input: &Vec<u8>,
         output: &mut Option<Vec<u8>>,
+        _info: &ReadInfo,
     ) {
         *output = Some(value.clone());
     }
@@ -301,6 +302,7 @@ impl Functions for VarLenFunctions {
         input: &Vec<u8>,
         _old_value: Option<&Vec<u8>>,
         _output: &mut Option<Vec<u8>>,
+        _info: &UpsertInfo,
     ) {
         *value = input.clone();
     }
@@ -311,6 +313,7 @@ impl Functions for VarLenFunctions {
         input: &Vec<u8>,
         value: &mut Vec<u8>,
         _output: &mut Option<Vec<u8>>,
+        _info: &RmwInfo,
     ) {
         *value = input.clone();
     }
@@ -321,6 +324,7 @@ impl Functions for VarLenFunctions {
         _input: &Vec<u8>,
         _value: &mut Vec<u8>,
         _output: &mut Option<Vec<u8>>,
+        _info: &RmwInfo,
     ) -> RmwInPlaceResult {
         RmwInPlaceResult::NeedsNewRecord
     }
@@ -332,6 +336,7 @@ impl Functions for VarLenFunctions {
         old_value: &Vec<u8>,
         new_value: &mut Vec<u8>,
         output: &mut Option<Vec<u8>>,
+        _info: &RmwInfo,
     ) {
         let mut merged = old_value.clone();
         merged.extend_from_slice(input);
@@ -350,7 +355,7 @@ impl Functions for MixedKeyFunctions {
     type Output = Option<Vec<u8>>;
     type Context = ();
 
-    fn read(&self, _key: &u64, value: &Vec<u8>, _input: &Vec<u8>, output: &mut Option<Vec<u8>>) {
+    fn read(&self, _key: &u64, value: &Vec<u8>, _input: &Vec<u8>, output: &mut Option<Vec<u8>>, _info: &ReadInfo) {
         *output = Some(value.clone());
     }
 
@@ -361,6 +366,7 @@ impl Functions for MixedKeyFunctions {
         input: &Vec<u8>,
         _old_value: Option<&Vec<u8>>,
         _output: &mut Option<Vec<u8>>,
+        _info: &UpsertInfo,
     ) {
         *value = input.clone();
     }
@@ -371,6 +377,7 @@ impl Functions for MixedKeyFunctions {
         input: &Vec<u8>,
         value: &mut Vec<u8>,
         _output: &mut Option<Vec<u8>>,
+        _info: &RmwInfo,
     ) {
         *value = input.clone();
     }
@@ -381,6 +388,7 @@ impl Functions for MixedKeyFunctions {
         _input: &Vec<u8>,
         _value: &mut Vec<u8>,
         _output: &mut Option<Vec<u8>>,
+        _info: &RmwInfo,
     ) -> RmwInPlaceResult {
         RmwInPlaceResult::NeedsNewRecord
     }
@@ -392,6 +400,7 @@ impl Functions for MixedKeyFunctions {
         old_value: &Vec<u8>,
         new_value: &mut Vec<u8>,
         output: &mut Option<Vec<u8>>,
+        _info: &RmwInfo,
     ) {
         let mut merged = old_value.clone();
         merged.extend_from_slice(input);

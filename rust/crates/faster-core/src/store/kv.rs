@@ -57,7 +57,7 @@ use crate::recovery::index_recovery::IndexRecoveryEngine;
 use crate::recovery::log_recovery::LogRecoveryEngine;
 use crate::recovery::{RecoveryError, RecoveryManager};
 use crate::status::OperationStatus;
-use crate::store::functions::Functions;
+use crate::store::functions::{Functions, ReadInfo, RmwInfo, UpsertInfo};
 use crate::store::operations::{
     InternalContext, allocate_at_tail, internal_delete, internal_read, internal_rmw,
     internal_upsert,
@@ -1108,7 +1108,7 @@ impl<F: Functions> FasterKv<F> {
 
                 if let Some(ref input) = cio.operation.input {
                     self.functions
-                        .read(&cio.operation.key, &value, input, &mut output);
+                        .read(&cio.operation.key, &value, input, &mut output, &ReadInfo::new(0, cio.operation.address, ri));
                 }
 
                 Some((output, cio.operation.context))
@@ -1168,7 +1168,7 @@ impl<F: Functions> FasterKv<F> {
                     .as_ref()
                     .expect("upsert pending must have input");
                 self.functions
-                    .upsert(key, &mut new_val, input, old_ref, &mut output);
+                    .upsert(key, &mut new_val, input, old_ref, &mut output, &UpsertInfo::new(0, old_addr, ri));
 
                 let (new_addr, mut accessor) = match self.allocate_with_retry(key, &new_val) {
                     Some(pair) => pair,
@@ -1193,7 +1193,7 @@ impl<F: Functions> FasterKv<F> {
                     let mut new_val = F::Value::default();
                     let mut output = F::Output::default();
                     self.functions
-                        .rmw_initial(key, input, &mut new_val, &mut output);
+                        .rmw_initial(key, input, &mut new_val, &mut output, &RmwInfo::new(0, old_addr, ri, false));
 
                     let (new_addr, mut accessor) = match self.allocate_with_retry(key, &new_val) {
                         Some(pair) => pair,
@@ -1215,6 +1215,7 @@ impl<F: Functions> FasterKv<F> {
                         &old_value,
                         &mut new_value,
                         &mut output,
+                        &RmwInfo::new(0, old_addr, ri, true),
                     );
 
                     let (new_addr, mut accessor) = match self.allocate_with_retry(key, &new_value) {

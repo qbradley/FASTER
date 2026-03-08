@@ -367,6 +367,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "event-counter-tokio"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "faster-core",
+ "faster-tokio",
+ "rand",
+ "tokio",
+]
+
+[[package]]
 name = "faster-bench"
 version = "0.1.0"
 dependencies = [

@@ -21,7 +21,7 @@ use faster_core::InMemoryDevice;
 use faster_core::grow::GrowConfig;
 use faster_core::hybrid_log::EvictionPolicy;
 use faster_core::status::OperationStatus;
-use faster_core::store::{FasterKv, FasterKvConfig, Functions, RmwInPlaceResult};
+use faster_core::store::{DeleteInfo, FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInfo, RmwInPlaceResult, UpsertInfo};
 
 // ═══════════════════════════════════════════════════════════════════
 // VarLenFunctions — Functions impl for u64 keys + Vec<u8> values
@@ -46,7 +46,7 @@ impl Functions for VarLenFunctions {
     type Output = Option<Vec<u8>>;
     type Context = ();
 
-    fn read(&self, _key: &u64, value: &Vec<u8>, _input: &Vec<u8>, output: &mut Option<Vec<u8>>) {
+    fn read(&self, _key: &u64, value: &Vec<u8>, _input: &Vec<u8>, output: &mut Option<Vec<u8>>, _info: &ReadInfo) {
         *output = Some(value.clone());
     }
 
@@ -57,6 +57,7 @@ impl Functions for VarLenFunctions {
         input: &Vec<u8>,
         _old_value: Option<&Vec<u8>>,
         _output: &mut Option<Vec<u8>>,
+        _info: &UpsertInfo,
     ) {
         *value = input.clone();
     }
@@ -67,6 +68,7 @@ impl Functions for VarLenFunctions {
         input: &Vec<u8>,
         value: &mut Vec<u8>,
         _output: &mut Option<Vec<u8>>,
+        _info: &RmwInfo,
     ) {
         *value = input.clone();
     }
@@ -77,6 +79,7 @@ impl Functions for VarLenFunctions {
         _input: &Vec<u8>,
         _value: &mut Vec<u8>,
         _output: &mut Option<Vec<u8>>,
+        _info: &RmwInfo,
     ) -> RmwInPlaceResult {
         // Append semantics: the value will grow, so we always need a new
         // record. Do NOT modify value here — rmw_copy_update will be
@@ -91,6 +94,7 @@ impl Functions for VarLenFunctions {
         old_value: &Vec<u8>,
         new_value: &mut Vec<u8>,
         output: &mut Option<Vec<u8>>,
+        _info: &RmwInfo,
     ) {
         let mut merged = old_value.clone();
         merged.extend_from_slice(input);
