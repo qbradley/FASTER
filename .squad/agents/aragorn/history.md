@@ -597,3 +597,32 @@ Created `rust/crates/faster-core/examples/cache_store.rs` — a Rust port of the
 - `CompactionPlan` missing `dead_bytes`, `tombstone_bytes`, `total_chain_hops` fields — fixed by Boromir (SF-3/5/8/9)
 - `log::warn!()` references without `log` crate dependency — fixed by Boromir
 - `has_pending()` method on `DrainList` — fixed by Legolas (disk-io-bench)
+
+---
+
+### W3-06 — SF-4: Key::hash_from_bytes trait method (2026-03-07)
+
+**What:** Added `hash_from_bytes(&[u8]) -> KeyHash` to the `Key` trait, enabling zero-copy hash computation directly from serialized bytes during compaction.
+
+**Key files:**
+- `rust/crates/faster-core/src/record/traits.rs`: New trait method with default impl + optimized overrides for all built-in types
+- `rust/crates/faster-core/src/compaction/address_update.rs`: Updated `swing_one()` and `remove_tombstone()` to use `hash_from_bytes` instead of deserialize-then-hash
+
+**Design:**
+- Default implementation: `Self::deserialize(buf).hash()` — correct but allocates for variable-length types
+- Numeric types (u32, u64, i32, i64): inline LE decode + hash, no allocation (already stack-only but avoids trait dispatch)
+- Variable-length types (Vec<u8>, String): read length prefix, hash data bytes directly via `faster_hash_bytes()` — zero heap allocation
+- Follows existing pattern of `serialized_size_from_bytes` and `eq_from_bytes` — same doc style, same contract structure
+
+**Tests:**
+- 6 unit tests covering specific values for all built-in types
+- 6 proptest property tests verifying `hash_from_bytes(buf) == deserialize(buf).hash()` for all types
+- All 1180 lib tests pass (verified when Functions trait is consistent)
+
+**Also fixed:**
+- Pre-existing stale `VarLenFunctions` test impl in scanner.rs (missing info params from Functions trait change in 571d99fe)
+
+**Learnings:**
+- In multi-agent environments, VS Code file watchers aggressively revert file changes. Use `git add` immediately after writing, or write+stage atomically via Python scripts
+- The merge commit d7510d2e created an inconsistency between operations.rs (uses info structs) and functions.rs (doesn't define them). This pre-existing issue blocks --all-targets compilation
+- `KeyHash` must derive `PartialEq` for proptest's `prop_assert_eq!` — it already does

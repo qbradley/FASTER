@@ -11,8 +11,122 @@
 
 use core::marker::PhantomData;
 
-use crate::record::{Key, Value};
+use crate::address::LogicalAddress;
+use crate::record::{Key, RecordInfo, Value};
 use crate::status::OperationStatus;
+
+// ── Operation info structs ──────────────────────────────────────────
+
+/// Context information passed to [`Functions::read`].
+///
+/// Provides metadata about the record being read, such as its location in the
+/// log and the record header. Fields may be extended in the future.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct ReadInfo {
+    /// Logical version of the session (0 until checkpoint support lands).
+    pub version: u64,
+    /// Log address of the record.
+    pub address: LogicalAddress,
+    /// Header of the record being accessed.
+    pub record_info: RecordInfo,
+}
+
+impl ReadInfo {
+    /// Creates a new `ReadInfo`.
+    pub fn new(version: u64, address: LogicalAddress, record_info: RecordInfo) -> Self {
+        Self {
+            version,
+            address,
+            record_info,
+        }
+    }
+}
+
+/// Context information passed to [`Functions::upsert`] and
+/// [`Functions::upsert_in_place_raw`].
+///
+/// When upserting a brand-new key the `address` is
+/// [`LogicalAddress::INVALID`] and `record_info` is zeroed because the
+/// record has not been allocated yet.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct UpsertInfo {
+    /// Logical version of the session.
+    pub version: u64,
+    /// Log address of the existing record (or [`LogicalAddress::INVALID`] for new keys).
+    pub address: LogicalAddress,
+    /// Header of the existing record (zeroed for new keys).
+    pub record_info: RecordInfo,
+}
+
+impl UpsertInfo {
+    /// Creates a new `UpsertInfo`.
+    pub fn new(version: u64, address: LogicalAddress, record_info: RecordInfo) -> Self {
+        Self {
+            version,
+            address,
+            record_info,
+        }
+    }
+}
+
+/// Context information passed to [`Functions::rmw_initial`],
+/// [`Functions::rmw_in_place`], [`Functions::rmw_in_place_raw`],
+/// [`Functions::rmw_copy_update`], [`Functions::rmw_need_initial_update`],
+/// and [`Functions::rmw_need_copy_update`].
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct RmwInfo {
+    /// Logical version of the session.
+    pub version: u64,
+    /// Log address of the existing record (or [`LogicalAddress::INVALID`] for initial inserts).
+    pub address: LogicalAddress,
+    /// Header of the existing record (zeroed for initial inserts).
+    pub record_info: RecordInfo,
+    /// `true` when this callback is part of a copy-update to a new record.
+    pub is_copy_update: bool,
+}
+
+impl RmwInfo {
+    /// Creates a new `RmwInfo`.
+    pub fn new(
+        version: u64,
+        address: LogicalAddress,
+        record_info: RecordInfo,
+        is_copy_update: bool,
+    ) -> Self {
+        Self {
+            version,
+            address,
+            record_info,
+            is_copy_update,
+        }
+    }
+}
+
+/// Context information passed to [`Functions::delete`].
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct DeleteInfo {
+    /// Logical version of the session.
+    pub version: u64,
+    /// Log address of the record being deleted.
+    pub address: LogicalAddress,
+    /// Header of the record being deleted.
+    pub record_info: RecordInfo,
+}
+
+impl DeleteInfo {
+    /// Creates a new `DeleteInfo`.
+    pub fn new(version: u64, address: LogicalAddress, record_info: RecordInfo) -> Self {
+        Self {
+            version,
+            address,
+            record_info,
+        }
+    }
+}
 
 // ── RmwInPlaceResult ─────────────────────────────────────────────────
 
@@ -76,6 +190,7 @@ pub trait Functions: Send + Sync + 'static {
         value: &Self::Value,
         input: &Self::Input,
         output: &mut Self::Output,
+        info: &ReadInfo,
     );
 
     /// Called when a pending Read completes (optional notification).
@@ -101,6 +216,7 @@ pub trait Functions: Send + Sync + 'static {
         input: &Self::Input,
         old_value: Option<&Self::Value>,
         output: &mut Self::Output,
+        info: &UpsertInfo,
     );
 
     // ── Raw in-place support ────────────────────────────────────────────
@@ -126,8 +242,9 @@ pub trait Functions: Send + Sync + 'static {
         value_len: usize,
         input: &Self::Input,
         output: &mut Self::Output,
+        info: &UpsertInfo,
     ) {
-        let _ = (key, value_ptr, value_len, input, output);
+        let _ = (key, value_ptr, value_len, input, output, info);
         unreachable!("called upsert_in_place_raw but SUPPORTS_RAW_IN_PLACE is false; this is a bug")
     }
 
@@ -143,15 +260,16 @@ pub trait Functions: Send + Sync + 'static {
         value_len: usize,
         input: &Self::Input,
         output: &mut Self::Output,
+        info: &RmwInfo,
     ) -> RmwInPlaceResult {
-        let _ = (key, value_ptr, value_len, input, output);
+        let _ = (key, value_ptr, value_len, input, output, info);
         unreachable!("called rmw_in_place_raw but SUPPORTS_RAW_IN_PLACE is false; this is a bug")
     }
 
     // ── RMW ─────────────────────────────────────────────────────────
 
     /// Decide whether to create a new record when the key is not found.
-    fn rmw_need_initial_update(&self, _key: &Self::Key, _input: &Self::Input) -> bool {
+    fn rmw_need_initial_update(&self, _key: &Self::Key, _input: &Self::Input, _info: &RmwInfo) -> bool {
         true
     }
 
@@ -162,6 +280,7 @@ pub trait Functions: Send + Sync + 'static {
         input: &Self::Input,
         value: &mut Self::Value,
         output: &mut Self::Output,
+        info: &RmwInfo,
     );
 
     /// Update a record in-place in the mutable region.
@@ -171,6 +290,7 @@ pub trait Functions: Send + Sync + 'static {
         input: &Self::Input,
         value: &mut Self::Value,
         output: &mut Self::Output,
+        info: &RmwInfo,
     ) -> RmwInPlaceResult;
 
     /// Decide whether to copy a read-only record before updating.
@@ -179,6 +299,7 @@ pub trait Functions: Send + Sync + 'static {
         _key: &Self::Key,
         _input: &Self::Input,
         _old_value: &Self::Value,
+        _info: &RmwInfo,
     ) -> bool {
         true
     }
@@ -192,6 +313,7 @@ pub trait Functions: Send + Sync + 'static {
         old_value: &Self::Value,
         new_value: &mut Self::Value,
         output: &mut Self::Output,
+        info: &RmwInfo,
     );
 
     /// Called when a pending RMW completes (optional notification).
@@ -207,7 +329,7 @@ pub trait Functions: Send + Sync + 'static {
     // ── Delete ───────────────────────────────────────────────────────
 
     /// Called when a record is being deleted (optional cleanup).
-    fn delete(&self, _key: &Self::Key, _value: &mut Self::Value) {}
+    fn delete(&self, _key: &Self::Key, _value: &mut Self::Value, _info: &DeleteInfo) {}
 }
 
 // ── SimpleFunctions ─────────────────────────────────────────────────
@@ -260,6 +382,7 @@ where
         value: &Self::Value,
         _input: &Self::Input,
         output: &mut Self::Output,
+        _info: &ReadInfo,
     ) {
         *output = Some(*value);
     }
@@ -271,6 +394,7 @@ where
         input: &Self::Input,
         _old_value: Option<&Self::Value>,
         _output: &mut Self::Output,
+        _info: &UpsertInfo,
     ) {
         *value = *input;
     }
@@ -284,6 +408,7 @@ where
         value_len: usize,
         input: &Self::Input,
         _output: &mut Self::Output,
+        _info: &UpsertInfo,
     ) {
         debug_assert_eq!(value_len, core::mem::size_of::<V>());
         // SAFETY: Caller guarantees value_ptr is valid, properly aligned, and
@@ -298,6 +423,7 @@ where
         value_len: usize,
         input: &Self::Input,
         _output: &mut Self::Output,
+        _info: &RmwInfo,
     ) -> RmwInPlaceResult {
         debug_assert_eq!(value_len, core::mem::size_of::<V>());
         // SAFETY: Same guarantees as upsert_in_place_raw.
@@ -311,6 +437,7 @@ where
         input: &Self::Input,
         value: &mut Self::Value,
         _output: &mut Self::Output,
+        _info: &RmwInfo,
     ) {
         *value = *input;
     }
@@ -321,6 +448,7 @@ where
         input: &Self::Input,
         value: &mut Self::Value,
         _output: &mut Self::Output,
+        _info: &RmwInfo,
     ) -> RmwInPlaceResult {
         *value = *input;
         RmwInPlaceResult::InPlaceOk
@@ -333,6 +461,7 @@ where
         _old_value: &Self::Value,
         new_value: &mut Self::Value,
         _output: &mut Self::Output,
+        _info: &RmwInfo,
     ) {
         *new_value = *input;
     }
@@ -351,18 +480,21 @@ where
 /// # Examples
 ///
 /// ```
-/// use faster_core::store::{CounterFunctions, Functions, RmwInPlaceResult};
+/// use faster_core::store::{CounterFunctions, Functions, RmwInfo, RmwInPlaceResult};
+/// use faster_core::address::LogicalAddress;
+/// use faster_core::record::RecordInfo;
 ///
 /// let f = CounterFunctions::<u64>::new();
+/// let info = RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::from_raw(0), false);
 ///
 /// // Initial: counter starts at the delta value.
 /// let mut value: i64 = 0;
 /// let mut output: i64 = 0;
-/// f.rmw_initial(&42u64, &5i64, &mut value, &mut output);
+/// f.rmw_initial(&42u64, &5i64, &mut value, &mut output, &info);
 /// assert_eq!(value, 5);
 ///
 /// // In-place: accumulate.
-/// let result = f.rmw_in_place(&42u64, &3i64, &mut value, &mut output);
+/// let result = f.rmw_in_place(&42u64, &3i64, &mut value, &mut output, &info);
 /// assert_eq!(value, 8);
 /// assert_eq!(output, 8);
 /// assert_eq!(result, RmwInPlaceResult::InPlaceOk);
@@ -403,6 +535,7 @@ where
         value: &Self::Value,
         _input: &Self::Input,
         output: &mut Self::Output,
+        _info: &ReadInfo,
     ) {
         *output = *value;
     }
@@ -414,6 +547,7 @@ where
         input: &Self::Input,
         _old_value: Option<&Self::Value>,
         _output: &mut Self::Output,
+        _info: &UpsertInfo,
     ) {
         *value = *input;
     }
@@ -424,6 +558,7 @@ where
         input: &Self::Input,
         value: &mut Self::Value,
         _output: &mut Self::Output,
+        _info: &RmwInfo,
     ) {
         *value = *input;
     }
@@ -434,6 +569,7 @@ where
         input: &Self::Input,
         value: &mut Self::Value,
         output: &mut Self::Output,
+        _info: &RmwInfo,
     ) -> RmwInPlaceResult {
         *value += *input;
         *output = *value;
@@ -447,6 +583,7 @@ where
         old_value: &Self::Value,
         new_value: &mut Self::Value,
         output: &mut Self::Output,
+        _info: &RmwInfo,
     ) {
         *new_value = *old_value + *input;
         *output = *new_value;
@@ -458,6 +595,23 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::address::{LogicalAddress, Offset, Page};
+    use crate::record::RecordInfo;
+
+    /// Convenience: a dummy ReadInfo for unit tests.
+    fn dummy_read_info() -> ReadInfo {
+        ReadInfo::new(0, LogicalAddress::INVALID, RecordInfo::from_raw(0))
+    }
+
+    /// Convenience: a dummy UpsertInfo for unit tests.
+    fn dummy_upsert_info() -> UpsertInfo {
+        UpsertInfo::new(0, LogicalAddress::INVALID, RecordInfo::from_raw(0))
+    }
+
+    /// Convenience: a dummy RmwInfo for unit tests.
+    fn dummy_rmw_info() -> RmwInfo {
+        RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::from_raw(0), false)
+    }
 
     // ── SimpleFunctions ─────────────────────────────────────────────
 
@@ -469,7 +623,7 @@ mod tests {
         let input = 0u64; // unused for read
         let mut output: Option<u64> = None;
 
-        f.read(&key, &value, &input, &mut output);
+        f.read(&key, &value, &input, &mut output, &dummy_read_info());
         assert_eq!(output, Some(42));
     }
 
@@ -481,12 +635,12 @@ mod tests {
 
         // Upsert with no old value (new record).
         let mut value = 0u64;
-        f.upsert(&key, &mut value, &100u64, None, &mut output);
+        f.upsert(&key, &mut value, &100u64, None, &mut output, &dummy_upsert_info());
         assert_eq!(value, 100);
 
         // Upsert with old value (in-place update).
         let old = 100u64;
-        f.upsert(&key, &mut value, &200u64, Some(&old), &mut output);
+        f.upsert(&key, &mut value, &200u64, Some(&old), &mut output, &dummy_upsert_info());
         assert_eq!(value, 200);
     }
 
@@ -497,21 +651,21 @@ mod tests {
         let mut output: Option<u64> = None;
 
         // Phase 1: initial — key doesn't exist.
-        assert!(f.rmw_need_initial_update(&key, &10u64));
+        assert!(f.rmw_need_initial_update(&key, &10u64, &dummy_rmw_info()));
         let mut value = 0u64;
-        f.rmw_initial(&key, &10u64, &mut value, &mut output);
+        f.rmw_initial(&key, &10u64, &mut value, &mut output, &dummy_rmw_info());
         assert_eq!(value, 10);
 
         // Phase 2: in-place update — key exists in mutable region.
-        let result = f.rmw_in_place(&key, &20u64, &mut value, &mut output);
+        let result = f.rmw_in_place(&key, &20u64, &mut value, &mut output, &dummy_rmw_info());
         assert_eq!(result, RmwInPlaceResult::InPlaceOk);
         assert_eq!(value, 20);
 
         // Phase 3: copy update — key exists in read-only region.
         let old_value = 20u64;
-        assert!(f.rmw_need_copy_update(&key, &30u64, &old_value));
+        assert!(f.rmw_need_copy_update(&key, &30u64, &old_value, &dummy_rmw_info()));
         let mut new_value = 0u64;
-        f.rmw_copy_update(&key, &30u64, &old_value, &mut new_value, &mut output);
+        f.rmw_copy_update(&key, &30u64, &old_value, &mut new_value, &mut output, &dummy_rmw_info());
         assert_eq!(new_value, 30);
     }
 
@@ -525,12 +679,12 @@ mod tests {
 
         // Initialize with the first delta.
         let mut value = 0i64;
-        f.rmw_initial(&key, &1i64, &mut value, &mut output);
+        f.rmw_initial(&key, &1i64, &mut value, &mut output, &dummy_rmw_info());
         assert_eq!(value, 1);
 
         // Accumulate 9 more increments of 1.
         for _ in 0..9 {
-            let result = f.rmw_in_place(&key, &1i64, &mut value, &mut output);
+            let result = f.rmw_in_place(&key, &1i64, &mut value, &mut output, &dummy_rmw_info());
             assert_eq!(result, RmwInPlaceResult::InPlaceOk);
         }
         assert_eq!(value, 10);
@@ -545,18 +699,18 @@ mod tests {
 
         // Initialize counter at 100.
         let mut value = 0i64;
-        f.rmw_initial(&key, &100i64, &mut value, &mut output);
+        f.rmw_initial(&key, &100i64, &mut value, &mut output, &dummy_rmw_info());
         assert_eq!(value, 100);
 
         // In-place: add 50.
-        let result = f.rmw_in_place(&key, &50i64, &mut value, &mut output);
+        let result = f.rmw_in_place(&key, &50i64, &mut value, &mut output, &dummy_rmw_info());
         assert_eq!(result, RmwInPlaceResult::InPlaceOk);
         assert_eq!(value, 150);
         assert_eq!(output, 150);
 
         // Copy-update from read-only region: add 25.
         let mut new_value = 0i64;
-        f.rmw_copy_update(&key, &25i64, &value, &mut new_value, &mut output);
+        f.rmw_copy_update(&key, &25i64, &value, &mut new_value, &mut output, &dummy_rmw_info());
         assert_eq!(new_value, 175);
         assert_eq!(output, 175);
     }
@@ -571,7 +725,7 @@ mod tests {
         // by ensuring concrete types work through generics.
         fn use_functions<F: Functions>(f: &F, key: &F::Key, val: &F::Value, input: &F::Input) {
             let mut output = F::Output::default();
-            f.read(key, val, input, &mut output);
+            f.read(key, val, input, &mut output, &dummy_read_info());
         }
 
         let f = SimpleFunctions::<u64, u64>::new();
@@ -612,7 +766,7 @@ mod tests {
     fn simple_functions_default() {
         let f = SimpleFunctions::<u64, u64>::default();
         let mut output: Option<u64> = None;
-        f.read(&1u64, &42u64, &0u64, &mut output);
+        f.read(&1u64, &42u64, &0u64, &mut output, &dummy_read_info());
         assert_eq!(output, Some(42));
     }
 
@@ -621,7 +775,7 @@ mod tests {
         let f = CounterFunctions::<u64>::default();
         let mut value = 0i64;
         let mut output = 0i64;
-        f.rmw_initial(&1u64, &5i64, &mut value, &mut output);
+        f.rmw_initial(&1u64, &5i64, &mut value, &mut output, &dummy_rmw_info());
         assert_eq!(value, 5);
     }
 
@@ -629,7 +783,7 @@ mod tests {
     fn counter_functions_read() {
         let f = CounterFunctions::<u64>::new();
         let mut output = 0i64;
-        f.read(&1u64, &42i64, &0i64, &mut output);
+        f.read(&1u64, &42i64, &0i64, &mut output, &dummy_read_info());
         assert_eq!(output, 42);
     }
 
@@ -638,7 +792,7 @@ mod tests {
         let f = CounterFunctions::<u64>::new();
         let mut value = 0i64;
         let mut output = 0i64;
-        f.upsert(&1u64, &mut value, &99i64, None, &mut output);
+        f.upsert(&1u64, &mut value, &99i64, None, &mut output, &dummy_upsert_info());
         assert_eq!(value, 99);
     }
 
@@ -663,7 +817,7 @@ mod tests {
         let mut output: Option<u64> = None;
         // SAFETY: `value_ptr` and `value_len` refer to a valid, aligned `u64` buffer on the stack.
         unsafe {
-            f.upsert_in_place_raw(&1u64, value_ptr, value_len, &42u64, &mut output);
+            f.upsert_in_place_raw(&1u64, value_ptr, value_len, &42u64, &mut output, &dummy_upsert_info());
         }
         assert_eq!(u64::from_le_bytes(buf), 42);
     }
@@ -677,7 +831,7 @@ mod tests {
         let mut output: Option<u64> = None;
         // SAFETY: `value_ptr` and `value_len` refer to a valid, aligned `u64` buffer on the stack.
         let result =
-            unsafe { f.rmw_in_place_raw(&1u64, value_ptr, value_len, &99u64, &mut output) };
+            unsafe { f.rmw_in_place_raw(&1u64, value_ptr, value_len, &99u64, &mut output, &dummy_rmw_info()) };
         assert_eq!(result, RmwInPlaceResult::InPlaceOk);
         assert_eq!(u64::from_le_bytes(buf), 99);
     }
@@ -691,7 +845,7 @@ mod tests {
         let mut output: Option<u32> = None;
         // SAFETY: `value_ptr` and `value_len` refer to a valid, aligned `u32` buffer on the stack.
         unsafe {
-            f.upsert_in_place_raw(&1u64, value_ptr, value_len, &12345u32, &mut output);
+            f.upsert_in_place_raw(&1u64, value_ptr, value_len, &12345u32, &mut output, &dummy_upsert_info());
         }
         assert_eq!(u32::from_le_bytes(buf), 12345);
     }
@@ -705,7 +859,7 @@ mod tests {
         for expected in [1u64, 100, u64::MAX, 0, 42] {
             // SAFETY: `ptr` points to an 8-byte stack buffer valid for the lifetime of this loop.
             unsafe {
-                f.upsert_in_place_raw(&0u64, ptr, 8, &expected, &mut output);
+                f.upsert_in_place_raw(&0u64, ptr, 8, &expected, &mut output, &dummy_upsert_info());
             }
             assert_eq!(u64::from_le_bytes(buf), expected);
         }
@@ -717,9 +871,56 @@ mod tests {
         const { assert!(!CounterFunctions::<u64>::SUPPORTS_RAW_IN_PLACE) };
         let mut value = 10i64;
         let mut output = 0i64;
-        let result = f.rmw_in_place(&1u64, &5i64, &mut value, &mut output);
+        let result = f.rmw_in_place(&1u64, &5i64, &mut value, &mut output, &dummy_rmw_info());
         assert_eq!(result, RmwInPlaceResult::InPlaceOk);
         assert_eq!(value, 15);
         assert_eq!(output, 15);
+    }
+
+    // ── Info struct tests ───────────────────────────────────────────
+
+    #[test]
+    fn read_info_fields() {
+        let addr = LogicalAddress::new(Page(3), Offset(128));
+        let ri = RecordInfo::from_raw(0xDEAD);
+        let info = ReadInfo::new(42, addr, ri);
+        assert_eq!(info.version, 42);
+        assert_eq!(info.address, addr);
+        assert_eq!(info.record_info.raw(), 0xDEAD);
+    }
+
+    #[test]
+    fn upsert_info_fields() {
+        let info = UpsertInfo::new(7, LogicalAddress::INVALID, RecordInfo::from_raw(0));
+        assert_eq!(info.version, 7);
+        assert_eq!(info.address, LogicalAddress::INVALID);
+    }
+
+    #[test]
+    fn rmw_info_copy_update_flag() {
+        let info_no = RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::from_raw(0), false);
+        assert!(!info_no.is_copy_update);
+
+        let info_yes = RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::from_raw(0), true);
+        assert!(info_yes.is_copy_update);
+    }
+
+    #[test]
+    fn delete_info_fields() {
+        let addr = LogicalAddress::new(Page(1), Offset(64));
+        let ri = RecordInfo::from_raw(0xBEEF);
+        let info = DeleteInfo::new(99, addr, ri);
+        assert_eq!(info.version, 99);
+        assert_eq!(info.address, addr);
+        assert_eq!(info.record_info.raw(), 0xBEEF);
+    }
+
+    #[test]
+    fn info_structs_are_copy_clone_debug() {
+        let ri = ReadInfo::new(0, LogicalAddress::INVALID, RecordInfo::from_raw(0));
+        let ri2 = ri; // Copy
+        let ri3 = ri.clone(); // Clone
+        let _ = format!("{:?}", ri2); // Debug
+        let _ = ri3;
     }
 }

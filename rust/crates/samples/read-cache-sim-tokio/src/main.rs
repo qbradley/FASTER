@@ -23,7 +23,7 @@ use clap::Parser;
 use faster_core::grow::GrowConfig;
 use faster_core::hybrid_log::eviction::EvictionPolicy;
 use faster_core::status::OperationStatus;
-use faster_core::store::{FasterKv, FasterKvConfig, Functions, RmwInPlaceResult};
+use faster_core::store::{FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo};
 use faster_tokio::TokioFileDevice;
 use rand::Rng;
 
@@ -111,7 +111,7 @@ impl Functions for BlockFunctions {
     type Output = Option<Vec<u8>>;
     type Context = ();
 
-    fn read(&self, _key: &u64, value: &Vec<u8>, _input: &Vec<u8>, output: &mut Option<Vec<u8>>) {
+    fn read(&self, _key: &u64, value: &Vec<u8>, _input: &Vec<u8>, output: &mut Option<Vec<u8>>, _info: &ReadInfo) {
         *output = Some(value.clone());
     }
 
@@ -122,6 +122,7 @@ impl Functions for BlockFunctions {
         input: &Vec<u8>,
         _old_value: Option<&Vec<u8>>,
         _output: &mut Option<Vec<u8>>,
+        _info: &UpsertInfo,
     ) {
         *value = input.clone();
     }
@@ -132,6 +133,7 @@ impl Functions for BlockFunctions {
         input: &Vec<u8>,
         value: &mut Vec<u8>,
         _output: &mut Option<Vec<u8>>,
+        _info: &RmwInfo,
     ) {
         *value = input.clone();
     }
@@ -142,6 +144,7 @@ impl Functions for BlockFunctions {
         input: &Vec<u8>,
         value: &mut Vec<u8>,
         _output: &mut Option<Vec<u8>>,
+        _info: &RmwInfo,
     ) -> RmwInPlaceResult {
         *value = input.clone();
         RmwInPlaceResult::InPlaceOk
@@ -154,6 +157,7 @@ impl Functions for BlockFunctions {
         _old_value: &Vec<u8>,
         new_value: &mut Vec<u8>,
         _output: &mut Option<Vec<u8>>,
+        _info: &RmwInfo,
     ) {
         *new_value = input.clone();
     }
