@@ -797,6 +797,7 @@ impl<F: Functions> FasterKv<F> {
     /// - [`OperationStatus::Created`] — new record inserted.
     /// - [`OperationStatus::InPlaceUpdated`] — existing mutable record updated.
     /// - [`OperationStatus::CopyUpdated`] — read-only record copied to tail.
+    /// - [`OperationStatus::Revivified`] — sealed record revivified in-place.
     /// - [`OperationStatus::Pending`] — record is on disk; queued for async I/O.
     pub fn upsert(
         &self,
@@ -838,6 +839,7 @@ impl<F: Functions> FasterKv<F> {
     /// - [`OperationStatus::Created`] — new record created via `rmw_initial`.
     /// - [`OperationStatus::InPlaceUpdated`] — updated in mutable region.
     /// - [`OperationStatus::CopyUpdated`] — read-only record copied to tail.
+    /// - [`OperationStatus::Revivified`] — sealed record revivified in-place.
     /// - [`OperationStatus::Pending`] — record is on disk; queued for async I/O.
     pub fn rmw(
         &self,
