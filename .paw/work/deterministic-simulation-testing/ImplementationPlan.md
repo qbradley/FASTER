@@ -46,7 +46,7 @@ A framework where:
 
 ## Phase Status
 
-- [ ] **Phase 1: Simulation Abstraction Layer** — cfg-gated imports in faster-core, sync.rs migration, feature flag
+- [x] **Phase 1: Simulation Abstraction Layer** — cfg-gated imports in faster-core, sync.rs migration, feature flag
 - [ ] **Phase 2: Deterministic Scheduler & Task Model** — Cooperative scheduler, SimTask, deterministic channels in faster-dst
 - [ ] **Phase 3: CRUD + Epoch Simulation Integration** — FasterKv under scheduler, yield points, epoch invariant tests
 - [ ] **Phase 4: Crash-Point Injection Framework** — 18 instrumentation sites, crash+recovery test scenarios

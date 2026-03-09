@@ -8,6 +8,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-faster-core = { path = "../faster-core" }
+faster-core = { path = "../faster-core", features = ["simulation"] }
 rand = { version = "0.9", features = ["small_rng"] }
 tempfile = "3"

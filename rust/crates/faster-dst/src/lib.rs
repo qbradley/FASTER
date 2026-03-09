@@ -69,18 +69,26 @@
 //!   recovery path can detect torn pages written by [`SimulatedDevice`]'s
 //!   partial-write fault injection.
 
+pub mod channel;
 pub mod clock;
 pub mod device;
 pub mod fault;
 pub mod harness;
 pub mod invariant;
 pub mod runtime;
+pub mod scheduler;
+pub mod task;
+pub mod trace;
 pub mod workload;
 
+pub use channel::SimChannel;
 pub use clock::SimulatedClock;
 pub use device::{SimulatedDevice, SimulatedStorage};
 pub use fault::{CrashPoint, FaultConfig};
 pub use harness::SimulationHarness;
 pub use invariant::{AllCommittedRecoverable, Invariant};
 pub use runtime::SimulationRuntime;
+pub use scheduler::DeterministicScheduler;
+pub use task::{BlockReason, SchedulerResult, SimTask, TaskAction, TaskContext, TaskId};
+pub use trace::{IoOp, SimulationTrace, TraceEvent};
 pub use workload::{CrudWorkload, Workload};

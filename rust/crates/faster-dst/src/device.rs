@@ -16,6 +16,8 @@ use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
 use crate::fault::FaultConfig;
+use crate::task::TaskId;
+use crate::trace::IoOp;
 
 // ── SimulatedStorage ───────────────────────────────────────────────────────
 
@@ -352,6 +354,33 @@ impl Device for SimulatedDevice {
 
     fn close(&self) {
         // No-op — data lives in the Arc<SimulatedStorage>.
+    }
+}
+
+// ── IoCompletionEvent ──────────────────────────────────────────────────────
+
+/// Descriptor returned by [`SimulatedDevice::pending_completions`].
+///
+/// In Phase 2 the device is still fully synchronous, so this type exists as a
+/// forward-compatible integration point for Phase 3 where I/O completions
+/// will be delivered through the scheduler.
+#[derive(Debug, Clone)]
+pub struct IoCompletionEvent {
+    /// Which task initiated this I/O (if known).
+    pub task_id: Option<TaskId>,
+    /// The operation that completed.
+    pub op: IoOp,
+    /// Whether the operation succeeded.
+    pub result: IoStatus,
+}
+
+impl SimulatedDevice {
+    /// Return pending I/O completions ready for scheduler delivery.
+    ///
+    /// **Phase 2**: always returns an empty `Vec` because all I/O is
+    /// synchronous.  Phase 3 will make this functional.
+    pub fn pending_completions(&self) -> Vec<IoCompletionEvent> {
+        Vec::new()
     }
 }
 
