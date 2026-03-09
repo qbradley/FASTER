@@ -9,10 +9,9 @@ repository.workspace = true
 homepage.workspace = true
 keywords = ["io", "device", "storage", "async", "completion"]
 categories.workspace = true
-publish = false
 
 [dependencies]
-faster-core = { path = "../faster-core" }
+faster-core = { version = "0.1.0", path = "../faster-core" }
 
 [features]
 default = ["file-io"]

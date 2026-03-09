@@ -19,6 +19,11 @@
 ## Learnings
 <!-- Append new learnings -->
 - Merge consolidation across 5+ agent branches requires careful ordering — merge dependency chains first.
+- For crates.io publishing, path dependencies must include `version = "x.y.z"` alongside `path = "..."` — omitting it causes publish failures.
+- The `checkin` script runs `git add -A`, so untracked files from other branches will get swept in. Stage explicitly and use `git commit` directly when surgical staging is needed.
+- cargo-release `consolidate-commits = true` is essential for workspace releases — one commit covers all crate version bumps.
+- Semver-checks should be `continue-on-error: true` pre-1.0 since minor versions can break APIs per convention.
+- Crates.io index takes ~30s to sync after publish — dependent crate publishes must wait or they'll fail resolution.
 - Hash table bucket size is a critical perf knob — 64-byte cache line alignment is non-negotiable.
 - Always verify `cargo nextest run` passes after merge, not just `cargo build`.
 - Multi-agent workspace requires explicit coordination protocol for shared files (Cargo.toml, mod.rs).
@@ -80,3 +85,23 @@ Wrote `rust/TESTING-ARCHITECTURE.md` — a 490-line comprehensive testing strate
 **Cross-agent context:**
 - Aragorn resolved the mutation testing gap in this same session — `rust/docs/mutation-testing.md` + `mutants.toml`, 100% catch rate on `address.rs` pilot.
 - Legolas fixed `hash_layout_bench` in this same session — the Release Gate tier's benchmark smoke test now runs in 0.15s.
+
+---
+
+### Wave 3 Release Automation (2026-03-09)
+**Branch:** `gandalf/release-automation`
+
+Set up complete release automation infrastructure for the Rust workspace.
+
+**Deliverables:**
+1. `rust/release.toml` — cargo-release config with dependency-ordered publish (core → device → tokio → uring → ffi), tag format `rust-v{version}`, consolidated commits, pre-release hooks.
+2. `.github/workflows/rust-ci.yml` — added semver-checks job (PR-only, `continue-on-error: true` pre-1.0) for all 5 publishable crates.
+3. `.github/workflows/rust-release.yml` — full release pipeline triggered by `rust-v*` tags: validate → test (nextest) → semver-checks → publish (dependency order with 30s index sync delays) → GitHub Release. Includes dry-run via `workflow_dispatch`.
+4. `rust/docs/releasing.md` — human-readable release guide: version strategy, dry-run, publish, rollback procedures.
+5. Cargo.toml updates — removed `publish = false` from 5 publishable crates, added `version` constraints to path deps for crates.io compatibility, added `publish = false` to `faster-dst`.
+
+**Key architectural decisions:**
+- Actual dependency graph: `faster-core` (root) → `faster-device`, `faster-tokio`, `faster-uring` → `faster-ffi` (depends on core + device).
+- Non-publishable: `faster-bench` (benchmarks), `faster-dst` (test framework), all samples.
+- Semver checks are advisory pre-1.0, will become mandatory post-1.0.
+- Release tag format `rust-v*` avoids collision with existing `squad-release.yml` (Node.js, triggered on `main` push).

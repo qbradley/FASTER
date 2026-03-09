@@ -1,0 +1,250 @@
+# Rust crate release workflow for the FASTER workspace.
+# Triggered by tags matching rust-v* (e.g. rust-v0.1.0).
+# Also supports manual dry-run via workflow_dispatch.
+
+name: Rust Release
+
+on:
+  push:
+    tags:
+      - "rust-v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run — validate everything but skip crates.io publish"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+defaults:
+  run:
+    working-directory: rust
+
+jobs:
+  # ── Pre-flight validation ──────────────────────────────────────────
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      dry_run: ${{ steps.meta.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version and mode
+        id: meta
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION=$(grep '^version' crates/faster-core/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+            DRY_RUN="${{ github.event.inputs.dry_run }}"
+          else
+            VERSION="${GITHUB_REF_NAME#rust-v}"
+            DRY_RUN="false"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "dry_run=${DRY_RUN}" >> "$GITHUB_OUTPUT"
+          echo "📦 Version: ${VERSION}"
+          echo "🔍 Dry run: ${DRY_RUN}"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+
+      - name: Format check
+        run: |
+          rustup toolchain install nightly --component rustfmt
+          cargo +nightly fmt --all -- --check
+
+      - name: Clippy lints
+        run: cargo clippy --workspace -- -D warnings
+        env:
+          RUSTFLAGS: "-D warnings"
+
+  # ── Full test suite ────────────────────────────────────────────────
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Run tests (debug)
+        run: cargo nextest run --workspace
+
+      - name: Run tests (release)
+        run: cargo nextest run --workspace --release
+
+      - name: Run doc tests
+        run: cargo test --workspace --doc
+
+  # ── Semver compatibility check ─────────────────────────────────────
+  semver-checks:
+    name: Semver Checks
+    runs-on: ubuntu-latest
+    needs: validate
+    # Informational — don't block release on semver issues pre-1.0.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@cargo-semver-checks
+
+      - name: Check semver (faster-core)
+        run: cargo semver-checks -p faster-core || echo "⚠️ semver issue detected (informational pre-1.0)"
+
+      - name: Check semver (faster-device)
+        run: cargo semver-checks -p faster-device || echo "⚠️ semver issue detected (informational pre-1.0)"
+
+      - name: Check semver (faster-tokio)
+        run: cargo semver-checks -p faster-tokio || echo "⚠️ semver issue detected (informational pre-1.0)"
+
+      - name: Check semver (faster-uring)
+        run: cargo semver-checks -p faster-uring || echo "⚠️ semver issue detected (informational pre-1.0)"
+
+      - name: Check semver (faster-ffi)
+        run: cargo semver-checks -p faster-ffi || echo "⚠️ semver issue detected (informational pre-1.0)"
+
+  # ── Publish to crates.io ───────────────────────────────────────────
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    needs: [validate, test, semver-checks]
+    # Always run after test, even if semver-checks had warnings.
+    if: always() && needs.test.result == 'success' && needs.validate.result == 'success'
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+
+      - name: Publish crates (dependency order)
+        if: needs.validate.outputs.dry_run == 'false'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          publish_crate() {
+            local crate="$1"
+            echo "📦 Publishing ${crate}..."
+            cargo publish -p "${crate}" --no-verify
+            echo "✅ ${crate} published — waiting for index sync..."
+            sleep 30
+          }
+
+          # Publish in strict dependency order.
+          publish_crate faster-core
+          publish_crate faster-device
+          publish_crate faster-tokio
+          publish_crate faster-uring
+          publish_crate faster-ffi
+
+          echo "🎉 All crates published successfully!"
+
+      - name: Dry-run publish
+        if: needs.validate.outputs.dry_run == 'true'
+        run: |
+          set -euo pipefail
+          for crate in faster-core faster-device faster-tokio faster-uring faster-ffi; do
+            echo "🔍 Dry-run: cargo publish -p ${crate} --dry-run"
+            cargo publish -p "${crate}" --dry-run || echo "⚠️ ${crate} dry-run had issues"
+          done
+
+  # ── GitHub Release ────────────────────────────────────────────────
+  github-release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: [validate, publish]
+    if: always() && needs.publish.result == 'success' && needs.validate.outputs.dry_run == 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          VERSION="${{ needs.validate.outputs.version }}"
+          {
+            echo "notes<<EOF"
+            echo "## FASTER Rust v${VERSION}"
+            echo ""
+            echo "### Published Crates"
+            echo ""
+            echo "| Crate | Version | crates.io |"
+            echo "|-------|---------|-----------|"
+            echo "| faster-core | ${VERSION} | [crates.io](https://crates.io/crates/faster-core/${VERSION}) |"
+            echo "| faster-device | ${VERSION} | [crates.io](https://crates.io/crates/faster-device/${VERSION}) |"
+            echo "| faster-tokio | ${VERSION} | [crates.io](https://crates.io/crates/faster-tokio/${VERSION}) |"
+            echo "| faster-uring | ${VERSION} | [crates.io](https://crates.io/crates/faster-uring/${VERSION}) |"
+            echo "| faster-ffi | ${VERSION} | [crates.io](https://crates.io/crates/faster-ffi/${VERSION}) |"
+            echo ""
+            echo "### Installation"
+            echo ""
+            echo '```toml'
+            echo "[dependencies]"
+            echo "faster-core = \"${VERSION}\""
+            echo '```'
+            echo ""
+            echo "### What's Changed"
+            echo ""
+            # Try to find previous tag for changelog.
+            PREV_TAG=$(git tag --list 'rust-v*' --sort=-version:refname | head -2 | tail -1) || true
+            if [ -n "${PREV_TAG}" ] && [ "${PREV_TAG}" != "rust-v${VERSION}" ]; then
+              git log "${PREV_TAG}..rust-v${VERSION}" --oneline --no-decorate -- rust/ | head -50
+            else
+              echo "Initial release — see README.md for full documentation."
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: rust-v${{ needs.validate.outputs.version }}
+          name: "FASTER Rust v${{ needs.validate.outputs.version }}"
+          body: ${{ steps.notes.outputs.notes }}
+          draft: false
+          prerelease: ${{ contains(needs.validate.outputs.version, '-') }}

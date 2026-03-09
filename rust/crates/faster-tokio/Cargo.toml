@@ -9,10 +9,9 @@ repository.workspace = true
 homepage.workspace = true
 keywords = ["async", "tokio", "kv-store", "adapter"]
 categories.workspace = true
-publish = false
 
 [dependencies]
-faster-core = { path = "../faster-core" }
+faster-core = { version = "0.1.0", path = "../faster-core" }
 tokio = { workspace = true, features = ["rt", "time"] }
 
 [dev-dependencies]
