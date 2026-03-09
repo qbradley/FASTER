@@ -106,3 +106,22 @@ Built the missing comparison and detection infrastructure for benchmark baseline
 - Scripts designed for VM execution only — match existing project convention.
 - `bench-compare.sh` saves results as `current` baseline, compares against named baseline (default `main`).
 - JSON output mode (`--json`) for CI integration.
+
+---
+
+### Performance Regression Detection System — Wave 2 (2026-03-09T1817Z)
+**Branch:** `legolas/perf-regression-detection` — merged to `squad`
+
+Built the missing comparison and detection infrastructure for benchmark baselines.
+
+**Artifacts:**
+- `rust/scripts/bench-compare.sh` — Runs benchmarks against saved baseline, parses criterion comparison output, flags regressions exceeding configurable threshold (default 5%), outputs human-readable table or JSON. Exit code 1 on threshold violation.
+- `rust/scripts/bench-baseline.sh` — Saves/lists/compares/deletes named baselines with metadata (git commit, timestamp, machine info). Supports `save`, `list`, `compare`, `info`, `delete` commands.
+- `rust/docs/benchmarking.md` — Full benchmarking guide: suite descriptions, baseline management, regression detection workflow, criterion methodology, troubleshooting.
+- Updated `rust/TESTING-ARCHITECTURE.md` — Added scripts to table, marked regression automation gap as resolved.
+
+**Wave 2 team summary (2,067 tests pass in 58s):**
+- Elrond: 29 tokio integration tests
+- Saruman: 29 I/O error injection tests (FaultInjectingDevice)
+- Éowyn: DST 5→108 scenarios (324 test cases in ~30s)
+- Boromir: 20 recovery edge case tests; filed `"log."` prefix coupling decision

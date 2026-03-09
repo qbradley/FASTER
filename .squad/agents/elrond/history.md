@@ -175,3 +175,21 @@
 - `FasterKv::recover(&mut self, ...)` takes `&mut self`, so it cannot be called through `AsyncFasterKv` (which wraps `Arc<FasterKv>`). Recovery must be done on a fresh `FasterKv` instance before wrapping.
 
 **Branch:** `elrond/tokio-integration-tests`
+
+---
+
+## 2026-03-09T1817Z: Wave 2 Completion — Team Context Update
+
+**Wave 2 summary (all 5 agents merged to `squad`, 2,067 tests pass in 58s):**
+
+- **Elrond (you):** 29 tokio integration tests in `rust/crates/faster-tokio/tests/integration.rs`. Commits `81afb646`, `94a5ee94`.
+- **Saruman:** 29 I/O error injection tests with `FaultInjectingDevice` in `rust/crates/faster-core/tests/io_error_injection.rs` (1,307 LOC).
+- **Legolas:** Performance regression detection scripts (`bench-compare.sh`, `bench-baseline.sh`) + `benchmarking.md`. 5% threshold, exit 1 on violation.
+- **Éowyn:** DST expanded 5→108 scenario templates (14 categories, 324 test cases in ~30s).
+- **Boromir:** 20 recovery edge case tests in `rust/crates/faster-core/tests/recovery_edge_cases.rs` (1,064 LOC). Filed `SyncFileDevice` `"log."` prefix coupling decision.
+
+**Key decisions added to `decisions.md`:**
+- SyncFileDevice prefix must be `"log."` for recovery compatibility
+- DST parameterized expansion architecture (108 templates)
+- hash_layout_bench OA prototype removal
+- Performance regression detection infrastructure

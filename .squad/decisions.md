@@ -608,3 +608,150 @@ All agents should reference `TESTING-ARCHITECTURE.md` when:
 **By:** qbradley
 **What:** The decision "Criterion Benchmarks Must Use Custom main() for Nextest Compatibility" is **cancelled/superseded**. After Legolas's hash_layout_bench fix (removed dead OA code, reduced dataset sizes) and qbradley's bench integration fix, all criterion benchmarks now work correctly with `cargo nextest run --all-targets` using standard `criterion_main!()`. The custom `main()` with `--bench` flag detection pattern is no longer required for new benchmarks.
 **Why:** The root cause was hash_layout_bench being extraordinarily slow (hours in debug mode), not a fundamental criterion/nextest incompatibility. With the bench fixed, the workaround is unnecessary.
+
+---
+
+# Decision: hash_layout_bench — Remove Dead OA Prototype Code
+
+**Author:** Legolas (Performance Guru)
+**Date:** 2026-03-09
+**Branch:** `legolas/fix-hash-bench` → merged to `squad`
+
+## Context
+
+The `hash_layout_bench` was disabled (benches() commented out) because it took hours to run. Root causes:
+
+1. **Dead code**: ~136 lines of open-addressing (Robin Hood) prototype no longer needed — team decision settled on multi-slot buckets.
+2. **Oversized datasets**: 50K/200K/800K keys with 2^14/2^16/2^18 bucket tables. Setup cost alone for 800K entries was significant.
+3. **Default criterion settings**: 100 samples × 5s measurement × 14 benchmarks.
+
+## Decision
+
+- **Removed all OA prototype code** (~206 lines total including OA benchmarks). Aligns with settled team decision: keep multi-slot buckets.
+- **Reduced dataset sizes** to 3K/12K/50K (spans L2→L3 cache boundary without excessive setup).
+- **Added criterion config**: `sample_size(10)`, `measurement_time(3s)` to cap wall-clock time.
+- **Re-enabled benches()** call in main().
+
+## Outcome
+
+- File: 360 lines → 154 lines
+- Smoke test: <0.2s (was hanging/hours)
+- Full criterion run: ~2-3 minutes (was hours)
+- All precheckin checks pass (fmt, clippy, doctests, nextest)
+
+## Impact
+
+Benchmark still covers the three key regression scenarios: `faster_find`, `faster_prefetch_find`, `faster_batch16`.
+
+---
+
+# Decision: Performance Regression Detection Infrastructure
+
+**Author:** Legolas (Performance Guru)
+**Date:** 2026-03-09
+**Branch:** `legolas/perf-regression-detection`
+**Status:** Implemented — merged to `squad`
+
+## Summary
+
+Added two scripts and documentation providing the missing regression detection layer on top of the existing benchmark suite and CI baseline saves.
+
+## What Changed
+
+| Artifact | Purpose |
+|----------|---------|
+| `rust/scripts/bench-compare.sh` | Compare current benchmarks against saved baseline, flag regressions beyond threshold |
+| `rust/scripts/bench-baseline.sh` | Save/list/compare/delete named baselines with git+machine metadata |
+| `rust/docs/benchmarking.md` | Complete benchmarking guide for the team |
+
+## Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| 5% default regression threshold | Criterion noise threshold is 2%; 5% provides headroom for system variance while catching real regressions |
+| Exit code 1 for threshold violations | Enables CI gates: `bench-compare.sh \|\| fail_pr` |
+| Metadata in `target/criterion/.baselines/` | Lives with ephemeral benchmark data, not in source control |
+| JSON output mode (`--json`) | Machine-readable for CI pipelines and PR comment bots |
+| No benchmark code changes | Bench code was fixed in Wave 1; this is purely wrapper tooling |
+
+## Team Impact
+
+- **All agents**: Use `bench-compare.sh` to verify performance impact before merge
+- **CI**: Integrate `bench-compare.sh --json` for automated regression gating
+- **Gandalf**: `TESTING-ARCHITECTURE.md` updated — regression automation gap marked resolved
+- **Benchmarks run on VM only** — documented and enforced by convention
+
+---
+
+# Decision: DST Parameterized Expansion Architecture
+
+**Author:** Éowyn (DST Expert)
+**Date:** 2026-03-09
+**Branch:** `eowyn/dst-100-scenarios`
+**Status:** Implemented — merged to `squad`
+
+## Summary
+
+Expanded DST from 5 to 108 scenario templates via parameterized expansion. All scenarios use the existing `ScenarioTemplate` / `SeedCampaign` framework with no breaking changes.
+
+## Key Architecture Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Fixed crash points per template (not seed-modulated) | Each template tests one specific crash point. Campaign seed sweep tests that point across many data permutations. |
+| `all_expanded_scenarios()` single entry point | One function returns all 108 templates. Easy to enumerate, count, and pass to campaigns. |
+| No framework changes to campaign runner | Templates work within existing write→checkpoint→crash→recover→verify model. |
+| Parameterized template constructors | New scenario files accept crash point + record count arguments. Usable both via expansion engine and directly. |
+
+## Expansion Breakdown (108 scenarios across 14 categories)
+
+| Category | Count |
+|----------|-------|
+| Checkpoint crash variants (6 phases × 3 record sizes) | 18 |
+| Compaction crash variants (6 phases × 3 record sizes) | 18 |
+| Recovery crash variants (6 phases × 3 record sizes) | 18 |
+| Concurrent ckpt+compact | 6 |
+| Dual ckpt+recovery | 6 |
+| Dual compact+recovery | 6 |
+| Overwrite crash | 6 |
+| Large record recovery | 3 |
+| Compaction-scale recovery | 3 |
+| High-density crash | 6 |
+| Torn write (no crash) | 3 |
+| Torn write + crash | 6 |
+| Write error recovery | 3 |
+| Mixed timing (OnVisit) | 6 |
+
+## Team Impact
+
+- **Frodo (CI)**: `campaign_expanded_smoke` (324 cases ~30s) ready for Tier 2. `campaign_expanded_full` (10,800 cases, ignored) for Tier 3.
+- **All**: `scenarios::expansion::all_expanded_scenarios()` is the canonical API for the full scenario set.
+
+---
+
+# Decision: SyncFileDevice Prefix Must Be "log." for Recovery Compatibility
+
+**Author:** Boromir (QA Engineer)
+**Date:** 2026-03-09
+**Branch:** `boromir/recovery-edge-cases`
+**Status:** Observation — requires documentation or API fix
+
+## Summary
+
+`LogRecoveryEngine::validate_log_file` hardcodes segment filenames as `log.{n}` (e.g., `log.0`, `log.1`). If a `SyncFileDevice` is created with a different prefix (e.g., `"hlog."`), checkpoint metadata will reference log addresses that the recovery engine cannot locate, causing `ValidationFailed` errors.
+
+## Impact
+
+Any code creating `SyncFileDevice` with a non-`"log."` prefix that later attempts recovery will fail silently at the validation step. Affects:
+
+- **Gandalf/Faramir**: Store construction in examples/production configs must use `"log."` prefix.
+- **Éowyn**: DST scenarios using SyncFileDevice need the same prefix.
+- **Sam/Legolas**: Benchmark setups with alternate prefixes won't be recovery-compatible.
+
+## Recommendation
+
+Either:
+1. **Document the constraint**: Add a doc comment on `SyncFileDevice::new` noting prefix must be `"log."` for checkpoint/recovery compatibility.
+2. **Or fix the coupling**: Store the device prefix in checkpoint metadata so `validate_log_file` uses the correct prefix.
+
+Option 2 is the correct long-term fix but is a larger change.

@@ -77,3 +77,17 @@ Changes: SF-3 tombstone vector warning (log::warn! when >100MB), SF-5 chain hops
 - Scale: 20-checkpoint discovery, 16K-bucket index recovery, deep directory paths
 
 **Results:** 20 tests, all pass. Full precheckin (1942 tests) green.
+
+---
+
+### 2026-03-09T1817Z: Wave 2 Completion — Team Context Update
+
+**Wave 2 summary (all 5 agents merged to `squad`, 2,067 tests pass in 58s):**
+
+- **Boromir (you):** 20 recovery edge case tests in `tests/recovery_edge_cases.rs` (1,064 LOC). Commits `a19ef033`, `b589d756`, `95db91fc`. Filed `boromir-log-prefix-recovery.md` (SyncFileDevice `"log."` prefix decision). Note: Éowyn's stray commit `80dca96c` was dropped by coordinator before merge.
+- **Elrond:** 29 tokio integration tests in `rust/crates/faster-tokio/tests/integration.rs`.
+- **Saruman:** 29 I/O error injection tests with `FaultInjectingDevice` in `rust/crates/faster-core/tests/io_error_injection.rs` (1,307 LOC).
+- **Legolas:** Performance regression detection scripts (`bench-compare.sh`, `bench-baseline.sh`) + `benchmarking.md`.
+- **Éowyn:** DST expanded 5→108 scenario templates (14 categories, 324 test cases in ~30s).
+
+**Your `"log."` prefix decision is now in `decisions.md` and propagated to Éowyn's history** — she needs to know this constraint affects DST scenarios using `SyncFileDevice`.
