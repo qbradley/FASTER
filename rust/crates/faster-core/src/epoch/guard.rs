@@ -4,9 +4,8 @@
 //! [`EpochThread`] is the per-thread handle that creates guards and
 //! manages the thread's lifecycle in the epoch table.
 
+use crate::sync::{Arc, Ordering};
 use std::marker::PhantomData;
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use super::table::EpochTable;
 

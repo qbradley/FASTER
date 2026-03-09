@@ -60,11 +60,10 @@
 //! assert_eq!(item.a, 0); // zero-initialized from fresh page
 //! ```
 
+use crate::sync::{Arc, AtomicPtr, AtomicU64, Mutex, Ordering};
 use std::alloc::{self, Layout};
 use std::marker::PhantomData;
 use std::ptr::{self, NonNull};
-use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
 use crate::address::{LogicalAddress, MAX_OFFSET, MAX_PAGE, Offset, Page};
 use crate::epoch::EpochTable;

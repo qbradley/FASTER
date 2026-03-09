@@ -4,7 +4,7 @@
 //! table. Entries are cache-line padded via [`CachePadded`] to prevent
 //! false sharing between threads writing to adjacent slots.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use crate::sync::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use super::{INACTIVE_EPOCH, PHASE_COUNT};
 

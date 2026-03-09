@@ -22,9 +22,7 @@
 //! 4. The [`CompletedIo`] contains the data buffer and record offset, allowing
 //!    the caller to extract the key/value and retry the operation.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use crate::sync::{Arc, AtomicBool, AtomicU32, AtomicU64, Duration, Instant, Mutex, Ordering};
 
 use crate::buffer_pool::{AlignedBuffer, BufferPool};
 use crate::device::{Device, IoCompletionCallback, IoRequestResult, IoStatus, TypedIoContext};

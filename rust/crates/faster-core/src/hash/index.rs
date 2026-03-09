@@ -50,7 +50,7 @@
 //! `HashIndex` is `Send + Sync`. All operations are lock-free on the data
 //! path. Thread registration uses a mutex internally (rare, not hot path).
 
-use std::sync::Arc;
+use crate::sync::Arc;
 
 use crate::address::LogicalAddress;
 use crate::epoch::{EpochTable, EpochThread};

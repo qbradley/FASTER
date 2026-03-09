@@ -10,12 +10,11 @@
 //! - [`InMemoryDevice`] — stores data in a `RwLock<Vec<u8>>`. Used for
 //!   integration testing without touching the filesystem.
 
+use crate::sync::{AtomicU64, Ordering, RwLock};
 use std::io;
-use std::sync::RwLock;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(debug_assertions)]
-use std::sync::atomic::AtomicU64 as GenerationCounter;
+type GenerationCounter = AtomicU64;
 
 // ---------------------------------------------------------------------------
 // Callback & status types
