@@ -510,3 +510,94 @@ Squad retrospective covering the DST framework delivery (7-phase PAW), Phase A q
 **What:** Use claude-sonnet-4.6 for Scribe from now on, not claude-haiku-4.5
 **Why:** User request — captured for team memory
 
+
+---
+
+# Decision: Mutation Testing Configuration (cargo-mutants)
+
+**Author:** Aragorn (Rust Expert)
+**Date:** 2026-03-09
+**Branch:** `aragorn/mutation-testing` → merged to `squad`
+**Status:** Implemented
+
+## Summary
+
+Added `cargo-mutants` v27.0 configuration and documentation for the FASTER Rust project. Pilot on `address.rs` achieved 100% mutation catch rate (55/55 viable mutants caught, 0 timeouts).
+
+## Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| `timeout_multiplier = 3.0` | 3x baseline (~41s) gives ~120s headroom; eliminates prior timeout issues |
+| `test_tool = "nextest"` | Matches CI runner; parallel test execution |
+| `exclude_re` for bitwise field packing | `page_index`, `offset_in_page`, `from_page_offset` mutations cause infinite loops in unsafe code |
+| `exclude_re` for Display/Debug impls | Surviving mutants are cosmetic, not bugs — noise reduction |
+| `examine_globs` for Phase 1 critical modules | Focus on high-value code; full-crate runs deferred to periodic audits |
+| Quality target: 80% all / 85% critical | Per team decision; pilot exceeded at 100% |
+
+## Files Changed
+
+- `rust/mutants.toml` — cargo-mutants configuration
+- `rust/docs/mutation-testing.md` — NEW: workflow guide with pilot results
+- `rust/.gitignore` — Added `mutants.out/` exclusion
+
+## Team Impact
+
+- **All agents:** Can run `cargo mutants --package faster-core -F 'src/myfile.rs'` to check mutation coverage on changed files
+- **CI (future):** Full-scope run as pre-merge gate when runtime is acceptable (< 30 min target)
+
+---
+
+# Decision: Testing Architecture Documentation
+
+**Author:** Gandalf (Architect)
+**Date:** 2026-03-09
+**Branch:** `squad` (direct commit)
+**Status:** Implemented
+
+## Summary
+
+Created `rust/TESTING-ARCHITECTURE.md` as the definitive testing strategy document (490 lines) documenting ~1,950 tests across 9 categories and establishing a 4-tier validation architecture.
+
+## Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| 4-tier validation model | Maps test categories to CI cost/frequency tradeoffs |
+| Fast Gate < 60s | Every commit must complete in under 60 seconds |
+| `TESTING-ARCHITECTURE.md` is additive | Doesn't replace `TESTING.md` or `FUZZING.md` — adds architectural layer |
+| Document known gaps | Mutation testing, async suite, cross-platform CI explicitly named |
+
+## Tier Model
+
+| Tier | Budget | Frequency | Contents |
+|------|--------|-----------|----------|
+| Fast Gate | < 60s | Every commit | Unit + integration (nextest) |
+| Correctness Gate | < 5 min | Every PR | + property tests + Miri subset |
+| Deep Validation | < 30 min | Nightly | + full Miri + Loom + DST smoke |
+| Release Gate | < 2 hr | Pre-release | + fuzz + crash consistency + full mutation |
+
+## Relationship to Existing Docs
+- `TESTING.md` — quick-reference for categories and time budgets (unchanged)
+- `FUZZING.md` — fuzzing-specific guide (unchanged)
+- `TESTING-ARCHITECTURE.md` — comprehensive architectural overview that ties everything together (NEW)
+
+## Team Impact
+
+All agents should reference `TESTING-ARCHITECTURE.md` when:
+- Adding new test infrastructure
+- Deciding which test category to use for new code
+- Understanding the CI tier model
+- Planning test coverage improvements
+
+---
+
+### 2026-03-09T17:20Z: User directive — local merge workflow
+**By:** qbradley (via Copilot)
+**What:** Don't push to origin. Merge agent branches locally to `squad` branch for now.
+**Why:** Push still blocked by EMU auth. Work continues locally.
+
+### 2026-03-09T17:20Z: User directive — hash_layout_bench fix
+**By:** qbradley (via Copilot)
+**What:** hash_layout_bench was broken (1+ hour in debug). Assigned as background task to Legolas. **Resolved this session** — removed 206 lines dead OA prototype code, reduced dataset sizes, re-enabled benches(). Smoke test now 0.15s.
+**Why:** Bench must run in reasonable time to be useful.

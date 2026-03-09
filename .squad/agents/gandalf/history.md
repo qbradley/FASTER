@@ -57,3 +57,26 @@ Established project scaffolding: workspace layout, CI pipeline, coding standards
 **Key decisions:** (1) `rust/` directory for all Rust code. (2) `src/` = library crate, `tests/` = integration tests, `benches/` = criterion benchmarks. (3) Feature flags for optional deps (e.g., `tokio`). (4) `#[deny(unsafe_code)]` default, explicit `#[allow(unsafe_code)]` on modules that need it.
 
 **CI:** `cargo fmt --check && cargo clippy -- -D warnings && cargo nextest run`. No `--all-targets` flag.
+
+---
+
+### TESTING-ARCHITECTURE.md — Authoritative Testing Strategy (2026-03-09)
+**Branch:** `squad` (direct commit)
+
+Wrote `rust/TESTING-ARCHITECTURE.md` — a 490-line comprehensive testing strategy document. Audited all test infrastructure and established the canonical 4-tier validation model for the project.
+
+**4-tier validation model:**
+- Fast Gate (<60s, every commit): `cargo nextest run` — unit + integration
+- Correctness Gate (<5 min, every PR): + property tests + Miri subset
+- Deep Validation (<30 min, nightly): + full Miri + Loom + DST smoke
+- Release Gate (<2 hr, pre-release): + fuzz + crash consistency + full mutation
+
+**Complete test inventory:** ~1,950 tests across 9 categories (unit, integration, property, DST, Miri, Loom, fuzz, crash consistency, benchmarks).
+
+**Known gaps documented:** Mutation testing, async test suite, cross-platform CI, benchmark automation.
+
+**Relationship to existing docs:** `TESTING.md` (quick-reference, unchanged), `FUZZING.md` (fuzzing guide, unchanged), `TESTING-ARCHITECTURE.md` (architectural overview, new).
+
+**Cross-agent context:**
+- Aragorn resolved the mutation testing gap in this same session — `rust/docs/mutation-testing.md` + `mutants.toml`, 100% catch rate on `address.rs` pilot.
+- Legolas fixed `hash_layout_bench` in this same session — the Release Gate tier's benchmark smoke test now runs in 0.15s.
