@@ -20,9 +20,9 @@
 //! The maximum size class covers up to 64 MiB, which is sufficient for full
 //! page flushes at 32 MiB page size.
 
+use crate::sync::Mutex;
 use std::alloc::{Layout, alloc, dealloc};
 use std::ptr::NonNull;
-use std::sync::Mutex;
 
 // ---------------------------------------------------------------------------
 // AlignedBuffer

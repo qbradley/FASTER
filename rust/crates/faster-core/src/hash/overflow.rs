@@ -34,7 +34,7 @@
 //! | `get(addr)`            | `Get(addr)`                                |
 //! | `free(addr)`           | `Free(addr)`                               |
 
-use core::sync::atomic::Ordering;
+use crate::sync::{Ordering, fence};
 
 use crate::address::LogicalAddress;
 use crate::allocator::MallocFixedPageSize;
@@ -114,7 +114,7 @@ impl OverflowBucketPool {
         // into an overflow chain (via a Release store of the overflow pointer).
         // Without this fence, a concurrent reader on ARM/POWER could observe
         // stale entry data from the bucket's previous lifetime.
-        core::sync::atomic::fence(Ordering::Release);
+        fence(Ordering::Release);
 
         addr
     }

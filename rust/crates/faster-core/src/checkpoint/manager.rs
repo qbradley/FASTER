@@ -8,9 +8,9 @@
 //! suitable for single-node deployments. Pluggable backends (e.g. remote
 //! storage) can implement the trait directly.
 
+use crate::sync::{Arc, Mutex};
 use std::collections::VecDeque;
 use std::fmt;
-use std::sync::{Arc, Mutex};
 
 use super::{CheckpointToken, CheckpointType};
 

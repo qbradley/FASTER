@@ -14,6 +14,8 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::sync::{SystemTime, UNIX_EPOCH};
+
 use serde::{Deserialize, Serialize};
 
 use super::manager::CheckpointError;
@@ -352,8 +354,8 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Checkpoin
 /// Uses a minimal implementation that avoids pulling in `chrono` or `time`.
 fn now_iso8601() -> String {
     // std::time::SystemTime → duration since UNIX_EPOCH → manual formatting.
-    let dur = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let dur = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     let secs = dur.as_secs();
 

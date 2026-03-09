@@ -18,14 +18,13 @@
 //!
 //! Segment files are created on demand when first written.
 
+use crate::sync::channel::{Receiver, Sender, channel};
+use crate::sync::thread::{self, JoinHandle};
+use crate::sync::{Arc, AtomicBool, AtomicU64, Mutex, Ordering, RwLock};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, RwLock};
-use std::thread::{self, JoinHandle};
 
 use crate::device::{Device, IoCompletionCallback, IoRequestResult, IoStatus};
 
@@ -349,7 +348,7 @@ impl SyncFileDevice {
         fs::create_dir_all(&base)?;
 
         let registry = Arc::new(SegmentRegistry::new(base, prefix.to_owned()));
-        let (tx, rx) = mpsc::channel::<IoRequest>();
+        let (tx, rx) = channel::<IoRequest>();
         let rx = Arc::new(Mutex::new(rx));
 
         let mut threads = Vec::with_capacity(num_io_threads);

@@ -21,7 +21,7 @@
 //! `*const PageTable` pointer is safe because the page table outlives any
 //! in-flight flush (the allocator cannot be dropped while flushes are pending).
 
-use std::sync::atomic::Ordering;
+use crate::sync::Ordering;
 use std::{fmt, io};
 
 use crate::address::Page;

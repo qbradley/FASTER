@@ -12,7 +12,7 @@ categories.workspace = true
 publish = false
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(feature, values("tracing", "metrics"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(feature, values("tracing", "metrics", "simulation"))'] }
 
 [lints.clippy]
 undocumented_unsafe_blocks = "deny"
@@ -42,6 +42,8 @@ metrics = []
 loom = ["dep:loom"]
 # Enable tracing spans/events for observability (zero overhead when disabled)
 tracing = ["dep:tracing"]
+# Enable deterministic simulation testing (cooperative scheduler, simulated time/channels)
+simulation = []
 
 [[bench]]
 name = "core_benchmarks"

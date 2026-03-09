@@ -38,7 +38,8 @@
 //! ```
 
 use std::marker::PhantomData;
-use std::sync::Arc;
+
+use crate::sync::Arc;
 
 use crate::address::LogicalAddress;
 use crate::epoch::EpochTable;

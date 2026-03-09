@@ -32,8 +32,8 @@
 //! store.dispose_session(session);
 //! ```
 
+use crate::sync::{Arc, Duration, Instant, Mutex};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 
 use crate::address::{LogicalAddress, Page};
 use crate::checkpoint::{
@@ -239,7 +239,7 @@ impl<F: Functions> Drop for FasterKv<F> {
         //      hash_index, allocator, functions, device, epoch_table,
         //      session_pool, flusher, evictor, config.
 
-        use std::sync::atomic::Ordering;
+        use crate::sync::Ordering;
 
         let page_table = self.allocator.page_table();
         let head_page = self.allocator.head_address().page().0;
@@ -261,9 +261,9 @@ impl<F: Functions> Drop for FasterKv<F> {
         }
 
         // Step 2: Wait for in-flight async flushes (Flushing -> Flushed).
-        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-        const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1);
-        let deadline = std::time::Instant::now() + TIMEOUT;
+        const TIMEOUT: Duration = Duration::from_secs(5);
+        const POLL_INTERVAL: Duration = Duration::from_millis(1);
+        let deadline = Instant::now() + TIMEOUT;
 
         loop {
             let has_flushing = (head_page..=tail_page).any(|p| {
@@ -276,7 +276,7 @@ impl<F: Functions> Drop for FasterKv<F> {
                 break;
             }
 
-            if std::time::Instant::now() >= deadline {
+            if Instant::now() >= deadline {
                 eprintln!(
                     "FasterKv::drop: timeout waiting for in-flight I/O \
                      ({TIMEOUT:?} exceeded)"
@@ -284,7 +284,7 @@ impl<F: Functions> Drop for FasterKv<F> {
                 break;
             }
 
-            std::thread::sleep(POLL_INTERVAL);
+            crate::sync::thread::sleep(POLL_INTERVAL);
         }
 
         // Step 3: Close the device — joins I/O worker threads, ensuring all

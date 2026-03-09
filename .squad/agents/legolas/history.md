@@ -296,3 +296,30 @@
 - Multi-agent interference requires atomic copy→stage→branch-check→commit workflow
 - Missing closing brace caused all types after that point to appear "nested", producing cryptic "not found in module" errors
 - `git commit --amend` on wrong branch (due to another agent switching branches mid-command) can corrupt other agents' history — always verify branch before commit
+
+---
+
+## 2026-03-09: Fix hash_layout_bench 12+ Minute Nextest Hang
+
+**What:** All three criterion benchmark binaries (`hash_layout_bench`, `ycsb`, `core_benchmarks`) were running full statistical benchmarks (~100 samples × warmup × multiple functions) when invoked by `cargo nextest run --all-targets`, blocking every precheckin run for 12+ minutes.
+
+**Root Cause:** `criterion_main!()` generates a `main()` function that runs full benchmarks when the binary receives no `--bench` flag OR when it doesn't recognize nextest's invocation args. With `harness = false`, nextest treats these as custom test runners, but criterion doesn't implement nextest's test discovery protocol (`--list --format terse`). The result: nextest invokes the binary, criterion runs ALL benchmarks in full mode (100 samples × auto-tuned iterations × warmup per function).
+
+**Fix:** Replaced `criterion_main!(benches)` with a custom `main()` in all three bench files:
+- If `--bench` is present (cargo bench): delegates to `benches()` for full criterion run
+- Otherwise (nextest / cargo test): runs a minimal smoke test verifying setup + one lookup, then exits
+
+**Impact:**
+- `hash_layout_bench`: 12+ minutes → 0 seconds (nextest discovers 0 tests, skips binary)
+- Full precheckin: was hanging indefinitely → now completes in 38 seconds (1709 tests)
+- Full `cargo bench` invocation still works identically (uses `--bench` flag)
+
+**Files Changed:**
+- `rust/crates/faster-core/benches/hash_layout_bench.rs`
+- `rust/crates/faster-core/benches/ycsb.rs`
+- `rust/crates/faster-core/benches/core_benchmarks.rs`
+
+## Learnings
+
+- **Criterion + nextest `harness = false` trap:** `criterion_main!()` does NOT properly detect nextest's test invocation mode. Always use a custom `main()` that checks for `--bench` when combining criterion with nextest `--all-targets`.
+- **Multi-agent workspace safety:** The `checkin` script does `git add -A`, which is dangerous in a multi-agent workspace. Use selective `git add` + manual commit when other agents have uncommitted changes.

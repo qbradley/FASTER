@@ -54,7 +54,7 @@ macro_rules! metrics_inc {
         {
             $metrics
                 .$field
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                .fetch_add(1, $crate::sync::Ordering::Relaxed);
         }
     };
 }

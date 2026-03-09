@@ -14,10 +14,10 @@
 //! [`IndexCheckpointWriter`]: crate::checkpoint::index_writer::IndexCheckpointWriter
 //! [`IndexCheckpointReader`]: crate::checkpoint::index_writer::IndexCheckpointReader
 
+use crate::sync::Arc;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
-use std::sync::Arc;
 
 use crate::checkpoint::CheckpointError;
 use crate::checkpoint::index_writer::IndexCheckpointReader;

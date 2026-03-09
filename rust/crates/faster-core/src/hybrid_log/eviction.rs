@@ -21,7 +21,7 @@
 //! }
 //! ```
 
-use std::sync::atomic::Ordering;
+use crate::sync::Ordering;
 
 use crate::address::{LogicalAddress, Offset, Page};
 use crate::device::Device;

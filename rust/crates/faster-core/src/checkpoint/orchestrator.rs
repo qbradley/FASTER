@@ -22,7 +22,8 @@
 //!    and return to `Rest`.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+
+use crate::sync::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::checkpoint::index_writer::IndexCheckpointWriter;
 use crate::checkpoint::log_writer::LogCheckpointWriter;
@@ -270,17 +271,17 @@ impl CheckpointOrchestrator {
         let writer = LogCheckpointWriter::new(CheckpointType::FoldOver);
         let ctx = writer.begin_checkpoint(log, token)?;
 
-        let deadline = std::time::Instant::now() + self.config.max_wait_flush;
+        let deadline = Instant::now() + self.config.max_wait_flush;
         loop {
             if writer.wait_flush_complete(&ctx, log).is_ok() {
                 return Ok(());
             }
-            if std::time::Instant::now() >= deadline {
+            if Instant::now() >= deadline {
                 return Err(CheckpointError::InvalidState(
                     "flush timeout exceeded".into(),
                 ));
             }
-            std::thread::sleep(Duration::from_millis(1));
+            crate::sync::thread::sleep(Duration::from_millis(1));
         }
     }
 
@@ -293,11 +294,11 @@ impl CheckpointOrchestrator {
 /// Generate a random 128-bit value for checkpoint tokens.
 fn random_token_value() -> u128 {
     // Mix several sources of entropy available without external crates.
-    let t = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     let nanos = t.as_nanos();
-    let thread_id = format!("{:?}", std::thread::current().id());
+    let thread_id = format!("{:?}", crate::sync::thread::current().id());
     let mut hash: u128 = nanos;
     for b in thread_id.bytes() {
         hash = hash

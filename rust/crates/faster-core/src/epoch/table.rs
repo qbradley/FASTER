@@ -4,8 +4,7 @@
 //! coordination. It manages a global epoch counter, a table of per-thread
 //! epoch entries, and a drain list of deferred callbacks.
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use crate::sync::{Arc, AtomicU64, AtomicUsize, Mutex, Ordering};
 
 use crossbeam_utils::CachePadded;
 

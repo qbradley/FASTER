@@ -22,9 +22,9 @@
 //! 3. **Complete** — once all pages are persisted, produce a
 //!    [`LogRecoveryInfo`] with `use_snapshot_file = true`.
 
+use crate::sync::Instant;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 use crate::address::LogicalAddress;
 use crate::hybrid_log::HybridLogAllocator;

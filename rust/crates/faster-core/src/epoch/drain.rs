@@ -20,8 +20,8 @@
 //! - **Order**: the stack is LIFO, but we reverse the claimed chain
 //!   before execution to preserve FIFO insertion order.
 
+use crate::sync::{AtomicPtr, AtomicU64, Ordering};
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
 /// A single deferred action in the lock-free drain list.
 ///

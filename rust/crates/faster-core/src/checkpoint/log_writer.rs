@@ -14,7 +14,7 @@
 //! the hybrid log's flush pipeline. The writer merely observes flush progress
 //! and produces recovery metadata.
 
-use std::time::Instant;
+use crate::sync::Instant;
 
 use crate::address::LogicalAddress;
 use crate::hybrid_log::HybridLogAllocator;

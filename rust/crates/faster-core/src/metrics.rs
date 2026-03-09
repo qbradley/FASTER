@@ -7,8 +7,8 @@
 //! Call [`Metrics::snapshot()`] to capture a consistent-ish point-in-time
 //! view as plain `u64` values suitable for logging or export.
 
+use crate::sync::{AtomicU64, Ordering};
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Atomic operational counters.
 ///

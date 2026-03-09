@@ -20,8 +20,7 @@
 //! [`FasterKv`](crate::store::FasterKv). The orchestrator itself is
 //! stateless — it borrows what it needs for a single cycle.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::sync::{Arc, AtomicBool, Ordering};
 
 use crate::address::LogicalAddress;
 use crate::compaction::CompactionPlan;
