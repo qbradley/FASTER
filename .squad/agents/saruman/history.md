@@ -224,3 +224,42 @@
 - The Rust static library requires `-lpthread -ldl -lm` system library dependencies when linked into C++.
 - Pre-existing Rust compilation issues in faster-core (unrelated to FFI) prevent `cargo clippy` from passing on squad branch.
 
+---
+
+## 2026-03-09: I/O Error Injection Integration Tests
+
+**What:** Created `rust/crates/faster-core/tests/io_error_injection.rs` — 29 integration tests (1,200+ LOC) that deliberately trigger I/O errors and verify the store handles them correctly.
+
+**Branch:** `saruman/io-error-injection`
+
+**Test Harness:**
+- `FaultInjectingDevice` — a `Device` wrapper around `InMemoryDevice` with configurable fault injection. Supports write failures (ENOSPC), read failures (EIO), torn writes, various error codes, and runtime fault toggling via shared `AtomicBool`.
+- Self-contained in the test file to avoid circular dependency on `faster-dst`.
+
+**Test Categories (29 tests):**
+1. **In-memory isolation (1):** Device errors don't affect mutable-region operations.
+2. **Write failures (3):** `write_sync` error propagation, data preservation after N writes, fault log tracking.
+3. **Read failures (2):** `read_sync` error propagation, failure after N successful reads.
+4. **Async callback errors (2):** `read_async` and `write_async` deliver `IoStatus::Error` through callbacks.
+5. **Error code variants (2):** 6 error codes propagate correctly; `IoStatus` variant discrimination.
+6. **Torn writes (3):** Partial data written at configurable fractions, minimum 1-byte write, fault logging.
+7. **Runtime toggling (2):** Enable/disable faults at runtime for both read and write paths.
+8. **Store resilience (2):** Store continues operating after flush failures; recovers after transient errors.
+9. **Concurrent sessions (1):** 4 threads, one triggers device errors during flush, all verify their data.
+10. **Checkpoint/recovery (2):** Checkpoint handles write failures gracefully (no panic); recovery handles read failures (no panic).
+11. **Counter accuracy (1):** Read/write counters track sync and async operations.
+12. **Maintenance under faults (2):** Maintenance with read errors; interleaved success/failure flush cycles.
+13. **RMW with faults (1):** Read-modify-write on in-memory records unaffected by device errors.
+14. **Stress (2):** 1K ops with toggling faults; 10K ops with periodic fault windows.
+15. **Device compliance (2):** Passthrough behavior when faults disabled; truncate delegation.
+
+**Key Design Decisions:**
+1. **No `faster-dst` dependency** — Built a self-contained `FaultInjectingDevice` inside the test file. `faster-dst` depends on `faster-core`, so adding it as a dev-dependency would create a circular dependency.
+2. **Deterministic faults** — Threshold-based (`fail_after_n`) and flag-based (`AtomicBool`) injection, not probabilistic. Zero false positives.
+3. **C++ behavioral contracts** — Tests mirror C++ error handling: `IoStatus::Error(code)` through callbacks, `io::Error` from sync paths, in-memory operations isolated from device errors.
+
+**Runtime:** All 29 tests complete in < 0.5 seconds. Zero flakiness.
+
+**Precheckin:** 2033/2033 workspace tests pass (29 new + 2004 existing).
+
+
