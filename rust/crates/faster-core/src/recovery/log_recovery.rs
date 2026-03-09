@@ -132,14 +132,18 @@ impl fmt::Display for LogRecoveryResult {
 pub struct LogRecoveryEngine {
     /// Policy applied when a page CRC mismatch is detected.
     checksum_policy: ChecksumValidationPolicy,
+    /// Sector size used during flush (needed to locate CRC trailers).
+    sector_size: u32,
 }
 
 impl LogRecoveryEngine {
     /// Creates a new `LogRecoveryEngine` with the default
-    /// [`ChecksumValidationPolicy::Reject`] policy.
+    /// [`ChecksumValidationPolicy::Reject`] policy and
+    /// [`DEFAULT_SECTOR_SIZE`].
     pub fn new() -> Self {
         Self {
             checksum_policy: ChecksumValidationPolicy::default(),
+            sector_size: DEFAULT_SECTOR_SIZE as u32,
         }
     }
 
@@ -147,6 +151,13 @@ impl LogRecoveryEngine {
     #[must_use]
     pub fn with_checksum_policy(mut self, policy: ChecksumValidationPolicy) -> Self {
         self.checksum_policy = policy;
+        self
+    }
+
+    /// Builder: override the sector size used for CRC trailer location.
+    #[must_use]
+    pub fn with_sector_size(mut self, sector_size: u32) -> Self {
+        self.sector_size = sector_size;
         self
     }
 
@@ -187,6 +198,7 @@ impl LogRecoveryEngine {
             log_info.final_address,
             log_info.format_version,
             self.checksum_policy,
+            self.sector_size,
         )?;
 
         // Step 4: Compute restored address boundaries.
@@ -260,6 +272,7 @@ impl LogRecoveryEngine {
                 log_info.head_address,
                 log_info.format_version,
                 self.checksum_policy,
+                self.sector_size,
             )?;
         }
 
@@ -553,6 +566,7 @@ fn validate_page_checksums(
     tail: LogicalAddress,
     format_version: u64,
     policy: ChecksumValidationPolicy,
+    sector_size: u32,
 ) -> Result<(), RecoveryError> {
     // V2 pages have no trailer — skip validation.
     if format_version < 3 {
@@ -563,7 +577,6 @@ fn validate_page_checksums(
         return Ok(());
     }
 
-    let sector_size = DEFAULT_SECTOR_SIZE as u32;
     let page_size = PAGE_SIZE as u32;
     let segment_size = default_segment_size();
 
@@ -585,6 +598,12 @@ fn validate_page_checksums(
 
     let mut warnings = Vec::new();
 
+    // Reuse a single buffer across pages to avoid per-page allocations,
+    // and cache the file handle per segment to avoid repeated open/close.
+    let max_write_size = page_size as usize;
+    let mut buf = vec![0u8; max_write_size];
+    let mut current_seg: Option<(u64, fs::File)> = None;
+
     for page_num in begin_page..=last_data_page {
         let byte_offset = page_num as u64 * PAGE_SIZE;
         let seg_idx = byte_offset / segment_size;
@@ -594,6 +613,7 @@ fn validate_page_checksums(
         if !seg_path.exists() {
             // File-existence is already validated by validate_log_file;
             // skip silently here.
+            current_seg = None;
             continue;
         }
 
@@ -606,15 +626,24 @@ fn validate_page_checksums(
             page_size
         };
 
-        // Read the sector-aligned write region.
-        let mut buf = vec![0u8; write_size as usize];
+        let ws = write_size as usize;
+
+        // Reuse cached file handle when reading from the same segment.
         let read_result = (|| -> std::io::Result<()> {
-            let mut file = fs::File::open(&seg_path)?;
+            let file = match &mut current_seg {
+                Some((idx, f)) if *idx == seg_idx => f,
+                _ => {
+                    let f = fs::File::open(&seg_path)?;
+                    current_seg = Some((seg_idx, f));
+                    &mut current_seg.as_mut().unwrap().1
+                }
+            };
             file.seek(SeekFrom::Start(seg_offset))?;
-            file.read_exact(&mut buf)?;
+            file.read_exact(&mut buf[..ws])?;
             Ok(())
         })();
         if let Err(e) = read_result {
+            current_seg = None; // Invalidate cached handle on error.
             let msg = format!(
                 "page {page_num}: I/O error reading CRC region from {}: {e}",
                 seg_path.display()
@@ -632,11 +661,19 @@ fn validate_page_checksums(
         }
 
         // Extract the trailer.
-        let trailer = PageTrailer::from_slice(&buf, write_size as usize);
+        let trailer = PageTrailer::from_slice(&buf, ws);
+
+        // A trailer with valid_bytes == 0 and crc == 0 indicates no trailer
+        // was written (e.g. the page was full and the trailer was skipped to
+        // avoid overwriting record data). Skip validation for this page.
+        if trailer.valid_bytes == 0 && trailer.crc32 == 0 {
+            continue;
+        }
+
         let crc_range = trailer.valid_bytes as usize;
 
         // Sanity-check: crc_range must be within the buffer.
-        if crc_range > buf.len() {
+        if crc_range > ws {
             let msg = format!(
                 "page {page_num}: trailer valid_bytes ({crc_range}) exceeds \
                  write region ({write_size} bytes)"
