@@ -154,15 +154,18 @@ impl CheckpointOrchestrator {
     ) -> Result<(), CheckpointError> {
         // Prepare → InProgress
         self.advance(CheckpointPhase::Prepare, CheckpointPhase::InProgress)?;
+        crash_point!("checkpoint_prepare_to_in_progress");
 
         // 2. Write index checkpoint
         let index_info = self.write_index_checkpoint(token, index, base_dir)?;
+        crash_point!("checkpoint_index_written");
 
         // 3. Write log checkpoint
         let log_info = self.write_log_checkpoint(checkpoint_type, token, log)?;
 
         // InProgress → WaitFlush
         self.advance(CheckpointPhase::InProgress, CheckpointPhase::WaitFlush)?;
+        crash_point!("checkpoint_in_progress_to_wait_flush");
 
         // 4. Wait for flush (fold-over) — snapshot mode completes immediately
         if checkpoint_type == CheckpointType::FoldOver {
@@ -171,6 +174,7 @@ impl CheckpointOrchestrator {
 
         // WaitFlush → WaitCompletion
         self.advance(CheckpointPhase::WaitFlush, CheckpointPhase::WaitCompletion)?;
+        crash_point!("checkpoint_wait_flush_to_wait_completion");
 
         // 5. Collect session recovery info
         let session_infos = Self::collect_session_infos(sessions);
@@ -178,9 +182,11 @@ impl CheckpointOrchestrator {
         // 6. Persist combined metadata
         let store = CheckpointMetadataStore::new(base_dir.to_path_buf());
         store.write_checkpoint_metadata(token, &index_info, &log_info, &session_infos)?;
+        crash_point!("checkpoint_metadata_persisted");
 
         // WaitCompletion → Completed
         self.advance(CheckpointPhase::WaitCompletion, CheckpointPhase::Completed)?;
+        crash_point!("checkpoint_completed");
 
         // Completed → Rest
         self.state_machine.reset().map_err(|e| {

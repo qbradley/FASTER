@@ -125,7 +125,8 @@ mod instrument;
 
 #[deny(unsafe_code)]
 #[macro_use]
-mod sim_hooks;
+#[cfg_attr(feature = "simulation", allow(unused))]
+pub mod sim_hooks;
 
 #[deny(unsafe_code)]
 pub mod metrics;

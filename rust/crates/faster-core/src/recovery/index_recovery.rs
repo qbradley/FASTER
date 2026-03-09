@@ -144,6 +144,7 @@ impl IndexRecoveryEngine {
 
         // Step 3: CRC32 integrity check — fail fast on corruption.
         reader.verify().map_err(map_checkpoint_error)?;
+        crash_point!("recovery_index_crc_verified");
 
         // Step 4: Allocate a new HashIndex with the correct table size.
         let index = HashIndex::new(u32::from(table_size_bits));
@@ -158,6 +159,7 @@ impl IndexRecoveryEngine {
 
         // Step 5: Load raw bucket data into the index.
         self.load_buckets(&index_path, &index, num_buckets)?;
+        crash_point!("recovery_index_buckets_loaded");
 
         // Step 6: Set version and entry count from recovery metadata.
         index.set_version(plan.index_info.version as u32);
@@ -195,6 +197,7 @@ impl IndexRecoveryEngine {
         let expected_entry_count = reader.entry_count();
 
         reader.verify().map_err(map_checkpoint_error)?;
+        crash_point!("recovery_index_crc_verified");
 
         let index = HashIndex::with_epoch(u32::from(table_size_bits), epoch);
 
@@ -206,6 +209,7 @@ impl IndexRecoveryEngine {
         }
 
         self.load_buckets(&index_path, &index, num_buckets)?;
+        crash_point!("recovery_index_buckets_loaded");
 
         index.set_version(plan.index_info.version as u32);
 
