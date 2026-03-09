@@ -20,6 +20,9 @@
 <!-- Append new learnings -->
 - **Shared working directory hazard**: Multiple agents modify the same files. `git checkout -- <file>` wipes ALL uncommitted changes. Always stage + commit immediately.
 - **Atomic commit workflow**: edit → stage → commit in rapid succession. Never leave changes unstaged.
+- **Criterion baseline structure**: Criterion stores baselines *inside* each benchmark directory (e.g., `target/criterion/<bench_name>/<baseline_name>/estimates.json`), not in a flat directory. Scripts must traverse all benchmark dirs to check for baseline existence.
+- **Criterion comparison output parsing**: Criterion prints `change: [lo% mid% hi%]` on a line following the benchmark time report. The next line indicates `Performance has regressed/improved` or `Change within noise threshold`. Parse these three lines as a unit.
+- **`--load-baseline A --baseline B`**: To compare two named baselines without re-running benchmarks, use criterion's `--load-baseline` + `--baseline` flags together.
 - **Unicode in Python**: Box-drawing characters and em-dashes match fine with proper Python Unicode escapes.
 - **Concurrent agent /tmp file collision**: Use unique temp file names, not shared `/tmp/commit-msg.txt`.
 - **Branch switching by concurrent agents**: Always verify branch immediately before commit.
@@ -83,3 +86,23 @@ Changes: Pending-rate validation gate, `--force-disk` mode (auto-tunes buffer_pa
 **Cross-agent context:**
 - Gandalf wrote `rust/TESTING-ARCHITECTURE.md` this same session — the Release Gate tier now references a clean, working benchmark file.
 - Aragorn set up cargo-mutants with `rust/docs/mutation-testing.md` — mutation testing gap in testing architecture is now resolved.
+
+---
+
+### Performance Regression Detection System (2026-03-09)
+**Branch:** `legolas/perf-regression-detection`
+
+Built the missing comparison and detection infrastructure for benchmark baselines.
+
+**Artifacts:**
+- `rust/scripts/bench-compare.sh` — Runs benchmarks against saved baseline, parses criterion comparison output, flags regressions exceeding configurable threshold (default 5%), outputs human-readable table or JSON. Exit code 1 on threshold violation.
+- `rust/scripts/bench-baseline.sh` — Saves/lists/compares/deletes named baselines with metadata (git commit, timestamp, machine info). Supports `save`, `list`, `compare`, `info`, `delete` commands.
+- `rust/docs/benchmarking.md` — Full benchmarking guide: suite descriptions, baseline management, regression detection workflow, criterion methodology, troubleshooting.
+- Updated `rust/TESTING-ARCHITECTURE.md` — Added scripts to table, marked regression automation gap as resolved.
+
+**Key design decisions:**
+- 5% default threshold (configurable with `--threshold`) — balances noise tolerance with regression sensitivity.
+- Metadata stored in `target/criterion/.baselines/*.meta.json` — not checked in, lives with benchmark data.
+- Scripts designed for VM execution only — match existing project convention.
+- `bench-compare.sh` saves results as `current` baseline, compares against named baseline (default `main`).
+- JSON output mode (`--json`) for CI integration.

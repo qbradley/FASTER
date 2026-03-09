@@ -265,6 +265,9 @@ Baseline snapshots stored in `benches/baseline-iter*.json`.
 | Stress tests (ignored) | `cargo test -p faster-core --test concurrent_stress -- --ignored` | ~60s |
 | Coverage report | `cargo llvm-cov --workspace --html --open` | ~60s |
 | Benchmarks | `cargo bench -p faster-core` | ~5 min |
+| Save benchmark baseline | `rust/scripts/bench-baseline.sh save main` | ~5 min |
+| Compare against baseline | `rust/scripts/bench-compare.sh --baseline main` | ~5 min |
+| List baselines | `rust/scripts/bench-baseline.sh list` | instant |
 
 ### Scripts
 
@@ -278,6 +281,8 @@ All scripts live in `rust/scripts/` and are executable from the repo root.
 | `fuzz-ci` | CI fuzz runner with `--smoke`, `--target`, env var overrides |
 | `fuzz-minimize` | Corpus minimization via `cargo fuzz cmin` |
 | `disk-io-bench-matrix.sh` | Disk I/O benchmark matrix |
+| `bench-baseline.sh` | Save/list/compare benchmark baselines with metadata |
+| `bench-compare.sh` | Compare benchmarks against baseline, flag regressions |
 
 ### Prerequisites
 
@@ -363,6 +368,7 @@ cargo install cargo-llvm-cov       # for coverage
 **Purpose:** Detect performance regressions.
 **Location:** `crates/faster-core/benches/`
 **Characteristics:** Criterion with HTML reports. Baselines stored in JSON. **Run on dedicated VM only** — never on local dev machines (noisy results).
+**Regression detection:** `rust/scripts/bench-compare.sh` compares against saved baselines with configurable threshold (default 5%). See [benchmarking.md](docs/benchmarking.md).
 **Count:** 3 benchmark suites.
 
 ---
@@ -376,7 +382,7 @@ Honest assessment of what's missing or incomplete:
 | **Mutation testing** | Medium | Not configured. Consider `cargo-mutants` to verify test quality. |
 | **Async/Tokio test suite** | Medium | `faster-tokio` crate exists but has minimal dedicated test coverage. |
 | **Cross-platform CI** | Low | Tests run on Linux only. No Windows/macOS CI matrix. |
-| **Performance regression automation** | Medium | Benchmarks exist but no automated regression detection in CI. Baselines are manual. |
+| **Performance regression automation** | ✅ Resolved | `bench-compare.sh` compares against saved baselines with configurable threshold. See [benchmarking.md](docs/benchmarking.md). |
 | **Coverage gating** | Low | `cargo-llvm-cov` available but not enforced in CI. No minimum threshold (by design). |
 | **DST campaign scale** | Low | Current campaigns use small seed spaces. Extended campaigns need Tier 4 time. |
 | **FFI round-trip tests** | Medium | `faster-ffi` crate has limited test coverage for C API surface. |
@@ -386,7 +392,7 @@ Honest assessment of what's missing or incomplete:
 
 1. **Mutation testing trial** — Run `cargo-mutants` on `faster-core` to measure test effectiveness.
 2. **Tokio integration tests** — Add async operation tests for `faster-tokio` crate.
-3. **Benchmark CI** — Add Criterion `--save-baseline` / `--baseline` comparison to nightly CI.
+3. ~~**Benchmark CI** — Add Criterion `--save-baseline` / `--baseline` comparison to nightly CI.~~ ✅ Done: `bench-compare.sh` and `bench-baseline.sh` provide full regression detection. See [benchmarking.md](docs/benchmarking.md).
 4. **FFI smoke tests** — Add C-side tests that call through `faster-ffi` and verify round-trips.
 
 ---
