@@ -26,6 +26,8 @@
 use crate::address::{LogicalAddress, OFFSET_BITS};
 use crate::device::Device;
 use crate::hybrid_log::log_allocator::HybridLogAllocator;
+#[allow(unused_imports)]
+use crate::sim_hooks::crash_point;
 
 // ── TruncationResult ────────────────────────────────────────────────
 
@@ -103,6 +105,8 @@ impl<'a> BeginAddressAdvancer<'a> {
                 truncated_until_offset: 0,
             };
         }
+
+        crash_point!("compaction_begin_address_advanced");
 
         // Compute the device offset for the new begin-address.
         // Device offsets are linear: page * page_size + offset.
