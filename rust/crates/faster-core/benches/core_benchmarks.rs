@@ -1,4 +1,4 @@
-use criterion::{Criterion, black_box, criterion_group};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 // ---------------------------------------------------------------------------
 // Hash benchmarks
@@ -532,16 +532,7 @@ criterion_group!(
     bench_compaction_record_size_u64,
     bench_compaction_record_size_variable,
 );
-/// Custom main: full benchmarks under `cargo bench`, fast smoke test otherwise.
-fn main() {
-    if std::env::args().any(|a| a == "--bench") {
-        benches();
-    } else {
-        // Smoke test — verify hash function doesn't panic.
-        use faster_core::hash::faster_hash_u64;
-        let _ = black_box(faster_hash_u64(42u64));
-    }
-}
+criterion_main!(benches);
 
 // ---------------------------------------------------------------------------
 // Allocator benchmarks

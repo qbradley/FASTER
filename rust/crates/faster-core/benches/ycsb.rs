@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use criterion::criterion_main;
 use criterion::{
     BenchmarkId, Criterion, Throughput, black_box, criterion_group, measurement::WallTime,
 };
@@ -469,19 +470,4 @@ criterion_group! {
     config = custom_config();
     targets = ycsb_benchmarks
 }
-/// Custom main: full benchmarks under `cargo bench`, fast smoke test otherwise.
-fn main() {
-    if std::env::args().any(|a| a == "--bench") {
-        benches();
-    } else {
-        // Smoke test — verify store creation doesn't panic.
-        let store: FasterKv<SimpleFunctions<u64, u64>> = FasterKv::new(
-            Default::default(),
-            SimpleFunctions::default(),
-            NullDevice::new(),
-        );
-        let mut session = store.new_session();
-        let _ = store.upsert(&mut session, &1u64, &1u64, ());
-        store.dispose_session(session);
-    }
-}
+criterion_main!(benches);
