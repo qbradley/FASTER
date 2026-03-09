@@ -84,11 +84,17 @@ A framework where:
 - **2 time-using files — import migration**: Replace `use std::time::Instant` with `use crate::sync::Instant` in:
   - `checkpoint/log_writer.rs`, `checkpoint/snapshot_writer.rs`
 
-- **5 critical Instant::now() sites**: The calls at `kv.rs:266,279`, `orchestrator.rs:273,278`, and `faster-uring/device.rs:456,478` will automatically route through the abstraction after migration. No call-site changes needed — only imports change.
+- **3 critical Instant::now() sites in faster-core**: The calls at `kv.rs:266,279` and `orchestrator.rs:273,278` will route through the abstraction after migration. 2 additional sites in `faster-uring/device.rs:456,478` do NOT need migration — UringDevice is replaced entirely by SimulatedDevice under simulation.
 
-- **2 SystemTime::now() sites**: `orchestrator.rs:296`, `metadata_store.rs:355` — route through `crate::sync::SystemTime`
+- **2 SystemTime::now() sites**: `orchestrator.rs:296`, `metadata_store.rs:355` — route through `crate::sync::SystemTime`. Note: `orchestrator.rs:296` derives the checkpoint token from SystemTime, making it deterministic under simulation (satisfies FR-004). A Phase 3 test will verify checkpoint tokens are deterministic across runs with the same seed.
 
-- **2 mpsc channel sites**: `sync_file_device.rs:26` — route through channel abstraction. Note: `faster-uring/device.rs:55` also uses mpsc, but under simulation the `UringDevice` is replaced entirely by `SimulatedDevice`, so the uring channel does NOT need abstraction — it is never instantiated in simulation mode.
+- **Fully-qualified path migration** (call-site changes required): `checkpoint/orchestrator.rs` and `checkpoint/metadata_store.rs` use fully-qualified `std::time::Instant::now()`, `std::time::SystemTime::now()`, and `std::thread::sleep()` — NOT via imports. For these files:
+  1. Add `use crate::sync::{Instant, SystemTime};` imports
+  2. Replace `std::time::Instant::now()` → `Instant::now()` (2 sites in orchestrator)
+  3. Replace `std::time::SystemTime::now()` → `SystemTime::now()` (1 site in orchestrator, 1 in metadata_store)
+  4. Replace `std::thread::sleep()` → `crate::sync::thread::sleep()` (1 site in orchestrator:283)
+
+- **1 mpsc channel site needs migration**: `sync_file_device.rs:26` — route through channel abstraction. (The second channel at `faster-uring/device.rs:55` does not need migration — UringDevice is replaced by SimulatedDevice under simulation.)
 
 - **Tests**: Unit tests in sync.rs verifying that the cfg resolution works correctly for each tier (std, simulation). Compile-test that `simulation` feature enables successfully.
 
@@ -100,6 +106,7 @@ A framework where:
 - [ ] `cargo check -p faster-core` — compiles cleanly without simulation feature
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` — zero warnings
 - [ ] Zero `use std::sync::atomic` imports remain in faster-core production code (all routed through sync.rs)
+- [ ] **SC-006 binary diff baseline**: Build production binary (`cargo build --release -p faster-core`) both with and without `simulation` feature. Compare with `size` command — text/data/bss sections must be identical. Store baseline for CI regression.
 
 #### Manual Verification
 - [ ] sync.rs cfg resolution is clear and well-documented (loom > simulation > std precedence)
@@ -178,6 +185,7 @@ A framework where:
   - Entry to each CRUD operation (`read`, `upsert`, `rmw`, `delete`) — after epoch protect, before hash lookup
   - After hash index CAS (upsert/rmw completion) — before returning to caller
   - In the blocking poll loop (`kv.rs:266-284`) — yield instead of `thread::sleep`
+  - In the checkpoint flush-wait loop (`checkpoint/orchestrator.rs:283`) — yield instead of `thread::sleep(1ms)` to prevent blocking the cooperative scheduler
 
 - **`rust/crates/faster-core/src/epoch/table.rs`**: Add yield points at:
   - After `protect()` (line ~198) — between announcing epoch and proceeding
@@ -195,6 +203,7 @@ A framework where:
   - Read-after-write consistency under concurrent upserts
   - RMW correctness under concurrent modification
   - Delete followed by read returns NotFound under all interleavings
+  - Checkpoint token determinism: two runs with same seed produce identical checkpoint tokens (FR-004)
 
 ### Success Criteria
 
@@ -246,6 +255,8 @@ A framework where:
   - Double-fault: crash during recovery → re-recover → success (P3-AS3)
   - Crash during first-ever checkpoint (no prior checkpoint to fall back to)
   - Crash at every compaction phase → recover → all live records present
+  - Recovery from checkpoint taken during active compaction (spec edge case #3)
+  - Zero-length workload followed by checkpoint — empty store edge case (spec edge case #4)
   - 6 checkpoint transitions × 100 seeds = 600 scenarios (SC-003)
 
 ### Success Criteria
@@ -287,7 +298,7 @@ A framework where:
   1. After loading each page, read trailer from last 8 bytes of sector-aligned region
   2. Compute CRC-32C over `page[0..trailer.valid_bytes]`
   3. Compare with `trailer.crc32`
-  4. On mismatch: configurable policy — `Reject` (error), `Warn` (log + continue), `Repair` (use last good state)
+  4. On mismatch: apply `ChecksumValidationPolicy` — an enum with variants `Reject` (return error, halt recovery), `Warn` (log corruption details + continue with best-effort), `Repair` (use last good checkpoint state). Default: `Reject`. Policy is set via `FasterKvConfig` and passed to recovery. Each mode requires explicit test coverage.
 
 - **`rust/crates/faster-core/src/checkpoint/metadata.rs`**: Bump `FORMAT_VERSION_CURRENT` from 2 to 3. Add logic to detect version 2 pages (no checksum) and skip validation for backward compatibility.
 
@@ -299,6 +310,9 @@ A framework where:
   - Checkpoint with one torn page → recovery detects and handles safely (P4-AS3)
   - Version 2 format (no checksum) pages read without error (backward compat)
   - 100% of simulated torn writes detected, zero false positives (SC-004)
+  - ChecksumValidationPolicy::Reject — torn page causes recovery to return error (FR-009)
+  - ChecksumValidationPolicy::Warn — torn page logged, recovery continues, data accessible (FR-009)
+  - ChecksumValidationPolicy::Repair — torn page triggers fallback to last good checkpoint (FR-009)
 
 ### Success Criteria
 
@@ -364,6 +378,10 @@ A framework where:
   - Reproduction command actually reproduces the failure
   - SC-002: synthetic bug (intentionally broken CAS) caught within 10,000 seeds
   - SC-005: 10,000-seed campaign across 5 templates completes in under 30 minutes
+  - Boundary seed values (0 and u64::MAX) produce valid deterministic runs (spec edge case #6)
+  - Total storage failure scenario — FaultConfig with 100% error rates handled gracefully (spec edge case #7)
+  - Epoch table capacity stress — 256+ simulated tasks approach/exceed MAX_THREADS limit (spec edge case #5)
+  - Per-scenario execution time assertion: no scenario exceeds 100ms for 1,000-op workload (NFR validation)
 
 ### Success Criteria
 
@@ -398,6 +416,8 @@ A framework where:
   - Integration with CI (recommended configurations, time budgets)
 
 - **`rust/crates/faster-dst/README.md`** (create or update): Crate-level documentation with quick-start examples
+
+- **SC-008 Deployment Campaign**: After Phase 6 completion, run full campaign engine against real workload patterns (not synthetic). Investigate any failures to determine if they represent previously unknown bugs. Document findings. This is a stretch goal (SC-008) but the activity must be explicitly scheduled to have any chance of evaluation.
 
 - **`rust/crates/faster-dst/src/lib.rs`**: Module-level documentation (`//!`) and public API doc comments with examples
 
