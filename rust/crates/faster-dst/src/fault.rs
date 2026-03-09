@@ -153,6 +153,12 @@ pub struct FaultConfig {
     pub fail_after_n_writes: Option<u64>,
     /// If set, **all** reads fail after this many successful reads.
     pub fail_after_n_reads: Option<u64>,
+    /// Fail allocations after this many operations (planned — not yet wired).
+    pub allocation_failure_after: Option<u64>,
+    /// Simulated I/O latency in milliseconds (planned — not yet wired).
+    pub io_latency_ms: Option<u64>,
+    /// Simulate a stalled epoch drain (planned — not yet wired).
+    pub epoch_drain_timeout: bool,
 }
 
 impl FaultConfig {
@@ -195,6 +201,27 @@ impl FaultConfig {
         self.fail_after_n_reads = Some(n);
         self
     }
+
+    /// Builder: fail allocations after `n` operations (planned).
+    #[must_use]
+    pub fn with_allocation_failure_after(mut self, n: u64) -> Self {
+        self.allocation_failure_after = Some(n);
+        self
+    }
+
+    /// Builder: set simulated I/O latency in milliseconds (planned).
+    #[must_use]
+    pub fn with_io_latency_ms(mut self, ms: u64) -> Self {
+        self.io_latency_ms = Some(ms);
+        self
+    }
+
+    /// Builder: enable stalled epoch drain simulation (planned).
+    #[must_use]
+    pub fn with_epoch_drain_timeout(mut self) -> Self {
+        self.epoch_drain_timeout = true;
+        self
+    }
 }
 
 impl Default for FaultConfig {
@@ -205,6 +232,9 @@ impl Default for FaultConfig {
             partial_write_rate: 0.0,
             fail_after_n_writes: None,
             fail_after_n_reads: None,
+            allocation_failure_after: None,
+            io_latency_ms: None,
+            epoch_drain_timeout: false,
         }
     }
 }
@@ -221,6 +251,9 @@ mod tests {
         assert_eq!(cfg.partial_write_rate, 0.0);
         assert!(cfg.fail_after_n_writes.is_none());
         assert!(cfg.fail_after_n_reads.is_none());
+        assert!(cfg.allocation_failure_after.is_none());
+        assert!(cfg.io_latency_ms.is_none());
+        assert!(!cfg.epoch_drain_timeout);
     }
 
     #[test]
