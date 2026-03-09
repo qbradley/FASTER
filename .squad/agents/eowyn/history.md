@@ -12,6 +12,59 @@
 
 ---
 
+### 2026-03-09: DST Expanded to 108 Scenario Templates (5 → 108)
+
+**What:** Expanded the DST scenario library from 5 templates to 108 parameterized templates (21.6× increase), covering all 18 crash points across checkpoint, compaction, and recovery subsystems.
+
+**Files Created:**
+- `rust/crates/faster-dst/src/scenarios/concurrent_crash.rs` — Dual checkpoint+compaction crash points
+- `rust/crates/faster-dst/src/scenarios/dual_subsystem_crash.rs` — Cross-subsystem crash (ckpt+recovery, compact+recovery)
+- `rust/crates/faster-dst/src/scenarios/high_density_crash.rs` — 500+ records forcing hash bucket overflow chains
+- `rust/crates/faster-dst/src/scenarios/large_record_recovery.rs` — Scale tests (150–2000 records)
+- `rust/crates/faster-dst/src/scenarios/mixed_crash_timing.rs` — OnVisit(N) delayed trigger patterns
+- `rust/crates/faster-dst/src/scenarios/overwrite_recovery.rs` — Write-then-overwrite before crash
+- `rust/crates/faster-dst/src/scenarios/torn_write_varied.rs` — Multiple partial write rates (5%, 10%, 25%)
+- `rust/crates/faster-dst/src/scenarios/write_error_recovery.rs` — I/O error injection with write limits
+- `rust/crates/faster-dst/src/scenarios/expansion.rs` — Parameterized expansion engine
+
+**Files Modified:**
+- `rust/crates/faster-dst/src/scenarios/mod.rs` — 8 new module declarations + expansion module
+- `rust/crates/faster-dst/tests/campaign_tests.rs` — 3 new campaign tests (count verification, smoke, full)
+
+**Expansion Breakdown (108 scenarios across 14 categories):**
+
+| Category | Count | Description |
+|----------|-------|-------------|
+| Checkpoint crash variants | 18 | 6 phases × 3 record sizes [10, 50, 200] |
+| Compaction crash variants | 18 | 6 phases × 3 record sizes [50, 100, 500] |
+| Recovery crash variants | 18 | 6 phases × 3 record sizes [10, 50, 200] |
+| Concurrent ckpt+compact | 6 | Paired crash points from two subsystems |
+| Dual ckpt+recovery | 6 | Cross-subsystem crash scheduling |
+| Dual compact+recovery | 6 | Cross-subsystem crash scheduling |
+| Overwrite crash | 6 | Write-overwrite-checkpoint-crash pattern |
+| Large record recovery | 3 | No crash, 500/1000/2000 records |
+| Compaction-scale recovery | 3 | No crash, 150/300/750 records |
+| High-density crash | 6 | 500 records + checkpoint crash |
+| Torn write (no crash) | 3 | Fault-only at 5%, 10%, 25% rates |
+| Torn write + crash | 6 | 10% torn writes + per-phase crash |
+| Write error recovery | 3 | I/O error injection (limit 100, 200, 500) |
+| Mixed timing (OnVisit) | 6 | Delayed crash triggers (visit 2–4) |
+
+**Key Design Decisions:**
+- All 108 scenarios use fixed crash points (not seed-dependent `seed % 6`) for better per-point coverage during campaign sweeps
+- The campaign engine's existing runner handles all templates — no framework changes needed
+- Checkpoint/compaction crash points may not fire during campaign recovery-only runs, but still serve as recovery correctness tests at various data scales
+- Expansion generates unique names encoding all parameters for deterministic reproduction
+
+**Verification:** All 137 DST tests pass (75 unit + 62 integration). The `campaign_expanded_smoke` test runs 108 scenarios × 3 seeds = 324 test cases in ~30s.
+
+**What This Means:**
+- **Éowyn:** `all_expanded_scenarios()` is the single entry point for generating the full scenario set. Add new categories by extending expansion.rs.
+- **Frodo:** The `campaign_expanded_full` test (CI Tier 3, ignored) runs 108 × 100 = 10,800 test cases for deep validation.
+- **All agents:** The 8 new template files are parameterized — they accept crash points/record counts as arguments for direct use outside the expansion engine.
+
+---
+
 ### 2026-03-10: Loom Concurrency Test Expansion (664 → 1800 LOC)
 
 **What:** Expanded `rust/crates/faster-core/tests/loom_tests.rs` from 7 tests (664 LOC) to 21 tests (1800 LOC), adding 14 new loom tests covering all 5 critical FASTER concurrency subsystems.
