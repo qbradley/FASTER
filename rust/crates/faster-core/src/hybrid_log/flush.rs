@@ -259,7 +259,10 @@ impl PageFlusher {
         };
 
         match result {
-            IoRequestResult::Submitted | IoRequestResult::CompletedSync => Ok(true),
+            IoRequestResult::Submitted | IoRequestResult::CompletedSync => {
+                sim_yield!("flush::after_async_write");
+                Ok(true)
+            }
             IoRequestResult::QueueFull => {
                 // Revert state so the flush can be retried.
                 frame
