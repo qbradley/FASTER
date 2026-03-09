@@ -4,14 +4,12 @@
 [advisories]
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
-vulnerability = "deny"
-unmaintained = "warn"
+# vulnerability and notice fields removed in cargo-deny 0.19+; all such advisories now emit errors.
+unmaintained = "workspace"
 yanked = "warn"
-notice = "warn"
 
 [licenses]
-unlicensed = "deny"
-copyleft = "deny"
+# unlicensed, copyleft, deny fields removed in cargo-deny 0.19+; all licenses are denied unless explicitly allowed.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -25,7 +23,7 @@ allow = [
 confidence-threshold = 0.8
 
 [[licenses.clarify]]
-name = "ring"
+crate = "ring"
 expression = "MIT AND ISC AND OpenSSL"
 license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 
