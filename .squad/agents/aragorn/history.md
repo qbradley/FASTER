@@ -694,3 +694,21 @@ Created `rust/crates/faster-core/examples/cache_store.rs` — a Rust port of the
 6. git stash/pop interacts badly with concurrent branch switching by other agents
 
 **Test Results:** 1189 lib tests + 135 doctests + 8 integration tests pass
+
+---
+
+## 2026-03-09: Precheckin Fix — Formatting + Clippy Sweep (Aragorn)
+
+**What:** Full precheckin was broken on `feature/deterministic-simulation-testing` branch. Fixed all fmt and clippy violations workspace-wide + a nextest hang caused by Criterion bench binaries.
+
+**Root cause analysis:**
+- **Formatting drift:** Multiple agent branches merged into `squad` without running `cargo fmt`. The `rustfmt.toml` has `imports_granularity = Module` and `group_imports = StdExternalCrate` which are nightly-only — agents using stable rustfmt silently skipped those rules, allowing import ordering and line-width divergence to accumulate across 33 files.
+- **Clippy debt:** 6 unused `DeleteInfo` imports (left behind after trait refactoring), 27 undocumented unsafe blocks in FFI test module, miscellaneous dead fields and redundant patterns.
+- **Nextest hang:** The precheckin script used `cargo nextest run --workspace --all-targets`, which includes bench targets. Criterion's custom `main()` doesn't understand nextest's `--list --format terse` flag and enters an infinite benchmark loop. Fixed by dropping `--all-targets` from the nextest invocation (clippy already verifies bench code compiles via `--all-targets`).
+
+**Commit:** `74ce041f` — 35 files, ~1150 insertions / ~470 deletions.
+
+**Learnings:**
+- Criterion bench binaries CANNOT be listed by nextest (`--list --format terse` triggers a full benchmark run). Never use `--all-targets` with nextest when Criterion benches exist.
+- The `checkin` script uses `git add -A` — untracked files from other agents' WIP will get committed if not cleaned up first.
+- `imports_granularity` and `group_imports` in rustfmt.toml silently degrade on stable toolchain, causing formatting drift when agents use different rustfmt versions.
