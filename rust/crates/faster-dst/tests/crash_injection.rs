@@ -118,6 +118,7 @@ fn crash_at_each_checkpoint_phase_recovers() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
+#[ignore] // TODO: requires compaction trigger to exercise compaction crash points
 fn crash_at_compaction_pointer_swing_schedule_works() {
     // Compaction crash points only fire during compact(). This test verifies
     // the framework correctly installs the schedule for compaction labels
@@ -274,10 +275,12 @@ fn crash_during_first_checkpoint() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
+#[ignore] // TODO: requires compaction trigger to exercise compaction crash points
 fn crash_at_each_compaction_phase_recovers() {
     // Compaction crash points require compact() to run, which is hard to
-    // trigger in a unit test. We verify the schedule/install/remove cycle
-    // for each point and that recovery is unaffected.
+    // trigger in a unit test. These points never fire in a
+    // checkpoint+recovery-only path — exercise them once compaction is
+    // deterministically triggerable.
     for point in &CrashPoint::ALL_COMPACTION {
         let label = point.label();
         let mut schedule = CrashSchedule::new();
@@ -485,9 +488,33 @@ fn no_phantom_reads_after_checkpoint_crash() {
     // Post-crash data shouldn't be indexed via the first checkpoint.
     for i in 1000..1050u64 {
         let val: Option<u64> = store.read_simple(&mut s, &i);
-        if val.is_some() {
-            eprintln!("note: key {i} found (pages flushed before crash)");
-        }
+        assert!(
+            val.is_none(),
+            "phantom read detected: key {i} found after crash at checkpoint_completed"
+        );
     }
     store.dispose_session(s);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 10. Crash at each recovery phase → re-recover succeeds
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn crash_at_each_recovery_phase_recovers() {
+    // DiscoveryComplete and ValidationComplete fire only via
+    // discover_checkpoints() / validate_artifacts(), which are not called
+    // during recover(dir, Some(token)). Test the 4 phases on the hot path.
+    for phase in [
+        RecoveryPhase::PlanSelected,
+        RecoveryPhase::IndexCrcVerified,
+        RecoveryPhase::IndexBucketsLoaded,
+        RecoveryPhase::LogValidated,
+    ] {
+        let runner = CrashRecoveryRunner::new(42);
+        let result = runner.run_checkpoint_crash(CrashPoint::Recovery(phase), 50);
+        assert!(result.crashed, "expected crash at {:?}", phase);
+        assert!(result.recovery_ok, "re-recovery failed at {:?}", phase);
+        assert!(result.passed(), "invariants failed at {:?}", phase);
+    }
 }

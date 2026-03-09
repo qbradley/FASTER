@@ -145,6 +145,18 @@ impl ScenarioTemplateBuilder {
         self.invariant(|wl| Box::new(AllCommittedRecoverable::new(wl.expected_state())))
     }
 
+    /// Convenience: add a [`NoPhantomReads`] invariant for keys in
+    /// `[phantom_start, phantom_start + count)`.
+    ///
+    /// These keys should NOT appear after recovery — their presence would
+    /// indicate uncommitted data leaked across a crash boundary.
+    pub fn check_no_phantom_reads(self, phantom_start: u64, count: u64) -> Self {
+        self.invariant(move |_wl| {
+            let keys: Vec<u64> = (phantom_start..phantom_start + count).collect();
+            Box::new(crate::invariant::NoPhantomReads::new(keys))
+        })
+    }
+
     /// Build the scenario template.
     ///
     /// # Panics

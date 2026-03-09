@@ -35,7 +35,7 @@ pub enum CrashTrigger {
 /// Declarative schedule of which crash points should fire and when.
 #[derive(Debug, Clone)]
 pub struct CrashSchedule {
-    triggers: HashMap<String, CrashTrigger>,
+    pub(crate) triggers: HashMap<String, CrashTrigger>,
     visit_counts: HashMap<String, u64>,
 }
 
@@ -177,11 +177,18 @@ impl CrashRecoveryRunner {
             tok
         }; // store dropped
 
-        // Phase 2: Install crash schedule and attempt recovery.
-        // This catches crashes in both recovery AND checkpoint paths.
-        // Recovery crash points fire during the recover() call below.
-        // Checkpoint crash points would fire if we attempted another checkpoint,
-        // but since we just recover, only recovery points fire here.
+        // Phase 2: Install crash schedule and attempt the operation that
+        // matches the scheduled crash points.
+        //
+        // - Recovery crash points fire during recover().
+        // - Checkpoint crash points fire during checkpoint(), so we must
+        //   recover first, then attempt another checkpoint.
+        let is_checkpoint_crash = scenario
+            .crash_schedule
+            .triggers
+            .keys()
+            .any(|label| label.starts_with("checkpoint_"));
+
         let crash_label = {
             let _schedule_ref = install_schedule(scenario.crash_schedule.clone());
 
@@ -190,6 +197,12 @@ impl CrashRecoveryRunner {
                 store
                     .recover(harness.checkpoint_dir(), Some(token))
                     .expect("recovery under crash schedule");
+                if is_checkpoint_crash {
+                    // Attempt another checkpoint so checkpoint crash points fire.
+                    let s = store.new_session();
+                    let _ = store.checkpoint(harness.checkpoint_dir(), CheckpointType::FoldOver);
+                    store.dispose_session(s);
+                }
             }));
 
             remove_schedule();

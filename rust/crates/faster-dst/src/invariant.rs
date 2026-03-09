@@ -264,12 +264,17 @@ impl Invariant for ConsistentHashIndex {
     }
 }
 
-/// Marker invariant verifying that page checksums are valid.
+/// Precondition marker: page CRC-32C checksums were validated during recovery.
 ///
-/// CRC-32C validation occurs during [`FasterKv::recover()`]. If recovery
-/// succeeds, all page checksums were valid. This invariant always passes
-/// when called after a successful recovery, serving as documentation that
-/// checksum validation occurred.
+/// CRC-32C validation occurs inside [`FasterKv::recover()`] when the
+/// [`ChecksumValidationPolicy`](faster_core::recovery::ChecksumValidationPolicy)
+/// is set to `Reject`. If recovery succeeds under that policy, **every** page
+/// checksum on disk matched the computed CRC — no additional verification is
+/// needed at invariant-check time.
+///
+/// This invariant always returns `Ok(())`. Its purpose is to document that
+/// CRC validation was part of the recovery contract, making the guarantee
+/// explicit and visible in scenario templates and test reports.
 pub struct ValidPageChecksums;
 
 impl ValidPageChecksums {
