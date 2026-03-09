@@ -20,6 +20,9 @@
 ## Learnings
 <!-- Append new learnings -->
 - `log` crate added as non-optional dep for compaction runtime warnings.
+- Recovery `LogRecoveryEngine::validate_log_file` hardcodes `log.{n}` segment names — `SyncFileDevice` prefix must be "log." for recovery to find segments.
+- `IndexRecoveryEngine` is lenient with mismatched metadata/file sizes — it reads from the file and doesn't crash, even if metadata claims more buckets than exist. Not a strict validator.
+- Multi-agent safety: other agents can switch branches in shared worktree. Always verify `branch --show-current` before committing. Use selective `git add` + `git commit` instead of `checkin` script to avoid staging others' changes.
 - Alignment padding: key len 4→5 DOES cross 8-byte boundary (pad(24,8)=24 vs pad(25,8)=32).
 - Need `shift_read_only_to_tail()` before `CopyUpdated` in compaction.
 - `VarLenFunctions` (Vec<u8>) needed since `SimpleFunctions` requires `V: Copy`.
@@ -57,3 +60,20 @@ Changes: SF-3 tombstone vector warning (log::warn! when >100MB), SF-5 chain hops
 **Hybrid log tests:** address boundaries, flush behavior, eviction cycles, policy, maintenance, concurrent ops, region edge cases, buffer config variants, checkpoint-based read-only.
 
 **Results:** 63 tests, all pass.
+
+---
+
+### Recovery Edge-Case Gap Fill (2026-03-09)
+**Branch:** `boromir/recovery-edge-cases`, **File:** `tests/recovery_edge_cases.rs` (NEW, 20 tests, 1064 lines)
+
+**Audit scope:** checkpoint_recovery_tests.rs (42), hybrid_log_tests.rs (31), concurrent_stress.rs (13), compaction_integration.rs (32), memory_pressure_tests.rs (25).
+
+**Gaps identified and filled:**
+- Crash simulation: truncated/zero-length metadata files (checkpoint.json, index.recovery.json, log.recovery.json), truncated index binary
+- Corruption patterns: header corruption (vs existing body-only CRC), mismatched metadata table size
+- Session edge cases: 500-entry excluded set, non-sequential ID ordering, excluded serials beyond serial_number
+- Recovery invariants: step ordering (LoadIndex → RecoverLog → RecoverSessions), validation with selectively missing sub-files
+- Lifecycle: checkpoint → recover → write → checkpoint again, concurrent compaction + checkpoint, concurrent checkpoint mutual exclusion
+- Scale: 20-checkpoint discovery, 16K-bucket index recovery, deep directory paths
+
+**Results:** 20 tests, all pass. Full precheckin (1942 tests) green.
