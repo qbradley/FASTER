@@ -253,3 +253,70 @@ fn campaign_10000_seeds_5_templates() {
         report.display_human()
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 10. Expanded scenario count verification
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn expanded_scenarios_at_least_100() {
+    let scenarios = faster_dst::scenarios::expansion::all_expanded_scenarios();
+    assert!(
+        scenarios.len() >= 100,
+        "expected ≥100 expanded scenarios, got {}",
+        scenarios.len()
+    );
+    // Verify names are unique.
+    let names: std::collections::HashSet<&str> =
+        scenarios.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names.len(),
+        scenarios.len(),
+        "duplicate scenario names in expansion"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 11. Expanded campaign — smoke test (3 seeds across all 100+ scenarios)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn campaign_expanded_smoke() {
+    let scenarios = faster_dst::scenarios::expansion::all_expanded_scenarios();
+    let mut campaign = SeedCampaign::new();
+    for s in scenarios {
+        campaign.add_scenario(s);
+    }
+    campaign.seed_range(0..3).thread_count(4);
+    let report = campaign.run();
+    assert!(
+        report.all_passed(),
+        "expanded campaign failures ({}/{}):\n{}",
+        report.failed,
+        report.total,
+        report.display_human()
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 12. Full expanded campaign (CI Tier 3)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+#[ignore] // CI Tier 3 — 100+ scenarios × 100 seeds
+fn campaign_expanded_full() {
+    let scenarios = faster_dst::scenarios::expansion::all_expanded_scenarios();
+    let mut campaign = SeedCampaign::new();
+    for s in scenarios {
+        campaign.add_scenario(s);
+    }
+    campaign.seed_range(0..100);
+    let report = campaign.run();
+    assert!(
+        report.all_passed(),
+        "{} failures in {} total:\n{}",
+        report.failed,
+        report.total,
+        report.display_human()
+    );
+}
