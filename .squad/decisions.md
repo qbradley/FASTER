@@ -755,3 +755,215 @@ Either:
 2. **Or fix the coupling**: Store the device prefix in checkpoint metadata so `validate_log_file` uses the correct prefix.
 
 Option 2 is the correct long-term fix but is a larger change.
+
+
+---
+
+### 2026-03-08T21:01: User directive — Pre-release quality prioritization
+**By:** qbradley (via Copilot)
+**What:** Three-phase quality approach before release:
+1. FIRST: Fill known test gaps (compaction, loom, miri, memory pressure)
+2. THEN (parallel): Mutation testing to find remaining gaps + FoundationDB-style deterministic simulation testing (use PAW workflow for simulation, it's a big project)
+3. AFTER: Reassess before implementing other work items (fault injection, release management, etc.)
+
+Mutation testing needs a plan covering technology choice, execution strategy, and operational process (iterative, when to stop, how to improve hit rate). Simulation testing via PAW workflow or broken into phases with PAW per phase. Benchmarks never run locally — always VM via sub-agent.
+**Why:** User request — strategic prioritization for pre-release quality gate
+
+---
+
+# Decision: Mutation Testing Strategy for FASTER Rust
+
+**Author:** Aragorn (Rust Expert)
+**Date:** 2026-03-06
+**Status:** Proposed
+**Impact:** Testing quality, release readiness
+
+---
+
+## Summary
+
+Use `cargo-mutants` (v27.0.0) for mutation testing across the FASTER Rust workspace. Run a 2–3 week phased campaign before public release to identify test suite gaps, targeting ≥80% kill rate overall and ≥85% for critical modules (store, compaction, hash).
+
+## Key Decision Points
+
+### 1. Tool: `cargo-mutants` ✅
+
+- Only viable option. mutagen is unmaintained and requires nightly + source annotations.
+- Works with our stable toolchain, edition 2024, MSRV 1.85.0.
+- Zero source modifications required.
+- Installed and validated: v27.0.0 runs correctly on our workspace.
+
+### 2. Scope: 3,307 mutants (excluding samples)
+
+- 4,454 total workspace mutants; 1,147 are in sample crates (skip).
+- faster-core alone has 2,598 mutants across 10 modules.
+- Prioritize by risk: store (416) → compaction (200) → hash (250) → hybrid_log (369) → epoch (72).
+
+### 3. Unsafe Code Policy: Accept Timeouts as "Tested"
+
+- Mutating arithmetic/bitwise ops inside unsafe blocks creates UB → segfaults/hangs → timeouts.
+- Observed: 8/53 mutations in address.rs timed out (all unsafe-adjacent bitwise ops).
+- These are NOT test gaps. Classify timeouts in unsafe code as acceptable.
+- Atomic ordering correctness must be verified separately (loom/Miri, not mutation testing).
+
+### 4. Kill Rate Target: 80% overall, 85% critical modules
+
+- 90%+ is diminishing returns for a systems crate with significant unsafe code.
+- Equivalent mutants (Display, logging, capacity hints) inflate survivors without indicating real gaps.
+- Focus effort on zero missed mutants in safety-critical paths.
+
+### 5. CI Integration: Weekly + Per-PR (Advisory Only)
+
+- Weekly full run sharded across 4 CI workers (~30–60 min wall-clock).
+- Per-PR: `--in-diff` on changed files only (~5–15 min).
+- Advisory, not blocking. Don't gate merges on mutation testing.
+
+### 6. Timeline: 2–3 Weeks Pre-Release
+
+- ~30–50 hours total compute time across all phases.
+- Human effort: ~50% running/triaging, ~50% writing targeted tests.
+
+## Decisions Needed from Team
+
+1. **Approve timeline:** Can we allocate 2–3 weeks before release for this campaign?
+2. **CI budget:** Do we want weekly mutation testing in CI? Requires 16-core runners.
+3. **Kill rate target:** Is 80%/85% the right bar, or should we aim higher for a v1.0?
+4. **Ownership:** Should this be Aragorn-led or distributed across the team?
+
+## Full Plan
+
+See `.squad/plans/mutation-testing-plan.md` for the complete plan with phased execution, operational playbook, and experimental results.
+
+---
+
+# Decision: Criterion Benchmarks Must Use Custom main() for Nextest Compatibility
+
+**Author:** Legolas (Performance Guru)
+**Date:** 2026-03-09
+**Status:** Implemented
+
+## Context
+
+All three criterion bench binaries (`hash_layout_bench`, `ycsb`, `core_benchmarks`) used `criterion_main!()` which runs full statistical benchmarks when invoked by `cargo nextest run --all-targets`. The `hash_layout_bench` alone took 12+ minutes, blocking every precheckin run.
+
+## Decision
+
+**All `harness = false` criterion benchmarks MUST use a custom `main()` instead of `criterion_main!()`.**
+
+Pattern:
+```rust
+criterion_group!(benches, bench_foo, bench_bar);
+
+fn main() {
+    if std::env::args().any(|a| a == "--bench") {
+        benches(); // Full criterion run (cargo bench)
+    } else {
+        // Optional smoke test for nextest/cargo test
+    }
+}
+```
+
+## Rationale
+
+- `criterion_main!()` does not implement nextest's test discovery protocol
+- When nextest invokes the binary without `--bench`, criterion defaults to full benchmark mode
+- Full mode runs 100 samples × auto-tuned iterations × warmup for EVERY benchmark function
+- This is a category error: nextest wants a quick pass/fail test, not a 12-minute statistical analysis
+
+## Impact
+
+- Precheckin time: 12+ minutes (hanging) → 38 seconds
+- `cargo bench` continues to work identically
+- Any new bench files must follow this pattern
+
+## Who Needs to Know
+
+- **All agents adding benchmarks:** Follow the custom `main()` pattern
+- **Aragorn:** Precheckin is unblocked
+
+---
+
+# Decision: Release Automation Infrastructure
+
+**Author:** Gandalf (Lead / System Architect)
+**Date:** 2026-03-09
+**Branch:** `gandalf/release-automation`
+**Status:** Implemented — merged to `squad`
+
+## Summary
+
+Established the complete release pipeline for publishing FASTER Rust crates to
+crates.io. Five crates are publishable; three crates and all samples are excluded.
+
+## Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Tag format `rust-v*` | Avoids collision with Node.js `squad-release.yml` which uses `v*` |
+| Semver-checks advisory pre-1.0 | 0.x minor bumps may break API per semver convention |
+| 30s delay between crate publishes | crates.io index sync takes ~20-30s; dependent crates fail without this |
+| Consolidated version commits | One commit for all workspace version bumps, cleaner git history |
+| `publish = false` on faster-dst | Test-only framework, not useful to downstream consumers |
+| Version constraints on path deps | Required for crates.io — `version = "0.1.0"` alongside `path = "..."` |
+
+## Publish Order (dependency graph)
+
+```
+faster-core          (root — no internal deps)
+    ├── faster-device
+    ├── faster-tokio
+    ├── faster-uring
+    └── faster-ffi   (also depends on faster-device)
+```
+
+## Team Impact
+
+- **All agents:** When adding new public API to publishable crates, semver-checks in CI will flag breaking changes on PRs.
+- **Sam/Faramir:** If new crates are added to the workspace, update `release.toml` and the publish order in `rust-release.yml`.
+- **Legolas:** Benchmark crate (`faster-bench`) is excluded from publishing — it's a dev-only tool.
+
+## Files Changed
+
+- `rust/release.toml` (new)
+- `.github/workflows/rust-release.yml` (new)
+- `.github/workflows/rust-ci.yml` (modified — added semver-checks job)
+- `rust/docs/releasing.md` (new)
+- `rust/crates/faster-{core,device,tokio,ffi,uring}/Cargo.toml` (modified)
+- `rust/crates/faster-dst/Cargo.toml` (modified — added `publish = false`)
+
+---
+
+# Decision: Release Gate Validation Script (4-Tier)
+
+- **Author:** Boromir (QA Engineer)
+- **Date:** 2026-03-09
+- **Status:** Implemented
+
+## Context
+
+We needed a single script that validates release readiness across all quality dimensions — from fast lint checks through deep mutation testing and packaging verification. The existing `precheckin` script only covers tier 1 (fmt, clippy, tests).
+
+## Decision
+
+Created `rust/scripts/release-gate` with 4 independent tiers:
+
+| Tier | Name | Target Time | Contents |
+|------|------|-------------|----------|
+| 1 | Fast Gate | <60s | fmt, clippy, doctests, nextest, doc build |
+| 2 | Correctness Gate | <5min | loom, miri, fuzz smoke, cargo-deny, DST |
+| 3 | Deep Validation | <30min | mutation testing, extended fuzz, bench regression |
+| 4 | Release Gate | <2hr | changelog, metadata, packaging, semver-checks, full bench |
+
+Tiers can be run independently (`--tier N`), from a starting point (`--from N`), or all together. Missing tools are gracefully skipped with warnings.
+
+## Rationale
+
+- **Tiered design** lets developers run fast checks locally (tier 1) while CI runs deeper checks (tier 2), and release managers run everything (all).
+- **Graceful degradation** — missing tools produce warnings not failures, so the script works on any dev machine.
+- **Markdown report** — every run produces a shareable report for release artifacts.
+
+## Impact
+
+- All team members should know about `--tier 1` as a `precheckin` superset.
+- CI pipeline could be wired to run `release-gate --tier 2` on PRs.
+- Release process should include `release-gate all` on a clean checkout.

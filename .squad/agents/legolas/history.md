@@ -125,3 +125,29 @@ Built the missing comparison and detection infrastructure for benchmark baseline
 - Saruman: 29 I/O error injection tests (FaultInjectingDevice)
 - Éowyn: DST 5→108 scenarios (324 test cases in ~30s)
 - Boromir: 20 recovery edge case tests; filed `"log."` prefix coupling decision
+
+---
+
+### Wave 3 — Benchmark Baseline Infrastructure (2026-03-09T1846Z)
+**Branch:** `legolas/bench-baseline-infra` — merged to `squad`
+**Agent ID:** agent-149
+
+Built the release benchmarking layer on top of Wave 2's comparison scripts.
+
+**Artifacts:**
+- `rust/scripts/bench-record-baseline.sh` — record named baselines with git metadata (commit, version, timestamp, machine info). Stored in `rust/baselines/`. Usage: `bench-record-baseline.sh v0.1.0`
+- `rust/scripts/bench-release-compare.sh` — compare current benchmark run against a stored named baseline. Flags regressions >5% (configurable). Exit code 1 on threshold violation. Generates markdown report.
+- `rust/scripts/bench-ci-smoke.sh` — fast CI smoke test: verifies benchmark binaries compile and run without errors (not full criterion runs).
+- `rust/baselines/README.md` — baseline storage format, usage, and release workflow documentation.
+- `rust/baselines/.gitkeep` — tracked empty directory for baseline storage (actual baseline data not checked in).
+- `rust/docs/benchmarking.md` — extended with release benchmarking section covering the new scripts.
+
+**Release workflow integration:**
+1. Before tagging: `bench-record-baseline.sh {version}` — saves performance baseline
+2. After release: compare next dev cycle with `bench-release-compare.sh {version}` — gates on >5% regression
+3. Tier 3 of `release-gate` (Boromir's script) calls `bench-release-compare.sh` automatically
+
+**Wave 3 team context:**
+- **Arwen (agent-147):** Documentation audit rated project 7.5/10. P0 gaps include missing sample crate READMEs.
+- **Gandalf (agent-148):** Release pipeline live — tag format `rust-v{version}`, 5 publishable crates. semver-checks added to CI.
+- **Boromir (agent-150):** `rust/scripts/release-gate` integrates your `bench-release-compare.sh` in Tier 3. Run `release-gate --tier 3` for deep validation including bench regression.
