@@ -9,7 +9,8 @@ use crate::scenario::ScenarioTemplate;
 use crate::workload::CrudWorkload;
 
 /// Standard checkpoint crash scenario: 50 records, crash at a seed-selected
-/// checkpoint phase.
+/// checkpoint phase. Verifies committed data is recoverable and no phantom
+/// reads appear from uncommitted data.
 pub fn template() -> ScenarioTemplate {
     ScenarioTemplate::builder("checkpoint_crash")
         .workload(|seed| CrudWorkload::new(seed, 50))
@@ -21,5 +22,6 @@ pub fn template() -> ScenarioTemplate {
             schedule
         })
         .check_committed_recoverable()
+        .check_no_phantom_reads(100_000, 50)
         .build()
 }

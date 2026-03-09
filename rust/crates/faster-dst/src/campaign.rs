@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use faster_core::checkpoint::CheckpointType;
+use faster_core::sim_hooks::SimulatedCrash;
 
 use crate::crash::{install_schedule, remove_schedule};
 use crate::harness::SimulationHarness;
@@ -170,12 +171,20 @@ fn run_scenario(scenario: &ScenarioTemplate, seed: u64) -> Result<(), ScenarioFa
     // Phase 2: Crash injection (if configured).
     if let Some(schedule) = scenario.create_crash_schedule(seed) {
         let _schedule_ref = install_schedule(schedule);
-        // Catch any panic — SimulatedCrash or otherwise.
-        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let crash_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
             let mut store = harness.create_file_store();
             let _ = store.recover(harness.checkpoint_dir(), Some(token));
         }));
         remove_schedule();
+        // Distinguish SimulatedCrash (expected) from real panics (bugs).
+        match crash_result {
+            Ok(_) => {}
+            Err(payload) => {
+                if payload.downcast_ref::<SimulatedCrash>().is_none() {
+                    std::panic::resume_unwind(payload);
+                }
+            }
+        }
     }
 
     // Phase 3: Clean recovery and invariant verification.

@@ -83,12 +83,13 @@ fn full_page_crc_roundtrip() {
         .expect("flush should succeed");
 
     let (buf, trailer) = read_trailer(&dev, 0, PAGE);
-    // For a full page, crc_range = page_size - trailer_size.
-    let expected_crc_range = PAGE - PAGE_TRAILER_SIZE as u32;
-    assert_eq!(trailer.valid_bytes, expected_crc_range);
-
-    let actual_crc = crc32fast::hash(&buf[..trailer.valid_bytes as usize]);
-    assert_eq!(trailer.crc32, actual_crc, "CRC should match for full page");
+    // For a full page, the CRC trailer is skipped to avoid overwriting
+    // the last 8 bytes of valid record data. The trailer region will
+    // contain the original data pattern, not a valid trailer.
+    // Recovery detects this via the valid_bytes==0 && crc==0 check.
+    let pattern: Vec<u8> = (0..PAGE as usize).map(|i| (i % 251) as u8).collect();
+    assert_eq!(&buf[..], &pattern[..],
+        "full-page data should be preserved without CRC trailer corruption");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -126,13 +127,12 @@ fn torn_write_produces_crc_mismatch() {
     if trailer.valid_bytes > 0 && (trailer.valid_bytes as usize) <= write_size {
         let actual = crc32fast::hash(&buf[..trailer.valid_bytes as usize]);
         // CRC mismatch expected (torn write corrupted the page).
-        // It's theoretically possible for a partial write to happen to
-        // preserve everything if the random partial length is >= write_size,
-        // but with partial_write_rate=1.0 the length is always < write_size.
-        if actual == trailer.crc32 {
-            // Rare but possible if partial write preserved enough.
-            // We still consider this a valid test outcome.
-        }
+        // With partial_write_rate=1.0 the length is always < write_size,
+        // so the trailer or data region is guaranteed to be truncated.
+        assert_ne!(
+            actual, trailer.crc32,
+            "partial write with rate=1.0 should cause CRC mismatch"
+        );
     }
     // If trailer.valid_bytes is 0, the trailer region was zeroed out (not
     // written), which is also detected as corruption.
