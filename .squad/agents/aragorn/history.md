@@ -19,6 +19,11 @@
 ## Learnings
 <!-- Append new learnings -->
 - **Doctest type inference pitfall:** `FasterKv::builder()` returns `FasterKvBuilder` (non-generic). Doctests must use turbofish: `FasterKv::<SimpleFunctions<u64, u64>>::builder()`.
+- **Mutation testing config:** `rust/mutants.toml` configures cargo-mutants v27.0. Key files: `rust/docs/mutation-testing.md` (workflow guide), `rust/mutants.out/` (gitignored output).
+- **cargo-mutants `-F` flag is substring match:** `-F 'address.rs'` also matches `begin_address.rs`. Use `-F 'src/address.rs'` for precision.
+- **Bitwise const ops produce unviable mutants:** `<<`→`>>` and `-`→`+` in const bit-mask definitions fail to compile (type system catches them). This is good — no test gap.
+- **address.rs pilot: 100% catch rate.** 55 caught, 9 unviable, 0 missed, 0 timeouts in ~6min. Prior pilot had 8 timeouts — resolved by `exclude_re` for field-packing functions.
+- **`mutants.out/` must be gitignored** — cargo-mutants writes outcomes.json, caught.txt, etc. on every run.
 - **Status vs Error separation:** Operational outcomes (Ok, Pending, NotFound) are control-flow signals, not errors. True errors (I/O failure, corruption) go in `FasterError`.
 - **No thiserror needed:** Manual Display/Error/From impls are ~40 lines for small enums.
 - **`OperationStatus` variant set:** Merges C++ Status + C# Status + architecture OkKind::Deleted into one flat enum.
