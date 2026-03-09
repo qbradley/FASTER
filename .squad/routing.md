@@ -7,12 +7,10 @@ How to decide who handles what for the FASTER Rust implementation.
 | Work Type | Route To | Examples |
 |-----------|----------|----------|
 | Architecture, system design, scope decisions | Gandalf | Overall Rust FASTER design, subsystem decomposition, API surface decisions |
-| C++ reference code analysis, C++ porting | Saruman | Analyze cc/ directory, understand C++ FASTER internals, porting guidance |
-| C# reference code analysis, C# porting | Faramir | Analyze cs/ directory, understand C# FASTER internals, porting guidance |
+| C++/C# reference code analysis | Gandalf + Aragorn | Analyze cc/ or cs/ directory, porting guidance (alumni Saruman/Faramir in `_alumni/` for deep knowledge) |
 | Rust implementation, idioms, ownership | Aragorn | Core Rust code, trait design, lifetime management, safe abstractions |
 | Low-level systems, memory, threading, atomics | Sam | Memory-mapped I/O, lock-free data structures, OS primitives, cache lines |
-| Reverse engineering FASTER behavior | Frodo | Architecture extraction, protocol analysis, behavioral specification |
-| Disk I/O, persistence, durability, storage | Gimli | WAL design, log-structured storage, checkpoint/recovery, hybrid log |
+| Disk I/O, persistence, durability, storage | Sam | WAL design, log-structured storage, checkpoint/recovery, hybrid log |
 | Security audit, threat modeling, unsafe review | Galadriel | Unsafe code audit, memory safety, FFI boundary hardening |
 | Performance profiling, benchmarking, optimization | Legolas | Benchmarks, flame graphs, cache-friendliness, SIMD, throughput |
 | Testing, correctness, edge cases | Boromir | Unit tests, integration tests, property-based tests, CI setup |
@@ -33,7 +31,7 @@ How to decide who handles what for the FASTER Rust implementation.
 | Test suites | Boromir |
 | Simulation test harness | Éowyn |
 | C FFI boundary | Elrond + Galadriel (security) |
-| Storage/persistence layer | Gimli + Gandalf |
+| Storage/persistence layer | Sam + Gandalf |
 
 ## Issue Routing
 
@@ -50,5 +48,5 @@ How to decide who handles what for the FASTER Rust implementation.
 4. **When two agents could handle it**, pick the one whose domain is the primary concern.
 5. **"Team, ..." → fan-out.** Spawn all relevant agents in parallel as `mode: "background"`.
 6. **Anticipate downstream work.** If a feature is being built, spawn the tester to write test cases from requirements simultaneously.
-7. **Cross-reference work** — when implementing from C++/C# reference, spawn Saruman or Faramir alongside the implementer to verify behavioral equivalence.
+7. **Cross-reference work** — when implementing from C++/C# reference, Gandalf or Aragorn can reference alumni knowledge in `.squad/agents/_alumni/` for behavioral equivalence.
 8. **Unsafe code** always gets dual review: Galadriel (security) + Sam (systems correctness).

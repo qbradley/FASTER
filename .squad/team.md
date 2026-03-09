@@ -13,12 +13,8 @@
 | Name | Role | Charter | Status |
 |------|------|---------|--------|
 | Gandalf | Lead / System Architect | `.squad/agents/gandalf/charter.md` | ✅ Active |
-| Saruman | C++ Expert | `.squad/agents/saruman/charter.md` | ✅ Active |
-| Faramir | C# Expert | `.squad/agents/faramir/charter.md` | ✅ Active |
 | Aragorn | Rust Expert | `.squad/agents/aragorn/charter.md` | ✅ Active |
-| Sam | Systems Programming Expert | `.squad/agents/sam/charter.md` | ✅ Active |
-| Frodo | Reverse Engineer | `.squad/agents/frodo/charter.md` | ✅ Active |
-| Gimli | Database/Storage Expert | `.squad/agents/gimli/charter.md` | ✅ Active |
+| Sam | Systems & Storage Expert | `.squad/agents/sam/charter.md` | ✅ Active |
 | Galadriel | Security Expert | `.squad/agents/galadriel/charter.md` | ✅ Active |
 | Legolas | Performance Guru | `.squad/agents/legolas/charter.md` | ✅ Active |
 | Boromir | QA Engineer | `.squad/agents/boromir/charter.md` | ✅ Active |
@@ -27,6 +23,15 @@
 | Arwen | Developer Advocate | `.squad/agents/arwen/charter.md` | ✅ Active |
 | Scribe | Session Logger | `.squad/agents/scribe/charter.md` | 📋 Silent |
 | Ralph | Work Monitor | — | 🔄 Monitor |
+
+### Alumni (archived — knowledge preserved in `.squad/agents/_alumni/`)
+
+| Name | Former Role | Archived | Reason |
+|------|-------------|----------|--------|
+| Saruman | C++ Expert | 2026-03-09 | C++ reference analysis complete for 0.1.0 |
+| Faramir | C# Expert | 2026-03-09 | C# reference analysis complete for 0.1.0 |
+| Frodo | Reverse Engineer | 2026-03-09 | Design reverse-engineering complete for 0.1.0 |
+| Gimli | Database/Storage Expert | 2026-03-09 | Merged into Sam (Systems & Storage Expert) |
 
 ## Project Context
 
