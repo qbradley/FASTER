@@ -147,3 +147,31 @@
 5. During merge state, `git add` can reset file contents — always backup to /tmp first
 
 **Commit:** 659b29b1 on squad branch
+
+---
+
+## 2026-03-10: faster-tokio Integration Test Suite
+
+**What:** Created `rust/crates/faster-tokio/tests/integration.rs` — 29 integration tests exercising the async layer end-to-end.
+
+**Test Categories (29 tests, ~1.2s total):**
+1. **Full lifecycle** — open → upsert → checkpoint → read → shutdown
+2. **Concurrent multi-session** — 8 spawn_blocking tasks, 1600 keys, cross-task visibility
+3. **Checkpoint + recovery** — TokioFileDevice write → checkpoint → reopen → recover → verify (200 keys)
+4. **Async checkpoint** — AsyncFasterKv.checkpoint() with TokioFileDevice
+5. **Mixed sync/async** — sync writes on blocking pool, async reads via AsyncFasterKv; interleaved even/odd keys
+6. **Shutdown under load** — 4 writer tasks in flight during shutdown; maintenance loop stops, writers complete
+7. **Drop safety** — drop without explicit shutdown, maintenance task aborted cleanly
+8. **Error propagation** — NotFound reads/deletes, double-delete, checkpoint to bad path
+9. **Timeout behaviour** — tokio::time::timeout on checkpoint, maintenance, shutdown
+10. **Bridge futures** — 50 pending futures completed from OS threads + 50 MaybePending::Ready
+11. **Session churn** — 50 rapid create/drop cycles testing epoch slot recycling
+12. **Large batch** — 10K key upsert/read-back
+13. **RMW, overwrite, from_store, multiple sessions, stats**
+
+**Key Learnings:**
+- `FasterSession.stats().operations_completed` tracks `serial_number`, NOT operations done through `FasterKv::upsert/read`. Serial is only incremented via `next_serial()`. For in-memory ops dispatched through the store, the counter stays at 0.
+- The `scripts/checkin` script stages ALL dirty files (`git add -A`), not just the ones you intend. Always commit manually when the workspace has other agents' unstaged work.
+- `FasterKv::recover(&mut self, ...)` takes `&mut self`, so it cannot be called through `AsyncFasterKv` (which wraps `Arc<FasterKv>`). Recovery must be done on a fresh `FasterKv` instance before wrapping.
+
+**Branch:** `elrond/tokio-integration-tests`
