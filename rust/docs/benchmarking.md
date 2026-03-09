@@ -315,4 +315,99 @@ measurement times or increase sample sizes by editing the benchmark file.
 
 ---
 
-*Maintained by Legolas (Performance Guru). Last updated: 2026-03-09.*
+## 7. Release Benchmarking
+
+For release gating, baselines are recorded and stored as version-controlled
+artifacts in `rust/baselines/`. This provides reproducible, cross-release
+comparison that survives CI cache eviction.
+
+### Workflow: Record → Compare → Gate
+
+```
+1. Prepare release candidate on dedicated VM
+2. Record baseline:     rust/scripts/bench-record-baseline.sh v0.2.0
+3. Compare vs previous: rust/scripts/bench-release-compare.sh v0.1.0
+4. If exit code 0 → release proceeds
+5. If exit code 1 → investigate regressions before releasing
+6. Commit baseline:     git add rust/baselines/v0.2.0/ && git commit
+```
+
+### Recording a release baseline
+
+```bash
+# Record full baseline for a release version
+rust/scripts/bench-record-baseline.sh v0.2.0
+
+# Quick mode for draft baselines (fewer samples)
+rust/scripts/bench-record-baseline.sh v0.2.0 --quick
+```
+
+This runs ALL benchmark suites (faster-core + faster-bench) and saves:
+- `metadata.json` — machine info, git SHA, Rust version, timestamp
+- `summary.json` — per-benchmark timing data (machine-readable)
+- `report.md` — human-readable markdown report
+- `criterion/` — raw criterion output for detailed re-comparison
+
+### Comparing against a release baseline
+
+```bash
+# Compare current code against stored baseline
+rust/scripts/bench-release-compare.sh v0.1.0
+
+# Custom threshold (default: 5%)
+rust/scripts/bench-release-compare.sh v0.1.0 --threshold 10
+
+# JSON output for CI integration
+rust/scripts/bench-release-compare.sh v0.1.0 --json
+```
+
+The comparison script restores criterion data from `rust/baselines/`, runs
+benchmarks, and flags regressions. Exit code 1 means regressions were found.
+
+### CI smoke test
+
+A quick smoke test verifies benchmarks compile and execute without measuring
+performance:
+
+```bash
+rust/scripts/bench-ci-smoke.sh
+```
+
+This completes in <30 seconds and catches compilation failures, data setup
+panics, and configuration errors. Safe for every CI build.
+
+### Integration with release-gate
+
+The release-gate script should call `bench-release-compare.sh` as one of its
+gates. The exit code (0 = pass, 1 = fail) integrates directly:
+
+```bash
+# In release-gate.sh or CI pipeline:
+if ! rust/scripts/bench-release-compare.sh "$PREVIOUS_VERSION" --threshold 5; then
+    echo "Performance regression detected — blocking release"
+    exit 1
+fi
+```
+
+### Baseline storage
+
+Baselines are checked into git under `rust/baselines/`. See
+[`rust/baselines/README.md`](../baselines/README.md) for the format
+specification and storage policy.
+
+---
+
+## Quick Reference (Complete)
+
+| What | Command | Time |
+|------|---------|------|
+| Record release baseline | `rust/scripts/bench-record-baseline.sh v0.X.0` | ~10 min |
+| Compare vs release baseline | `rust/scripts/bench-release-compare.sh v0.X.0` | ~10 min |
+| CI smoke test | `rust/scripts/bench-ci-smoke.sh` | <30 sec |
+| Save criterion baseline | `rust/scripts/bench-baseline.sh save main` | ~5 min |
+| Compare vs criterion baseline | `rust/scripts/bench-compare.sh --baseline main` | ~5 min |
+| List saved baselines | `rust/scripts/bench-baseline.sh list` | instant |
+
+---
+
+*Maintained by Legolas (Performance Guru). Last updated: 2026-03-10.*
