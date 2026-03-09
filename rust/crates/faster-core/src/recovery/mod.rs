@@ -96,6 +96,28 @@ impl From<std::io::Error> for RecoveryError {
 }
 
 // ---------------------------------------------------------------------------
+// ChecksumValidationPolicy
+// ---------------------------------------------------------------------------
+
+/// Policy for handling CRC-32C checksum mismatches during recovery.
+///
+/// Pages written with format version ≥ 3 carry an 8-byte CRC trailer.
+/// When recovery reads a page back from disk it recomputes the CRC and
+/// compares. This enum controls what happens on mismatch.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ChecksumValidationPolicy {
+    /// Return an error and halt recovery (default).
+    #[default]
+    Reject,
+    /// Log corruption details to stderr and continue with best-effort
+    /// recovery.
+    Warn,
+    /// Fall back to the last good checkpoint. (Currently behaves like
+    /// [`Reject`](Self::Reject) — full repair logic is future work.)
+    Repair,
+}
+
+// ---------------------------------------------------------------------------
 // CheckpointInfo
 // ---------------------------------------------------------------------------
 

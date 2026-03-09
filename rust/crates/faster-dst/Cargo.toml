@@ -11,3 +11,6 @@ repository.workspace = true
 faster-core = { path = "../faster-core", features = ["simulation"] }
 rand = { version = "0.9", features = ["small_rng"] }
 tempfile = "3"
+
+[dev-dependencies]
+crc32fast = "1.5.0"

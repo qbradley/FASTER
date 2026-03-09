@@ -38,13 +38,15 @@
 
 use std::fmt;
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use crate::address::{LogicalAddress, OFFSET_BITS};
 use crate::checkpoint::snapshot_writer::SnapshotFileReader;
 use crate::checkpoint::{CheckpointType, LogRecoveryInfo};
+use crate::hybrid_log::page::{DEFAULT_SECTOR_SIZE, PageTrailer};
 
-use super::{RecoveryError, RecoveryPlan};
+use super::{ChecksumValidationPolicy, RecoveryError, RecoveryPlan};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -128,13 +130,24 @@ impl fmt::Display for LogRecoveryResult {
 /// println!("Recovered log: {result}");
 /// ```
 pub struct LogRecoveryEngine {
-    _private: (),
+    /// Policy applied when a page CRC mismatch is detected.
+    checksum_policy: ChecksumValidationPolicy,
 }
 
 impl LogRecoveryEngine {
-    /// Creates a new `LogRecoveryEngine`.
+    /// Creates a new `LogRecoveryEngine` with the default
+    /// [`ChecksumValidationPolicy::Reject`] policy.
     pub fn new() -> Self {
-        Self { _private: () }
+        Self {
+            checksum_policy: ChecksumValidationPolicy::default(),
+        }
+    }
+
+    /// Builder: override the checksum validation policy.
+    #[must_use]
+    pub fn with_checksum_policy(mut self, policy: ChecksumValidationPolicy) -> Self {
+        self.checksum_policy = policy;
+        self
     }
 
     /// Recover the hybrid log from a fold-over checkpoint.
@@ -166,6 +179,15 @@ impl LogRecoveryEngine {
         // Step 3: Validate the on-disk log file.
         let records_scanned = validate_log_file(base_dir, log_info)?;
         crash_point!("recovery_log_validated");
+
+        // Step 3b: Validate page CRC-32C checksums (format version ≥ 3).
+        validate_page_checksums(
+            base_dir,
+            log_info.begin_address,
+            log_info.final_address,
+            log_info.format_version,
+            self.checksum_policy,
+        )?;
 
         // Step 4: Compute restored address boundaries.
         let begin_address = log_info.begin_address;
@@ -229,6 +251,16 @@ impl LogRecoveryEngine {
         // Step 3: Validate the main log file covers pages below head.
         if log_info.head_address > LogicalAddress::ZERO {
             validate_log_file_for_head(base_dir, log_info)?;
+
+            // Step 3b: Validate page CRC-32C checksums for the main log
+            // (format version ≥ 3).
+            validate_page_checksums(
+                base_dir,
+                log_info.begin_address,
+                log_info.head_address,
+                log_info.format_version,
+                self.checksum_policy,
+            )?;
         }
 
         // Step 4: Validate and load the snapshot file.
@@ -503,6 +535,142 @@ fn validate_log_file_for_head(
              for head address {:?}, but total segment size is {total_size} bytes",
             head
         )]));
+    }
+
+    Ok(())
+}
+
+/// Validate page CRC-32C checksums for the on-disk log.
+///
+/// Only meaningful for format version ≥ 3 (pages carry an 8-byte trailer).
+/// For format version ≤ 2, this is a no-op.
+///
+/// Reads each page from the segment files, extracts the trailer, recomputes
+/// the CRC, and applies the given [`ChecksumValidationPolicy`] on mismatch.
+fn validate_page_checksums(
+    base_dir: &Path,
+    begin: LogicalAddress,
+    tail: LogicalAddress,
+    format_version: u64,
+    policy: ChecksumValidationPolicy,
+) -> Result<(), RecoveryError> {
+    // V2 pages have no trailer — skip validation.
+    if format_version < 3 {
+        return Ok(());
+    }
+
+    if tail == LogicalAddress::ZERO || tail <= begin {
+        return Ok(());
+    }
+
+    let sector_size = DEFAULT_SECTOR_SIZE as u32;
+    let page_size = PAGE_SIZE as u32;
+    let segment_size = default_segment_size();
+
+    let begin_page = begin.page().0;
+    let tail_page = tail.page().0;
+    let tail_offset = tail.offset().0;
+
+    // Determine the last page that contains data.
+    let last_data_page = if tail_offset > 0 {
+        tail_page
+    } else {
+        // Tail is at a page boundary; the last page with data is the one
+        // before it.
+        if tail_page == 0 {
+            return Ok(());
+        }
+        tail_page - 1
+    };
+
+    let mut warnings = Vec::new();
+
+    for page_num in begin_page..=last_data_page {
+        let byte_offset = page_num as u64 * PAGE_SIZE;
+        let seg_idx = byte_offset / segment_size;
+        let seg_offset = byte_offset % segment_size;
+
+        let seg_path = base_dir.join(format!("log.{seg_idx}"));
+        if !seg_path.exists() {
+            // File-existence is already validated by validate_log_file;
+            // skip silently here.
+            continue;
+        }
+
+        // Determine write_size for this page.
+        let write_size = if page_num == last_data_page && tail_offset > 0 {
+            // Tail page: valid_bytes = tail_offset.
+            PageTrailer::write_size(tail_offset, sector_size, page_size)
+        } else {
+            // Interior page: valid_bytes = page_size.
+            page_size
+        };
+
+        // Read the sector-aligned write region.
+        let mut buf = vec![0u8; write_size as usize];
+        let read_result = (|| -> std::io::Result<()> {
+            let mut file = fs::File::open(&seg_path)?;
+            file.seek(SeekFrom::Start(seg_offset))?;
+            file.read_exact(&mut buf)?;
+            Ok(())
+        })();
+        if let Err(e) = read_result {
+            let msg = format!(
+                "page {page_num}: I/O error reading CRC region from {}: {e}",
+                seg_path.display()
+            );
+            match policy {
+                ChecksumValidationPolicy::Reject | ChecksumValidationPolicy::Repair => {
+                    return Err(RecoveryError::ValidationFailed(vec![msg]));
+                }
+                ChecksumValidationPolicy::Warn => {
+                    eprintln!("WARNING: {msg}");
+                    warnings.push(msg);
+                    continue;
+                }
+            }
+        }
+
+        // Extract the trailer.
+        let trailer = PageTrailer::from_slice(&buf, write_size as usize);
+        let crc_range = trailer.valid_bytes as usize;
+
+        // Sanity-check: crc_range must be within the buffer.
+        if crc_range > buf.len() {
+            let msg = format!(
+                "page {page_num}: trailer valid_bytes ({crc_range}) exceeds \
+                 write region ({write_size} bytes)"
+            );
+            match policy {
+                ChecksumValidationPolicy::Reject | ChecksumValidationPolicy::Repair => {
+                    return Err(RecoveryError::ValidationFailed(vec![msg]));
+                }
+                ChecksumValidationPolicy::Warn => {
+                    eprintln!("WARNING: {msg}");
+                    warnings.push(msg);
+                    continue;
+                }
+            }
+        }
+
+        let actual_crc = crc32fast::hash(&buf[..crc_range]);
+
+        if actual_crc != trailer.crc32 {
+            let msg = format!(
+                "page {page_num}: CRC-32C mismatch (trailer={:#010x}, \
+                 computed={:#010x}, valid_bytes={crc_range})",
+                trailer.crc32, actual_crc,
+            );
+            match policy {
+                ChecksumValidationPolicy::Reject | ChecksumValidationPolicy::Repair => {
+                    return Err(RecoveryError::ValidationFailed(vec![msg]));
+                }
+                ChecksumValidationPolicy::Warn => {
+                    eprintln!("WARNING: {msg}");
+                    warnings.push(msg);
+                }
+            }
+        }
     }
 
     Ok(())

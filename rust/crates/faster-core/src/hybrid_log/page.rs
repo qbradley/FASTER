@@ -581,6 +581,99 @@ impl fmt::Debug for PageTable {
     }
 }
 
+// ---------------------------------------------------------------------------
+// PageTrailer — CRC-32C integrity trailer appended to flushed pages
+// ---------------------------------------------------------------------------
+
+/// Size of the page trailer in bytes: 4 (valid_bytes) + 4 (crc32).
+pub const PAGE_TRAILER_SIZE: usize = 8;
+
+/// An 8-byte trailer appended to the sector-aligned write region of each
+/// flushed page.
+///
+/// ```text
+/// [valid_bytes: u32 LE] [crc32: u32 LE]
+/// ```
+///
+/// The CRC-32C is computed over `page[0..valid_bytes]` **before** the trailer
+/// is written, so the trailer itself is not included in the checksum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageTrailer {
+    /// Number of valid record bytes in this page that the CRC covers.
+    pub valid_bytes: u32,
+    /// CRC-32C checksum of `page[0..valid_bytes]`.
+    pub crc32: u32,
+}
+
+impl PageTrailer {
+    /// Size of the serialised trailer in bytes.
+    pub const SIZE: usize = PAGE_TRAILER_SIZE;
+
+    /// Create a new trailer.
+    #[inline]
+    pub fn new(valid_bytes: u32, crc32: u32) -> Self {
+        Self { valid_bytes, crc32 }
+    }
+
+    /// Serialise to a little-endian byte array.
+    #[inline]
+    pub fn to_bytes(self) -> [u8; Self::SIZE] {
+        let mut buf = [0u8; Self::SIZE];
+        buf[0..4].copy_from_slice(&self.valid_bytes.to_le_bytes());
+        buf[4..8].copy_from_slice(&self.crc32.to_le_bytes());
+        buf
+    }
+
+    /// Deserialise from a little-endian byte array.
+    #[inline]
+    pub fn from_bytes(bytes: [u8; Self::SIZE]) -> Self {
+        Self {
+            valid_bytes: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            crc32: u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+        }
+    }
+
+    /// Read the trailer from the last 8 bytes of a byte slice at the given
+    /// `write_size` boundary.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `write_size < Self::SIZE` or `write_size > data.len()`.
+    pub fn from_slice(data: &[u8], write_size: usize) -> Self {
+        assert!(write_size >= Self::SIZE);
+        assert!(write_size <= data.len());
+        let start = write_size - Self::SIZE;
+        let mut buf = [0u8; Self::SIZE];
+        buf.copy_from_slice(&data[start..write_size]);
+        Self::from_bytes(buf)
+    }
+
+    /// Compute the sector-aligned write size that leaves room for the trailer.
+    ///
+    /// When the natural sector alignment of `valid_bytes` does not leave at
+    /// least 8 bytes of padding, an extra sector is added. The result is
+    /// capped at `page_size` to prevent overlapping with the next page's
+    /// device region.
+    #[inline]
+    pub fn write_size(valid_bytes: u32, sector_size: u32, page_size: u32) -> u32 {
+        let needed = valid_bytes.saturating_add(Self::SIZE as u32);
+        let aligned = (needed + sector_size - 1) & !(sector_size - 1);
+        core::cmp::min(aligned, page_size)
+    }
+
+    /// Compute the number of bytes covered by the CRC, given the caller's
+    /// `valid_bytes` and the computed `write_size`.
+    ///
+    /// Normally this equals `valid_bytes`. When the trailer must share space
+    /// with the end of a full page (write_size == page_size and valid_bytes
+    /// is very close to page_size), the CRC range is reduced so the trailer
+    /// does not overlap checksummed data.
+    #[inline]
+    pub fn crc_range(valid_bytes: u32, write_size: u32) -> u32 {
+        core::cmp::min(valid_bytes, write_size.saturating_sub(Self::SIZE as u32))
+    }
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -863,5 +956,65 @@ mod tests {
         let s = AtomicPageState::new(PageState::Flushing);
         let dbg = format!("{s:?}");
         assert!(dbg.contains("Flushing"));
+    }
+
+    // -- PageTrailer --------------------------------------------------------
+
+    #[test]
+    fn page_trailer_roundtrip() {
+        let trailer = PageTrailer::new(12345, 0xDEAD_BEEF);
+        let bytes = trailer.to_bytes();
+        let back = PageTrailer::from_bytes(bytes);
+        assert_eq!(trailer, back);
+    }
+
+    #[test]
+    fn page_trailer_from_slice() {
+        let trailer = PageTrailer::new(1000, 0x1234_5678);
+        let mut buf = vec![0u8; 1024];
+        let bytes = trailer.to_bytes();
+        buf[1016..1024].copy_from_slice(&bytes);
+
+        let read_back = PageTrailer::from_slice(&buf, 1024);
+        assert_eq!(read_back, trailer);
+    }
+
+    #[test]
+    fn page_trailer_write_size_partial_page() {
+        // valid_bytes = 1000, sector = 512 → aligned(1008) = 1024
+        // padding = 1024 - 1000 = 24 >= 8 → fits
+        assert_eq!(PageTrailer::write_size(1000, 512, 4096), 1024);
+    }
+
+    #[test]
+    fn page_trailer_write_size_tight_padding() {
+        // valid_bytes = 1020, sector = 512 → aligned(1028) = 1536
+        // Needs extra sector because 1024 - 1020 = 4 < 8
+        assert_eq!(PageTrailer::write_size(1020, 512, 4096), 1536);
+    }
+
+    #[test]
+    fn page_trailer_write_size_full_page() {
+        // valid_bytes = 4096 = page_size → aligned(4104) = 4608 → capped at 4096
+        assert_eq!(PageTrailer::write_size(4096, 512, 4096), 4096);
+    }
+
+    #[test]
+    fn page_trailer_write_size_sector_aligned_not_full() {
+        // valid_bytes = 1024, sector = 512 → aligned(1032) = 1536
+        // 1024 is sector-aligned but not page_size → extra sector
+        assert_eq!(PageTrailer::write_size(1024, 512, 4096), 1536);
+    }
+
+    #[test]
+    fn page_trailer_crc_range_normal() {
+        // Trailer has plenty of room → crc_range = valid_bytes
+        assert_eq!(PageTrailer::crc_range(1000, 1024), 1000);
+    }
+
+    #[test]
+    fn page_trailer_crc_range_full_page() {
+        // Full page: crc_range = min(4096, 4096-8) = 4088
+        assert_eq!(PageTrailer::crc_range(4096, 4096), 4088);
     }
 }

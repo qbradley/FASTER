@@ -28,7 +28,7 @@ use crate::address::Page;
 use crate::device::{Device, IoCompletionCallback, IoRequestResult, IoStatus, TypedIoContext};
 
 use super::log_allocator::HybridLogAllocator;
-use super::page::{PageState, PageTable};
+use super::page::{PageState, PageTable, PageTrailer};
 
 // ---------------------------------------------------------------------------
 // FlushRequest
@@ -230,9 +230,14 @@ impl PageFlusher {
             });
         }
 
-        // Compute aligned write size and device offset.
-        let write_size = self.align_to_sector(valid_bytes);
+        // Compute sector-aligned write size (with room for CRC trailer)
+        // and device offset.
+        let write_size = PageTrailer::write_size(valid_bytes, self.sector_size, self.page_size);
         let offset = self.device_offset(page);
+
+        // Compute CRC-32C over the valid data range and write the trailer
+        // into the page frame's padding region.
+        self.write_crc_trailer(frame, valid_bytes, write_size);
 
         // Heap-allocate the callback context via TypedIoContext (manages the
         // Box → raw → typed lifecycle safely).
@@ -317,8 +322,11 @@ impl PageFlusher {
             });
         }
 
-        let write_size = self.align_to_sector(valid_bytes);
+        let write_size = PageTrailer::write_size(valid_bytes, self.sector_size, self.page_size);
         let offset = self.device_offset(page);
+
+        // Compute CRC-32C and write the trailer into the frame's padding.
+        self.write_crc_trailer(frame, valid_bytes, write_size);
 
         let source = &frame.as_slice()[..write_size as usize];
 
@@ -388,6 +396,38 @@ impl PageFlusher {
     #[inline]
     pub fn align_to_sector(&self, bytes: u32) -> u32 {
         (bytes + self.sector_size - 1) & !(self.sector_size - 1)
+    }
+
+    /// Compute CRC-32C over the valid data range and write the 8-byte trailer
+    /// into the page frame's padding region at `[write_size-8..write_size]`.
+    ///
+    /// # Safety contract
+    ///
+    /// The frame must be in `Sealed` or `Flushing` state (no concurrent
+    /// writers to the data region). The trailer is written via
+    /// `as_mut_ptr()` into bytes that are guaranteed to be within the
+    /// frame's allocation (because `write_size <= page_size`).
+    fn write_crc_trailer(&self, frame: &super::page::PageFrame, valid_bytes: u32, write_size: u32) {
+        let crc_range = PageTrailer::crc_range(valid_bytes, write_size) as usize;
+
+        // Compute CRC-32C over the valid data before writing the trailer.
+        // SAFETY: `frame.as_ptr()` is valid for `frame.size()` bytes (>= write_size).
+        let data = unsafe { core::slice::from_raw_parts(frame.as_ptr(), crc_range) };
+        let crc = crc32fast::hash(data);
+
+        let trailer = PageTrailer::new(crc_range as u32, crc);
+        let trailer_bytes = trailer.to_bytes();
+        let trailer_offset = write_size as usize - PageTrailer::SIZE;
+
+        // SAFETY: `trailer_offset + 8 <= write_size <= page_size <= frame.size()`.
+        // The frame is in Sealed/Flushing state — no concurrent data writers.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                trailer_bytes.as_ptr(),
+                frame.as_mut_ptr().add(trailer_offset),
+                PageTrailer::SIZE,
+            );
+        }
     }
 }
 
@@ -507,6 +547,8 @@ mod tests {
     // 4. Write data to page, sync flush to InMemoryDevice, read back and verify.
     #[test]
     fn flush_page_sync_with_in_memory_device() {
+        use super::super::page::PageTrailer;
+
         let page = Page(0);
         let pt = PageTable::new(TEST_BUFFER_PAGES, TEST_PAGE_SIZE, TEST_SECTOR_SIZE);
         let frame = pt.get_or_allocate_frame(page);
@@ -534,11 +576,77 @@ mod tests {
         // Verify state is Flushed.
         assert_eq!(frame.state().load(Ordering::Acquire), PageState::Flushed);
 
-        // Read back from the device and verify contents.
+        // Read back from the device.
         let mut readback = vec![0u8; TEST_PAGE_SIZE];
         let offset = flusher.device_offset(page);
         dev.read_sync(offset, &mut readback).unwrap();
-        assert_eq!(readback, pattern);
+
+        // For a full page, the CRC trailer occupies the last 8 bytes of the
+        // page. The record data before the trailer should match the pattern.
+        let write_size = PageTrailer::write_size(
+            TEST_PAGE_SIZE as u32,
+            TEST_SECTOR_SIZE as u32,
+            TEST_PAGE_SIZE as u32,
+        );
+        let crc_range = PageTrailer::crc_range(TEST_PAGE_SIZE as u32, write_size) as usize;
+        assert_eq!(&readback[..crc_range], &pattern[..crc_range]);
+
+        // Verify the CRC trailer is valid.
+        let trailer = PageTrailer::from_slice(&readback, write_size as usize);
+        assert_eq!(trailer.valid_bytes, crc_range as u32);
+        let actual_crc = crc32fast::hash(&readback[..crc_range]);
+        assert_eq!(trailer.crc32, actual_crc);
+    }
+
+    // 4b. Flush a partial page and verify CRC trailer in padding.
+    #[test]
+    fn flush_page_sync_partial_page_crc() {
+        use super::super::page::PageTrailer;
+
+        let page = Page(0);
+        let pt = PageTable::new(TEST_BUFFER_PAGES, TEST_PAGE_SIZE, TEST_SECTOR_SIZE);
+        let frame = pt.get_or_allocate_frame(page);
+
+        // Write a pattern into the first 1000 bytes.
+        let valid_bytes = 1000u32;
+        let pattern: Vec<u8> = (0..valid_bytes as usize).map(|i| (i % 251) as u8).collect();
+        // SAFETY: We have exclusive access — the frame was just allocated and
+        // is in Open state.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                pattern.as_ptr(),
+                frame.as_mut_ptr(),
+                valid_bytes as usize,
+            );
+        }
+
+        frame
+            .state()
+            .try_transition(PageState::Open, PageState::Sealed);
+
+        let dev = InMemoryDevice::with_sizes(TEST_SECTOR_SIZE as u32, 1 << 30);
+        let flusher = PageFlusher::new(TEST_SECTOR_SIZE as u32, TEST_PAGE_SIZE as u32);
+
+        let result = flusher.flush_page_sync(page, &pt, &dev, valid_bytes);
+        assert!(result.is_ok());
+
+        // Compute expected write size.
+        let write_size =
+            PageTrailer::write_size(valid_bytes, TEST_SECTOR_SIZE as u32, TEST_PAGE_SIZE as u32);
+        // 1000 → needs 1008 for data+trailer → aligned to 1024
+        assert_eq!(write_size, 1024);
+
+        // Read back and verify data is intact.
+        let mut readback = vec![0u8; write_size as usize];
+        let offset = flusher.device_offset(page);
+        dev.read_sync(offset, &mut readback).unwrap();
+        assert_eq!(&readback[..valid_bytes as usize], &pattern[..]);
+
+        // Verify the CRC trailer.
+        let trailer = PageTrailer::from_slice(&readback, write_size as usize);
+        assert_eq!(trailer.valid_bytes, valid_bytes);
+        let actual_crc = crc32fast::hash(&readback[..valid_bytes as usize]);
+        assert_eq!(trailer.crc32, actual_crc);
     }
 
     // 5. Create allocator with multiple sealed pages, flush_sealed_pages, verify all Flushed.
