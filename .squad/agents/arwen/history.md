@@ -10,6 +10,26 @@
 
 <!-- Append new learnings below. Each entry is something lasting about the project. -->
 
+## 2026-03-10: CHANGELOG, Release Notes Template, Documentation Audit (Wave 3)
+
+**What:** Created three deliverables for the 0.1.0 pre-release quality plan:
+
+1. **rust/CHANGELOG.md** — Keep a Changelog format covering every crate's features for the initial 0.1.0 release. Organized by crate with detailed entries for core engine (FasterKv, hash index, hybrid log, epoch, checkpoint/recovery, compaction, grow, batch ops), device layer, io_uring, Tokio integration, FFI bindings, DST framework, benchmarks, and 7 sample apps.
+
+2. **rust/docs/release-notes-template.md** — Template with sections: Highlights, Breaking Changes, New Features (by crate), Bug Fixes, Performance (with table), Migration Guide, Known Issues, Contributors. Includes fill-it-out instructions.
+
+3. **rust/docs/documentation-audit.md** — Rated project 7.5/10. Core API well-covered (~697 doc examples, 291 lines of //! docs across 6 crates). Main gaps: 5 sample crates missing READMEs (P0), faster-device lib.rs too sparse (P0), faster-tokio and faster-uring need usage examples (P1). Full priority table with effort estimates.
+
+**Branch:** `arwen/changelog-docs-audit` (from `squad`)
+
+**Caveats with checkin script:** `rust/scripts/checkin` uses `git add -A` which stages ALL workspace changes, not just the files you intend. For docs-only commits that need selective staging, commit directly with `git commit` instead.
+
+**Documentation inventory discovered:**
+- 7 top-level markdown docs (README, QUICKSTART, TESTING, TESTING-ARCHITECTURE, PERFORMANCE, SECURITY-AUDIT, FUZZING, CONTRIBUTING)
+- 2 docs/ files (benchmarking.md, mutation-testing.md)
+- 4 crate READMEs (faster-core, faster-dst, tokio-kv-server, uring-stress)
+- Missing READMEs: faster-device, faster-ffi, faster-tokio, faster-uring, faster-bench, and 5 sample crates
+
 ---
 
 ## 2026-03-07: Iteration 4 Blog Post Written (blog-iteration-4.md)
@@ -93,3 +113,27 @@
 
 **Next Steps:** Risk mitigation task force (Éowyn lead), unsafe audit planning (Galadriel lead), Phase 1 sprint (Frodo lead), async adapter spike (Elrond lead).
 
+
+---
+
+## 2026-03-09T1846Z: CHANGELOG, Release Notes Template, Documentation Audit (Wave 3 Release Infrastructure)
+
+**Branch:** `arwen/changelog-docs-audit` (from `squad`, 1 commit, fast-forward merged)
+**Agent ID:** agent-147
+
+**Deliverables:**
+1. `rust/CHANGELOG.md` — Keep a Changelog format. Covers all 7 crates for the initial 0.1.0 release. Organized by crate: core engine (FasterKv, hash index, hybrid log, epoch, checkpoint/recovery, compaction, grow, batch ops), device layer (SyncFileDevice, NullDevice, Device trait), io_uring, Tokio integration, FFI bindings, DST framework, benchmarks, and 7 sample apps.
+
+2. `rust/docs/release-notes-template.md` — Reusable release notes template with sections: Highlights, Breaking Changes, New Features (by crate), Bug Fixes, Performance (table), Migration Guide, Known Issues, Contributors. Includes fill-it-out instructions for the release manager.
+
+3. `rust/docs/documentation-audit.md` — Rated project 7.5/10. Core API well-covered (~697 doc examples, 291 lines of //! docs across 6 crates). Gap table:
+   - **P0:** 5 sample crate READMEs missing (`read-cache-sim`, `kv-server`, `uring-stress`, `tokio-kv-server`, `bench`), `faster-device/src/lib.rs` too sparse
+   - **P1:** `faster-tokio` and `faster-uring` need usage examples in crate-level docs
+   - **P2:** Public unsafe code needs more safety docs
+
+**Test suite:** 2,067 passed, 11 skipped, 67s (post-merge, no regressions)
+
+**Wave 3 team context:**
+- **Gandalf (agent-148):** Added semver-checks to CI — new public API on publishable crates will be flagged on PRs.
+- **Legolas (agent-149):** `bench-record-baseline.sh`, `bench-release-compare.sh`, `bench-ci-smoke.sh` now available for release benchmarking.
+- **Boromir (agent-150):** `rust/scripts/release-gate` with `--tier 1` is a superset of `precheckin`; use it as a pre-commit check.

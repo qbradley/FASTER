@@ -95,3 +95,29 @@ Changes: SF-3 tombstone vector warning (log::warn! when >100MB), SF-5 chain hops
 - **Éowyn:** DST expanded 5→108 scenario templates (14 categories, 324 test cases in ~30s).
 
 **Your `"log."` prefix decision is now in `decisions.md` and propagated to Éowyn's history** — she needs to know this constraint affects DST scenarios using `SyncFileDevice`.
+
+---
+
+### Wave 3 — Release Gate Validation Script (2026-03-09T1846Z)
+**Branch:** `boromir/release-gate` — merged to `squad`
+**Agent ID:** agent-150
+
+Built the unified release gate validation script integrating all 4 tiers.
+
+**Artifacts:**
+- `rust/scripts/release-gate` (875 lines) — 4-tier validation:
+  - `--tier 1` Fast Gate (<60s): fmt, clippy, doctests, nextest, doc build
+  - `--tier 2` Correctness Gate (<5min): loom, miri, fuzz smoke, cargo-deny, DST
+  - `--tier 3` Deep Validation (<30min): mutation testing, extended fuzz, bench regression (calls Legolas's `bench-release-compare.sh`)
+  - `--tier 4` Release Gate (<2hr): changelog, metadata, packaging, semver-checks, full bench
+  - Flags: `--dry-run`, `--tier N`, `--from N`, `--continue`, `--verbose`, `--report`
+  - Missing tools: graceful skip with warning (not failure)
+  - Output: markdown report per run
+- `rust/docs/release-gate.md` — user guide covering all flags, examples, and CI integration
+
+**Decision filed:** `boromir-release-gate.md` → merged to `decisions.md` (4-tier release gate design)
+
+**Wave 3 team context:**
+- **Arwen (agent-147):** Tier 4 checks changelog (`rust/CHANGELOG.md` she created). Keep it updated each release.
+- **Gandalf (agent-148):** Tier 4 runs semver-checks (he added to CI) and validates packaging/Cargo.toml metadata. Release workflow: `release-gate all` before tagging with `rust-v*`.
+- **Legolas (agent-149):** Tier 3 calls `bench-release-compare.sh`. Record a baseline with `bench-record-baseline.sh` before running Tier 3.

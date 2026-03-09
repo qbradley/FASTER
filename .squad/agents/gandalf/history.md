@@ -105,3 +105,28 @@ Set up complete release automation infrastructure for the Rust workspace.
 - Non-publishable: `faster-bench` (benchmarks), `faster-dst` (test framework), all samples.
 - Semver checks are advisory pre-1.0, will become mandatory post-1.0.
 - Release tag format `rust-v*` avoids collision with existing `squad-release.yml` (Node.js, triggered on `main` push).
+
+---
+
+### Wave 3 — Benchmark Baseline Infrastructure (2026-03-09T1846Z)
+**Branch:** `legolas/bench-baseline-infra` — merged to `squad`
+**Agent ID (Legolas):** agent-149
+
+**What this means for you:**
+- `rust/scripts/bench-record-baseline.sh` — record named baselines tied to git version before each release.
+- `rust/scripts/bench-release-compare.sh` — compare against stored baseline; >5% regression gates release. Exit code 1 on failure.
+- `rust/scripts/bench-ci-smoke.sh` — fast CI smoke test for benchmark sanity.
+- `rust/baselines/README.md` — explains storage, usage, and release workflow.
+- Release process should record a baseline before tagging: `bench-record-baseline.sh v0.1.0`.
+
+**Your `rust/docs/releasing.md` should reference bench-record-baseline.sh in the release checklist.**
+
+### Wave 3 — Release Gate Validation (2026-03-09T1846Z)
+**Branch:** `boromir/release-gate` — merged to `squad`
+**Agent ID (Boromir):** agent-150
+
+**What this means for you:**
+- `rust/scripts/release-gate` integrates all 4 validation tiers into a single script.
+- Tier 3 runs `bench-release-compare.sh` — your benchmark baseline work feeds directly into the release gate.
+- Release workflow: run `release-gate all` before tagging; use `--report` flag to capture output as release artifact.
+- `rust/docs/release-gate.md` is now the companion doc to your `rust/docs/releasing.md`.
