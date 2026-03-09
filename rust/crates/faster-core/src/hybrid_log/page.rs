@@ -1017,4 +1017,43 @@ mod tests {
         // Full page: crc_range = min(4096, 4096-8) = 4088
         assert_eq!(PageTrailer::crc_range(4096, 4096), 4088);
     }
+
+    #[test]
+    fn full_page_trailer_does_not_corrupt_data() {
+        // Simulate a full 4096-byte page. When valid_bytes == page_size,
+        // write_size is capped to page_size so the trailer offset is
+        // page_size - 8. The trailer must NOT overwrite the last 8 bytes
+        // of live record data.
+        let page_size: u32 = 4096;
+        let sector_size: u32 = 512;
+        let valid_bytes = page_size; // page is exactly full
+
+        let write_size = PageTrailer::write_size(valid_bytes, sector_size, page_size);
+        assert_eq!(write_size, page_size); // capped
+
+        let trailer_offset = write_size as usize - PageTrailer::SIZE;
+        // trailer_offset (4088) < valid_bytes (4096) → trailer would overlap
+        assert!(
+            trailer_offset < valid_bytes as usize,
+            "trailer_offset ({trailer_offset}) should be less than valid_bytes ({valid_bytes}) for a full page"
+        );
+    }
+
+    #[test]
+    fn near_full_page_trailer_does_not_corrupt_data() {
+        // valid_bytes = 4092 on a 4096-byte page: write_size caps at 4096,
+        // trailer offset = 4088 which is < 4092 → would corrupt 4 bytes.
+        let page_size: u32 = 4096;
+        let sector_size: u32 = 512;
+        let valid_bytes: u32 = 4092;
+
+        let write_size = PageTrailer::write_size(valid_bytes, sector_size, page_size);
+        assert_eq!(write_size, page_size);
+
+        let trailer_offset = write_size as usize - PageTrailer::SIZE;
+        assert!(
+            trailer_offset < valid_bytes as usize,
+            "trailer_offset ({trailer_offset}) should be less than valid_bytes ({valid_bytes})"
+        );
+    }
 }

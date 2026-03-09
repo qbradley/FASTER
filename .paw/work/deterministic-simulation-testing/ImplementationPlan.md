@@ -56,9 +56,9 @@ A framework where:
 
 ## Phase Candidates
 
-- [ ] Shrinking / minimization (find minimal seed that reproduces a failure)
-- [ ] Coverage-guided seed selection (prioritize seeds that explore new code paths)
-- [ ] Snapshot/restore for long-running simulations (checkpoint simulator state)
+- [x] [deferred] Shrinking / minimization (find minimal seed that reproduces a failure)
+- [x] [deferred] Coverage-guided seed selection (prioritize seeds that explore new code paths)
+- [x] [deferred] Snapshot/restore for long-running simulations (checkpoint simulator state)
 
 ---
 

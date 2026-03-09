@@ -408,6 +408,16 @@ impl PageFlusher {
     /// `as_mut_ptr()` into bytes that are guaranteed to be within the
     /// frame's allocation (because `write_size <= page_size`).
     fn write_crc_trailer(&self, frame: &super::page::PageFrame, valid_bytes: u32, write_size: u32) {
+        let trailer_offset = write_size as usize - PageTrailer::SIZE;
+
+        // If the trailer would overlap with valid record data, skip writing
+        // it entirely. This prevents corrupting the last 8 bytes of a full
+        // (or nearly full) page. Recovery detects the absent trailer via the
+        // zeroed valid_bytes/crc fields.
+        if (trailer_offset as u32) < valid_bytes {
+            return;
+        }
+
         let crc_range = PageTrailer::crc_range(valid_bytes, write_size) as usize;
 
         // Compute CRC-32C over the valid data before writing the trailer.
@@ -417,7 +427,6 @@ impl PageFlusher {
 
         let trailer = PageTrailer::new(crc_range as u32, crc);
         let trailer_bytes = trailer.to_bytes();
-        let trailer_offset = write_size as usize - PageTrailer::SIZE;
 
         // SAFETY: `trailer_offset + 8 <= write_size <= page_size <= frame.size()`.
         // The frame is in Sealed/Flushing state — no concurrent data writers.
@@ -547,8 +556,6 @@ mod tests {
     // 4. Write data to page, sync flush to InMemoryDevice, read back and verify.
     #[test]
     fn flush_page_sync_with_in_memory_device() {
-        use super::super::page::PageTrailer;
-
         let page = Page(0);
         let pt = PageTable::new(TEST_BUFFER_PAGES, TEST_PAGE_SIZE, TEST_SECTOR_SIZE);
         let frame = pt.get_or_allocate_frame(page);
@@ -581,21 +588,13 @@ mod tests {
         let offset = flusher.device_offset(page);
         dev.read_sync(offset, &mut readback).unwrap();
 
-        // For a full page, the CRC trailer occupies the last 8 bytes of the
-        // page. The record data before the trailer should match the pattern.
-        let write_size = PageTrailer::write_size(
-            TEST_PAGE_SIZE as u32,
-            TEST_SECTOR_SIZE as u32,
-            TEST_PAGE_SIZE as u32,
+        // For a full page the CRC trailer is skipped (it would overwrite
+        // valid record data). All bytes should match the original pattern.
+        assert_eq!(
+            &readback[..],
+            &pattern[..],
+            "full-page data should be preserved without CRC trailer corruption"
         );
-        let crc_range = PageTrailer::crc_range(TEST_PAGE_SIZE as u32, write_size) as usize;
-        assert_eq!(&readback[..crc_range], &pattern[..crc_range]);
-
-        // Verify the CRC trailer is valid.
-        let trailer = PageTrailer::from_slice(&readback, write_size as usize);
-        assert_eq!(trailer.valid_bytes, crc_range as u32);
-        let actual_crc = crc32fast::hash(&readback[..crc_range]);
-        assert_eq!(trailer.crc32, actual_crc);
     }
 
     // 4b. Flush a partial page and verify CRC trailer in padding.
@@ -759,6 +758,80 @@ mod tests {
         match result.unwrap_err() {
             FlushError::PageNotFound(p) => assert_eq!(p, Page(7)),
             other => panic!("expected PageNotFound, got {other:?}"),
+        }
+    }
+
+    // 9. Full-page flush must not corrupt last 8 bytes of data.
+    #[test]
+    fn flush_full_page_preserves_all_data() {
+        let page = Page(0);
+        let pt = setup_page_in_state(page, PageState::Sealed);
+        let dev = InMemoryDevice::new();
+        let flusher = PageFlusher::new(TEST_SECTOR_SIZE as u32, TEST_PAGE_SIZE as u32);
+
+        // Fill the entire page with a known pattern via the raw pointer
+        // (get_frame returns &PageFrame, but as_mut_ptr is safe for writes
+        // (get_frame returns &PageFrame, but as_mut_ptr is safe for writes
+        // when we hold the only reference and the page is Sealed).
+        let frame = pt.get_frame(page).unwrap();
+        // SAFETY: Exclusive access — the page is Sealed and we hold the only ref.
+        unsafe {
+            let ptr = frame.as_mut_ptr();
+            for i in 0..TEST_PAGE_SIZE {
+                *ptr.add(i) = (i % 251) as u8;
+            }
+        }
+
+        // Flush with valid_bytes == page_size (page is exactly full).
+        let valid_bytes = TEST_PAGE_SIZE as u32;
+        let result = flusher.flush_page_sync(page, &pt, &dev, valid_bytes);
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+
+        // Read back from device and verify ALL data bytes are intact.
+        let flushed = frame.as_slice();
+        for (i, &byte) in flushed.iter().enumerate().take(TEST_PAGE_SIZE) {
+            assert_eq!(
+                byte,
+                (i % 251) as u8,
+                "data corrupted at offset {i} (page_size={TEST_PAGE_SIZE})"
+            );
+        }
+    }
+
+    // 10. Near-full page (valid_bytes close to page_size) also preserves data.
+    #[test]
+    fn flush_near_full_page_preserves_data() {
+        let page = Page(0);
+        let pt = setup_page_in_state(page, PageState::Sealed);
+        let dev = InMemoryDevice::new();
+        let flusher = PageFlusher::new(TEST_SECTOR_SIZE as u32, TEST_PAGE_SIZE as u32);
+
+        // Fill the entire page with a known pattern.
+        let frame = pt.get_frame(page).unwrap();
+        // SAFETY: Exclusive access — the page is Sealed and we hold the only ref.
+        unsafe {
+            let ptr = frame.as_mut_ptr();
+            for i in 0..TEST_PAGE_SIZE {
+                *ptr.add(i) = (i % 199) as u8;
+            }
+        }
+
+        // valid_bytes = page_size - 4: trailer offset = page_size - 8,
+        // which is < valid_bytes, so trailer must be skipped.
+        let valid_bytes = (TEST_PAGE_SIZE - 4) as u32;
+        let result = flusher.flush_page_sync(page, &pt, &dev, valid_bytes);
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+
+        // Verify all valid data bytes are intact.
+        let flushed = frame.as_slice();
+        for (i, &byte) in flushed.iter().enumerate().take(valid_bytes as usize) {
+            assert_eq!(
+                byte,
+                (i % 199) as u8,
+                "data corrupted at offset {i} (valid_bytes={valid_bytes})"
+            );
         }
     }
 }

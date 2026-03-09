@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use faster_core::device::{Device, InMemoryDevice};
 use faster_core::hybrid_log::flush::PageFlusher;
-use faster_core::hybrid_log::page::{PAGE_TRAILER_SIZE, PageState, PageTable, PageTrailer};
+use faster_core::hybrid_log::page::{PageState, PageTable, PageTrailer};
 use faster_core::recovery::ChecksumValidationPolicy;
 
 use faster_dst::device::{SimulatedDevice, SimulatedStorage};
@@ -82,14 +82,17 @@ fn full_page_crc_roundtrip() {
         .flush_page_sync(page, &pt, &dev, PAGE)
         .expect("flush should succeed");
 
-    let (buf, trailer) = read_trailer(&dev, 0, PAGE);
+    let (buf, _trailer) = read_trailer(&dev, 0, PAGE);
     // For a full page, the CRC trailer is skipped to avoid overwriting
     // the last 8 bytes of valid record data. The trailer region will
     // contain the original data pattern, not a valid trailer.
     // Recovery detects this via the valid_bytes==0 && crc==0 check.
     let pattern: Vec<u8> = (0..PAGE as usize).map(|i| (i % 251) as u8).collect();
-    assert_eq!(&buf[..], &pattern[..],
-        "full-page data should be preserved without CRC trailer corruption");
+    assert_eq!(
+        &buf[..],
+        &pattern[..],
+        "full-page data should be preserved without CRC trailer corruption"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
