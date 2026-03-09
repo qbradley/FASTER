@@ -48,7 +48,9 @@ use crate::hybrid_log::record_ops::{LogRecordReader, LogRecordWriter, MutableRec
 use crate::hybrid_log::regions::{AddressInfo, AddressRegion};
 use crate::record::{Key, RecordInfo, RecordLayout, Value};
 use crate::status::OperationStatus;
-use crate::store::functions::{DeleteInfo, Functions, ReadInfo, RmwInfo, RmwInPlaceResult, UpsertInfo};
+use crate::store::functions::{
+    DeleteInfo, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo,
+};
 use crate::store::session::{FasterSession, PendingOpType, PendingOperation};
 
 /// Maximum number of version chain hops before giving up.
@@ -273,7 +275,13 @@ pub(crate) fn internal_read<F: Functions>(
                         .get_record(_found_addr, safe_size)
                         .map(|acc| acc.value::<F::Value>(&layout))
                         .expect("value must be readable for in-memory record");
-                    functions.read(key, &value, input, output, &ReadInfo::new(0, _found_addr, ri));
+                    functions.read(
+                        key,
+                        &value,
+                        input,
+                        output,
+                        &ReadInfo::new(0, _found_addr, ri),
+                    );
                     OperationStatus::Ok
                 }
                 None => OperationStatus::NotFound,
@@ -333,7 +341,14 @@ pub(crate) fn internal_upsert<F: Functions>(
         // Let the callback initialise the value into a default-constructed slot.
         let mut value: F::Value = F::Value::default();
         let mut output = F::Output::default();
-        functions.upsert(key, &mut value, input, None, &mut output, &UpsertInfo::new(0, LogicalAddress::INVALID, RecordInfo::default()));
+        functions.upsert(
+            key,
+            &mut value,
+            input,
+            None,
+            &mut output,
+            &UpsertInfo::new(0, LogicalAddress::INVALID, RecordInfo::default()),
+        );
 
         let (new_addr, mut accessor) = match allocate_at_tail(ctx.allocator, key, &value) {
             Some(pair) => pair,
@@ -565,7 +580,14 @@ fn upsert_copy_to_tail<F: Functions>(
     // Let the callback produce the final value.
     let mut new_val: F::Value = F::Value::default();
     let mut output = F::Output::default();
-    functions.upsert(key, &mut new_val, input, None, &mut output, &UpsertInfo::new(0, previous_addr, RecordInfo::default()));
+    functions.upsert(
+        key,
+        &mut new_val,
+        input,
+        None,
+        &mut output,
+        &UpsertInfo::new(0, previous_addr, RecordInfo::default()),
+    );
 
     let (new_addr, mut accessor) = match allocate_at_tail(ctx.allocator, key, &new_val) {
         Some(pair) => pair,
@@ -619,7 +641,11 @@ pub(crate) fn internal_rmw<F: Functions>(
 
     if result.created {
         // ── Key not found — create initial value ───────────────────
-        if !functions.rmw_need_initial_update(key, input, &RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::default(), false)) {
+        if !functions.rmw_need_initial_update(
+            key,
+            input,
+            &RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::default(), false),
+        ) {
             // User declined to create a new record — abort.
             let _ = ctx
                 .hash_index
@@ -629,7 +655,13 @@ pub(crate) fn internal_rmw<F: Functions>(
 
         // Create a default value and let the callback initialise it.
         let mut value = F::Value::default();
-        functions.rmw_initial(key, input, &mut value, output, &RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::default(), false));
+        functions.rmw_initial(
+            key,
+            input,
+            &mut value,
+            output,
+            &RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::default(), false),
+        );
 
         let (new_addr, mut accessor) = match allocate_at_tail(ctx.allocator, key, &value) {
             Some(pair) => pair,
@@ -746,7 +778,14 @@ pub(crate) fn internal_rmw<F: Functions>(
                         let value_len = std::mem::size_of::<F::Value>();
                         // SAFETY: value_ptr in mutable-region page under epoch.
                         let rmw_result = unsafe {
-                            functions.rmw_in_place_raw(key, value_ptr, value_len, input, output, &RmwInfo::new(0, found_addr, ri, false))
+                            functions.rmw_in_place_raw(
+                                key,
+                                value_ptr,
+                                value_len,
+                                input,
+                                output,
+                                &RmwInfo::new(0, found_addr, ri, false),
+                            )
                         };
                         match rmw_result {
                             RmwInPlaceResult::InPlaceOk => {
@@ -774,7 +813,13 @@ pub(crate) fn internal_rmw<F: Functions>(
                         }
                     } else {
                         let mut value: F::Value = accessor.value(&layout);
-                        let rmw_result = functions.rmw_in_place(key, input, &mut value, output, &RmwInfo::new(0, found_addr, ri, false));
+                        let rmw_result = functions.rmw_in_place(
+                            key,
+                            input,
+                            &mut value,
+                            output,
+                            &RmwInfo::new(0, found_addr, ri, false),
+                        );
                         match rmw_result {
                             RmwInPlaceResult::InPlaceOk => {
                                 let write_layout = RecordLayout::for_kv(key, &value);
@@ -840,7 +885,12 @@ pub(crate) fn internal_rmw<F: Functions>(
                         .map(|acc| acc.value::<F::Value>(&layout))
                         .expect("readable in-memory record");
 
-                    if !functions.rmw_need_copy_update(key, input, &old_value, &RmwInfo::new(0, found_addr, ri, true)) {
+                    if !functions.rmw_need_copy_update(
+                        key,
+                        input,
+                        &old_value,
+                        &RmwInfo::new(0, found_addr, ri, true),
+                    ) {
                         return OperationStatus::Ok;
                     }
 
@@ -900,7 +950,14 @@ fn rmw_copy_to_tail<F: Functions>(
     previous_addr: LogicalAddress,
 ) -> OperationStatus {
     let mut new_value = old_value.clone();
-    functions.rmw_copy_update(key, input, old_value, &mut new_value, output, &RmwInfo::new(0, previous_addr, RecordInfo::default(), true));
+    functions.rmw_copy_update(
+        key,
+        input,
+        old_value,
+        &mut new_value,
+        output,
+        &RmwInfo::new(0, previous_addr, RecordInfo::default(), true),
+    );
 
     let (new_addr, mut accessor) = match allocate_at_tail(ctx.allocator, key, &new_value) {
         Some(pair) => pair,
@@ -931,12 +988,22 @@ fn rmw_create_at_tail<F: Functions>(
     slot: &crate::hash::bucket::AtomicHashBucketEntry,
     previous_addr: LogicalAddress,
 ) -> OperationStatus {
-    if !functions.rmw_need_initial_update(key, input, &RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::default(), false)) {
+    if !functions.rmw_need_initial_update(
+        key,
+        input,
+        &RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::default(), false),
+    ) {
         return OperationStatus::NotFound;
     }
 
     let mut value = F::Value::default();
-    functions.rmw_initial(key, input, &mut value, output, &RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::default(), false));
+    functions.rmw_initial(
+        key,
+        input,
+        &mut value,
+        output,
+        &RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::default(), false),
+    );
 
     let (new_addr, mut accessor) = match allocate_at_tail(ctx.allocator, key, &value) {
         Some(pair) => pair,
@@ -1410,6 +1477,7 @@ mod tests {
     fn seal_record_at(alloc: &HybridLogAllocator, addr: LogicalAddress) {
         let ptr = alloc.get_physical_address(addr).expect("address in memory");
         let record_size = safe_read_record_size(addr, 8 + 8 + 8);
+        // SAFETY: ptr is valid from get_physical_address, record_size matches the record layout.
         let accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
         let atomic_ri = accessor.atomic_record_info();
         assert!(atomic_ri.try_seal().is_ok(), "seal should succeed");
@@ -1440,7 +1508,15 @@ mod tests {
         assert_eq!(status, OperationStatus::Revivified);
 
         let mut output: Option<u64> = None;
-        let _ = internal_read(&ic, guard.session_mut(), &funcs, &42u64, &0u64, &mut output, ());
+        let _ = internal_read(
+            &ic,
+            guard.session_mut(),
+            &funcs,
+            &42u64,
+            &0u64,
+            &mut output,
+            (),
+        );
         assert_eq!(output, Some(200));
     }
 
@@ -1456,18 +1532,42 @@ mod tests {
         let ic = ctx(&hi, &alloc);
 
         let mut output: Option<u64> = None;
-        let status = internal_rmw(&ic, guard.session_mut(), &funcs, &42u64, &100u64, &mut output, ());
+        let status = internal_rmw(
+            &ic,
+            guard.session_mut(),
+            &funcs,
+            &42u64,
+            &100u64,
+            &mut output,
+            (),
+        );
         assert_eq!(status, OperationStatus::Created);
 
         let addr = find_key_addr(&hi, 42u64);
         seal_record_at(&alloc, addr);
 
         let mut output2: Option<u64> = None;
-        let status = internal_rmw(&ic, guard.session_mut(), &funcs, &42u64, &200u64, &mut output2, ());
+        let status = internal_rmw(
+            &ic,
+            guard.session_mut(),
+            &funcs,
+            &42u64,
+            &200u64,
+            &mut output2,
+            (),
+        );
         assert_eq!(status, OperationStatus::Revivified);
 
         let mut read_output: Option<u64> = None;
-        let _ = internal_read(&ic, guard.session_mut(), &funcs, &42u64, &0u64, &mut read_output, ());
+        let _ = internal_read(
+            &ic,
+            guard.session_mut(),
+            &funcs,
+            &42u64,
+            &0u64,
+            &mut read_output,
+            (),
+        );
         assert_eq!(read_output, Some(200));
     }
 
@@ -1510,7 +1610,15 @@ mod tests {
         assert_eq!(status2, OperationStatus::InPlaceUpdated);
 
         let mut output: Option<u64> = None;
-        let _ = internal_read(&ic, guard.session_mut(), &funcs, &42u64, &0u64, &mut output, ());
+        let _ = internal_read(
+            &ic,
+            guard.session_mut(),
+            &funcs,
+            &42u64,
+            &0u64,
+            &mut output,
+            (),
+        );
         assert_eq!(output, Some(300));
     }
 
@@ -1537,8 +1645,15 @@ mod tests {
         assert_eq!(s2, OperationStatus::Revivified);
 
         let mut output: Option<u64> = None;
-        let _ = internal_read(&ic, guard.session_mut(), &funcs, &42u64, &0u64, &mut output, ());
+        let _ = internal_read(
+            &ic,
+            guard.session_mut(),
+            &funcs,
+            &42u64,
+            &0u64,
+            &mut output,
+            (),
+        );
         assert_eq!(output, Some(300));
     }
-
 }

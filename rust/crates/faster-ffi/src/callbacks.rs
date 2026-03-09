@@ -134,10 +134,7 @@ pub type FasterReadGetAtomicFn = FasterReadGetFn;
 /// Called when an asynchronous operation completes.
 /// `status` is the FASTER status code, `context` is the user-provided
 /// opaque context pointer.
-pub type FasterAsyncCallbackFn = extern "C" fn(
-    status: u8,
-    context: u64,
-);
+pub type FasterAsyncCallbackFn = extern "C" fn(status: u8, context: u64);
 
 // ── Callback sets (grouped by operation type) ───────────────────────
 
@@ -153,14 +150,14 @@ pub(crate) struct RmwCallbackSet {
 #[derive(Clone, Copy)]
 pub(crate) struct UpsertCallbackSet {
     pub put: Option<FasterUpsertPutFn>,
-    pub put_atomic: Option<FasterUpsertPutAtomicFn>,
+    pub _put_atomic: Option<FasterUpsertPutAtomicFn>,
 }
 
 /// Read callback set installed per-operation.
 #[derive(Clone, Copy)]
 pub(crate) struct ReadCallbackSet {
     pub get: Option<FasterReadGetFn>,
-    pub get_atomic: Option<FasterReadGetAtomicFn>,
+    pub _get_atomic: Option<FasterReadGetAtomicFn>,
 }
 
 // ── Thread-local storage ────────────────────────────────────────────
@@ -393,7 +390,10 @@ impl Functions for CallbackFunctions {
         let cbs = RMW_CALLBACKS.with(|c| c.get());
         if let Some(cbs) = cbs {
             if let Some(copy_fn) = cbs.copy_update {
-                let cap = old_value.len().max(input.len()).max(MIN_CALLBACK_BUF_CAPACITY);
+                let cap = old_value
+                    .len()
+                    .max(input.len())
+                    .max(MIN_CALLBACK_BUF_CAPACITY);
                 new_value.resize(cap, 0);
                 let mut new_len = cap;
                 let _rc = copy_fn(
@@ -441,14 +441,18 @@ mod tests {
     // ── RMW callback tests ──────────────────────────────────────────
 
     extern "C" fn sum_initial(
-        _key_ptr: *const u8, _key_len: usize,
-        input_ptr: *const u8, input_len: usize,
-        value_ptr: *mut u8, value_len: *mut usize,
+        _key_ptr: *const u8,
+        _key_len: usize,
+        input_ptr: *const u8,
+        input_len: usize,
+        value_ptr: *mut u8,
+        value_len: *mut usize,
     ) -> i32 {
         assert_eq!(input_len, 8);
         // SAFETY: test callback, pointers valid
         unsafe {
-            let delta = u64::from_le_bytes(std::slice::from_raw_parts(input_ptr, 8).try_into().unwrap());
+            let delta =
+                u64::from_le_bytes(std::slice::from_raw_parts(input_ptr, 8).try_into().unwrap());
             let bytes = delta.to_le_bytes();
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), value_ptr, 8);
             *value_len = 8;
@@ -457,16 +461,21 @@ mod tests {
     }
 
     extern "C" fn sum_atomic(
-        _key_ptr: *const u8, _key_len: usize,
-        input_ptr: *const u8, input_len: usize,
-        value_ptr: *mut u8, value_len: usize,
+        _key_ptr: *const u8,
+        _key_len: usize,
+        input_ptr: *const u8,
+        input_len: usize,
+        value_ptr: *mut u8,
+        value_len: usize,
     ) -> i32 {
         assert_eq!(input_len, 8);
         assert_eq!(value_len, 8);
         // SAFETY: test callback, pointers valid
         unsafe {
-            let delta = u64::from_le_bytes(std::slice::from_raw_parts(input_ptr, 8).try_into().unwrap());
-            let current = u64::from_le_bytes(std::slice::from_raw_parts(value_ptr, 8).try_into().unwrap());
+            let delta =
+                u64::from_le_bytes(std::slice::from_raw_parts(input_ptr, 8).try_into().unwrap());
+            let current =
+                u64::from_le_bytes(std::slice::from_raw_parts(value_ptr, 8).try_into().unwrap());
             let new_val = current + delta;
             std::ptr::copy_nonoverlapping(new_val.to_le_bytes().as_ptr(), value_ptr, 8);
         }
@@ -474,17 +483,23 @@ mod tests {
     }
 
     extern "C" fn sum_copy(
-        _key_ptr: *const u8, _key_len: usize,
-        input_ptr: *const u8, input_len: usize,
-        old_ptr: *const u8, old_len: usize,
-        new_ptr: *mut u8, new_len: *mut usize,
+        _key_ptr: *const u8,
+        _key_len: usize,
+        input_ptr: *const u8,
+        input_len: usize,
+        old_ptr: *const u8,
+        old_len: usize,
+        new_ptr: *mut u8,
+        new_len: *mut usize,
     ) -> i32 {
         assert_eq!(input_len, 8);
         assert_eq!(old_len, 8);
         // SAFETY: test callback, pointers valid
         unsafe {
-            let delta = u64::from_le_bytes(std::slice::from_raw_parts(input_ptr, 8).try_into().unwrap());
-            let old_val = u64::from_le_bytes(std::slice::from_raw_parts(old_ptr, 8).try_into().unwrap());
+            let delta =
+                u64::from_le_bytes(std::slice::from_raw_parts(input_ptr, 8).try_into().unwrap());
+            let old_val =
+                u64::from_le_bytes(std::slice::from_raw_parts(old_ptr, 8).try_into().unwrap());
             let result = old_val + delta;
             std::ptr::copy_nonoverlapping(result.to_le_bytes().as_ptr(), new_ptr, 8);
             *new_len = 8;
@@ -518,7 +533,14 @@ mod tests {
         let input3 = 8u64.to_le_bytes().to_vec();
         let old_value = value.clone();
         let mut new_value = Vec::new();
-        f.rmw_copy_update(&key, &input3, &old_value, &mut new_value, &mut output, &info);
+        f.rmw_copy_update(
+            &key,
+            &input3,
+            &old_value,
+            &mut new_value,
+            &mut output,
+            &info,
+        );
         assert_eq!(u64::from_le_bytes(new_value[..8].try_into().unwrap()), 60);
     }
 
@@ -558,10 +580,14 @@ mod tests {
     }
 
     extern "C" fn read_double(
-        _key_ptr: *const u8, _key_len: usize,
-        value_ptr: *const u8, value_len: usize,
-        output_ptr: *mut u8, output_len: *mut usize,
+        _key_ptr: *const u8,
+        _key_len: usize,
+        value_ptr: *const u8,
+        value_len: usize,
+        output_ptr: *mut u8,
+        output_len: *mut usize,
     ) -> i32 {
+        // SAFETY: Caller (FFI boundary) guarantees valid pointers and lengths for value/output buffers.
         unsafe {
             let needed = value_len * 2;
             if needed > *output_len {
@@ -585,7 +611,7 @@ mod tests {
 
         let _guard = ReadCallbackGuard::install(ReadCallbackSet {
             get: Some(read_double),
-            get_atomic: Some(read_double),
+            _get_atomic: Some(read_double),
         });
 
         let mut output = None;
@@ -606,11 +632,15 @@ mod tests {
     }
 
     extern "C" fn upsert_uppercase(
-        _key_ptr: *const u8, _key_len: usize,
-        input_ptr: *const u8, input_len: usize,
-        value_ptr: *mut u8, _value_len: usize,
+        _key_ptr: *const u8,
+        _key_len: usize,
+        input_ptr: *const u8,
+        input_len: usize,
+        value_ptr: *mut u8,
+        _value_len: usize,
         actual_len: *mut usize,
     ) -> i32 {
+        // SAFETY: Caller (FFI boundary) guarantees valid pointers and lengths for input/value buffers.
         unsafe {
             let input = std::slice::from_raw_parts(input_ptr, input_len);
             for (i, &b) in input.iter().enumerate() {
@@ -630,7 +660,7 @@ mod tests {
 
         let _guard = UpsertCallbackGuard::install(UpsertCallbackSet {
             put: Some(upsert_uppercase),
-            put_atomic: None,
+            _put_atomic: None,
         });
 
         let mut value = Vec::new();

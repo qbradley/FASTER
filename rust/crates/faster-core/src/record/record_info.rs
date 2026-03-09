@@ -828,24 +828,21 @@ mod tests {
 
     #[test]
     fn sealed_idempotent() {
-        let info = RecordInfo::new(LogicalAddress::ZERO, 1, false, false, false)
-            .with_sealed();
+        let info = RecordInfo::new(LogicalAddress::ZERO, 1, false, false, false).with_sealed();
         let double_sealed = info.with_sealed();
         assert_eq!(info.raw(), double_sealed.raw());
     }
 
     #[test]
     fn sealed_in_debug_output() {
-        let info = RecordInfo::new(LogicalAddress::ZERO, 1, false, false, false)
-            .with_sealed();
+        let info = RecordInfo::new(LogicalAddress::ZERO, 1, false, false, false).with_sealed();
         let dbg = format!("{info:?}");
         assert!(dbg.contains("sealed: true"));
     }
 
     #[test]
     fn sealed_in_display_output() {
-        let info = RecordInfo::new(LogicalAddress::ZERO, 1, false, false, false)
-            .with_sealed();
+        let info = RecordInfo::new(LogicalAddress::ZERO, 1, false, false, false).with_sealed();
         let s = format!("{info}");
         assert!(s.contains(" S"));
     }
@@ -905,12 +902,7 @@ mod tests {
 
         // Our CAS should fail.
         let desired = current.with_sealed();
-        let result = atomic.compare_exchange(
-            current,
-            desired,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
+        let result = atomic.compare_exchange(current, desired, Ordering::AcqRel, Ordering::Acquire);
         assert!(result.is_err());
         let actual = result.unwrap_err();
         assert!(actual.is_sealed());

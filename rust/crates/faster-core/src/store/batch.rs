@@ -30,7 +30,9 @@ use crate::status::OperationStatus;
 
 use super::Functions;
 use super::kv::FasterKv;
-use super::operations::{InternalContext, internal_delete, internal_read, internal_rmw, internal_upsert};
+use super::operations::{
+    InternalContext, internal_delete, internal_read, internal_rmw, internal_upsert,
+};
 use super::session::UnsafeContext;
 
 /// Number of operations between epoch refreshes within a batch.
@@ -51,12 +53,16 @@ pub struct BatchResult {
 impl BatchResult {
     #[inline]
     fn filled(n: usize, status: OperationStatus) -> Self {
-        Self { statuses: vec![status; n] }
+        Self {
+            statuses: vec![status; n],
+        }
     }
 
     /// Total number of operations in the batch.
     #[inline]
-    pub fn total(&self) -> usize { self.statuses.len() }
+    pub fn total(&self) -> usize {
+        self.statuses.len()
+    }
 
     /// Number of operations that completed successfully.
     #[inline]
@@ -67,26 +73,38 @@ impl BatchResult {
     /// Number of operations that went pending (need async I/O).
     #[inline]
     pub fn pending_count(&self) -> usize {
-        self.statuses.iter().filter(|s| **s == OperationStatus::Pending).count()
+        self.statuses
+            .iter()
+            .filter(|s| **s == OperationStatus::Pending)
+            .count()
     }
 
     /// Number of operations that returned `NotFound`.
     #[inline]
     pub fn not_found_count(&self) -> usize {
-        self.statuses.iter().filter(|s| **s == OperationStatus::NotFound).count()
+        self.statuses
+            .iter()
+            .filter(|s| **s == OperationStatus::NotFound)
+            .count()
     }
 
     /// Returns `true` if every operation succeeded.
     #[inline]
-    pub fn all_succeeded(&self) -> bool { self.statuses.iter().all(|s| s.is_success()) }
+    pub fn all_succeeded(&self) -> bool {
+        self.statuses.iter().all(|s| s.is_success())
+    }
 
     /// Returns `true` if any operation went pending.
     #[inline]
-    pub fn has_pending(&self) -> bool { self.statuses.contains(&OperationStatus::Pending) }
+    pub fn has_pending(&self) -> bool {
+        self.statuses.contains(&OperationStatus::Pending)
+    }
 
     /// Returns `true` if the batch was empty.
     #[inline]
-    pub fn is_empty(&self) -> bool { self.statuses.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.statuses.is_empty()
+    }
 }
 
 // -- BatchOp --
@@ -153,10 +171,16 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         F::Input: Default,
         F::Context: Default,
     {
-        assert_eq!(keys.len(), outputs.len(), "keys and outputs must have equal length");
+        assert_eq!(
+            keys.len(),
+            outputs.len(),
+            "keys and outputs must have equal length"
+        );
         let n = keys.len();
         if n == 0 {
-            return BatchResult { statuses: Vec::new() };
+            return BatchResult {
+                statuses: Vec::new(),
+            };
         }
         for key in keys {
             store.hash_index.prefetch(key.hash());
@@ -168,8 +192,13 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         let mut result = BatchResult::filled(n, OperationStatus::NotFound);
         for i in 0..n {
             result.statuses[i] = internal_read(
-                &ctx, self.session, &store.functions,
-                &keys[i], &F::Input::default(), &mut outputs[i], F::Context::default(),
+                &ctx,
+                self.session,
+                &store.functions,
+                &keys[i],
+                &F::Input::default(),
+                &mut outputs[i],
+                F::Context::default(),
             );
             if result.statuses[i] == OperationStatus::Pending {
                 store.dispatch_pending_io(self.session);
@@ -194,10 +223,16 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
     where
         F::Context: Default,
     {
-        assert_eq!(keys.len(), inputs.len(), "keys and inputs must have equal length");
+        assert_eq!(
+            keys.len(),
+            inputs.len(),
+            "keys and inputs must have equal length"
+        );
         let n = keys.len();
         if n == 0 {
-            return BatchResult { statuses: Vec::new() };
+            return BatchResult {
+                statuses: Vec::new(),
+            };
         }
         for key in keys {
             store.hash_index.prefetch(key.hash());
@@ -209,8 +244,12 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         let mut result = BatchResult::filled(n, OperationStatus::NotFound);
         for i in 0..n {
             result.statuses[i] = internal_upsert(
-                &ctx, self.session, &store.functions,
-                &keys[i], &inputs[i], F::Context::default(),
+                &ctx,
+                self.session,
+                &store.functions,
+                &keys[i],
+                &inputs[i],
+                F::Context::default(),
             );
             if result.statuses[i] == OperationStatus::Pending {
                 store.dispatch_pending_io(self.session);
@@ -236,11 +275,21 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
     where
         F::Context: Default,
     {
-        assert_eq!(keys.len(), inputs.len(), "keys and inputs must have equal length");
-        assert_eq!(keys.len(), outputs.len(), "keys and outputs must have equal length");
+        assert_eq!(
+            keys.len(),
+            inputs.len(),
+            "keys and inputs must have equal length"
+        );
+        assert_eq!(
+            keys.len(),
+            outputs.len(),
+            "keys and outputs must have equal length"
+        );
         let n = keys.len();
         if n == 0 {
-            return BatchResult { statuses: Vec::new() };
+            return BatchResult {
+                statuses: Vec::new(),
+            };
         }
         for key in keys {
             store.hash_index.prefetch(key.hash());
@@ -252,8 +301,13 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         let mut result = BatchResult::filled(n, OperationStatus::NotFound);
         for i in 0..n {
             result.statuses[i] = internal_rmw(
-                &ctx, self.session, &store.functions,
-                &keys[i], &inputs[i], &mut outputs[i], F::Context::default(),
+                &ctx,
+                self.session,
+                &store.functions,
+                &keys[i],
+                &inputs[i],
+                &mut outputs[i],
+                F::Context::default(),
             );
             if result.statuses[i] == OperationStatus::Pending {
                 store.dispatch_pending_io(self.session);
@@ -266,17 +320,15 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
     }
 
     /// Execute a batch of deletes under single-epoch protection.
-    pub fn batch_delete(
-        &mut self,
-        store: &FasterKv<F>,
-        keys: &[F::Key],
-    ) -> BatchResult
+    pub fn batch_delete(&mut self, store: &FasterKv<F>, keys: &[F::Key]) -> BatchResult
     where
         F::Context: Default,
     {
         let n = keys.len();
         if n == 0 {
-            return BatchResult { statuses: Vec::new() };
+            return BatchResult {
+                statuses: Vec::new(),
+            };
         }
         for key in keys {
             store.hash_index.prefetch(key.hash());
@@ -288,7 +340,11 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         let mut result = BatchResult::filled(n, OperationStatus::NotFound);
         for i in 0..n {
             result.statuses[i] = internal_delete(
-                &ctx, self.session, &store.functions, &keys[i], F::Context::default(),
+                &ctx,
+                self.session,
+                &store.functions,
+                &keys[i],
+                F::Context::default(),
             );
             if result.statuses[i] == OperationStatus::Pending {
                 store.dispatch_pending_io(self.session);
@@ -314,10 +370,16 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         F::Input: Default,
         F::Context: Default,
     {
-        assert_eq!(ops.len(), outputs.len(), "ops and outputs must have equal length");
+        assert_eq!(
+            ops.len(),
+            outputs.len(),
+            "ops and outputs must have equal length"
+        );
         let n = ops.len();
         if n == 0 {
-            return BatchResult { statuses: Vec::new() };
+            return BatchResult {
+                statuses: Vec::new(),
+            };
         }
         for op in ops {
             store.hash_index.prefetch(op.key().hash());
@@ -330,20 +392,37 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         for i in 0..n {
             result.statuses[i] = match &ops[i] {
                 BatchOp::Read { key, input } => internal_read(
-                    &ctx, self.session, &store.functions,
-                    key, input, &mut outputs[i], F::Context::default(),
+                    &ctx,
+                    self.session,
+                    &store.functions,
+                    key,
+                    input,
+                    &mut outputs[i],
+                    F::Context::default(),
                 ),
                 BatchOp::Upsert { key, input } => internal_upsert(
-                    &ctx, self.session, &store.functions,
-                    key, input, F::Context::default(),
+                    &ctx,
+                    self.session,
+                    &store.functions,
+                    key,
+                    input,
+                    F::Context::default(),
                 ),
                 BatchOp::Rmw { key, input } => internal_rmw(
-                    &ctx, self.session, &store.functions,
-                    key, input, &mut outputs[i], F::Context::default(),
+                    &ctx,
+                    self.session,
+                    &store.functions,
+                    key,
+                    input,
+                    &mut outputs[i],
+                    F::Context::default(),
                 ),
                 BatchOp::Delete { key } => internal_delete(
-                    &ctx, self.session, &store.functions,
-                    key, F::Context::default(),
+                    &ctx,
+                    self.session,
+                    &store.functions,
+                    key,
+                    F::Context::default(),
                 ),
             };
             if result.statuses[i] == OperationStatus::Pending {
@@ -363,7 +442,9 @@ mod tests {
 
     #[test]
     fn batch_result_empty() {
-        let result = BatchResult { statuses: Vec::new() };
+        let result = BatchResult {
+            statuses: Vec::new(),
+        };
         assert!(result.is_empty());
         assert_eq!(result.total(), 0);
         assert!(result.all_succeeded());
@@ -372,7 +453,9 @@ mod tests {
 
     #[test]
     fn batch_result_all_ok() {
-        let result = BatchResult { statuses: vec![OperationStatus::Ok; 5] };
+        let result = BatchResult {
+            statuses: vec![OperationStatus::Ok; 5],
+        };
         assert_eq!(result.total(), 5);
         assert!(result.all_succeeded());
         assert_eq!(result.succeeded_count(), 5);
@@ -402,7 +485,10 @@ mod tests {
     fn batch_op_key_access() {
         let op: BatchOp<u64, u64> = BatchOp::Read { key: 42, input: 0 };
         assert_eq!(*op.key(), 42);
-        let op: BatchOp<u64, u64> = BatchOp::Upsert { key: 99, input: 100 };
+        let op: BatchOp<u64, u64> = BatchOp::Upsert {
+            key: 99,
+            input: 100,
+        };
         assert_eq!(*op.key(), 99);
         let op: BatchOp<u64, u64> = BatchOp::Delete { key: 13 };
         assert_eq!(*op.key(), 13);

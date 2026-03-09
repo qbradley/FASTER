@@ -183,12 +183,7 @@ impl AtomicSystemState {
 
         // Step 3: Publish new state. Guaranteed to succeed.
         // AcqRel: ensures hook side-effects visible before new state.
-        let result = self.compare_exchange(
-            intermediate,
-            next,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
+        let result = self.compare_exchange(intermediate, next, Ordering::AcqRel, Ordering::Acquire);
         debug_assert!(result.is_ok(), "intermediate → next CAS must succeed");
 
         true
@@ -260,7 +255,10 @@ mod tests {
 
     #[test]
     fn display_normal() {
-        assert_eq!(SystemState::new(Phase::InProgress, 5).to_string(), "InProgress(v5)");
+        assert_eq!(
+            SystemState::new(Phase::InProgress, 5).to_string(),
+            "InProgress(v5)"
+        );
     }
 
     #[test]
@@ -279,14 +277,27 @@ mod tests {
     fn compare_exchange_success() {
         let a = AtomicSystemState::new(SystemState::INITIAL);
         let new = SystemState::new(Phase::Prepare, 0);
-        assert!(a.compare_exchange(SystemState::INITIAL, new, Ordering::AcqRel, Ordering::Acquire).is_ok());
+        assert!(
+            a.compare_exchange(
+                SystemState::INITIAL,
+                new,
+                Ordering::AcqRel,
+                Ordering::Acquire
+            )
+            .is_ok()
+        );
         assert_eq!(a.load(Ordering::Acquire), new);
     }
 
     #[test]
     fn compare_exchange_failure() {
         let a = AtomicSystemState::new(SystemState::new(Phase::Prepare, 0));
-        let result = a.compare_exchange(SystemState::INITIAL, SystemState::new(Phase::InProgress, 1), Ordering::AcqRel, Ordering::Acquire);
+        let result = a.compare_exchange(
+            SystemState::INITIAL,
+            SystemState::new(Phase::InProgress, 1),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
         assert!(result.is_err());
     }
 
@@ -294,7 +305,11 @@ mod tests {
     fn try_transition_success() {
         let a = AtomicSystemState::new(SystemState::INITIAL);
         let mut called = false;
-        assert!(a.try_transition(SystemState::INITIAL, SystemState::new(Phase::Prepare, 0), || called = true));
+        assert!(a.try_transition(
+            SystemState::INITIAL,
+            SystemState::new(Phase::Prepare, 0),
+            || called = true
+        ));
         assert!(called);
         assert_eq!(a.load(Ordering::Acquire).phase(), Phase::Prepare);
     }
@@ -303,7 +318,11 @@ mod tests {
     fn try_transition_failure_no_hooks() {
         let a = AtomicSystemState::new(SystemState::new(Phase::Prepare, 0));
         let mut called = false;
-        assert!(!a.try_transition(SystemState::INITIAL, SystemState::new(Phase::InProgress, 1), || called = true));
+        assert!(!a.try_transition(
+            SystemState::INITIAL,
+            SystemState::new(Phase::InProgress, 1),
+            || called = true
+        ));
         assert!(!called);
     }
 
@@ -312,15 +331,25 @@ mod tests {
         use std::sync::{Arc, Barrier};
         let state = Arc::new(AtomicSystemState::new(SystemState::INITIAL));
         let barrier = Arc::new(Barrier::new(8));
-        let handles: Vec<_> = (0..8).map(|_| {
-            let s = Arc::clone(&state);
-            let b = Arc::clone(&barrier);
-            std::thread::spawn(move || {
-                b.wait();
-                s.try_transition(SystemState::INITIAL, SystemState::new(Phase::Prepare, 0), || {})
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let s = Arc::clone(&state);
+                let b = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    b.wait();
+                    s.try_transition(
+                        SystemState::INITIAL,
+                        SystemState::new(Phase::Prepare, 0),
+                        || {},
+                    )
+                })
             })
-        }).collect();
-        let wins: usize = handles.into_iter().map(|h| h.join().unwrap()).filter(|&w| w).count();
+            .collect();
+        let wins: usize = handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|&w| w)
+            .count();
         assert_eq!(wins, 1);
     }
 
@@ -350,13 +379,21 @@ mod tests {
         let b1 = Arc::clone(&barrier);
         let ha = std::thread::spawn(move || {
             b1.wait();
-            s1.try_transition(SystemState::INITIAL, SystemState::new(Phase::Prepare, 0), || {})
+            s1.try_transition(
+                SystemState::INITIAL,
+                SystemState::new(Phase::Prepare, 0),
+                || {},
+            )
         });
         let s2 = Arc::clone(&state);
         let b2 = Arc::clone(&barrier);
         let hb = std::thread::spawn(move || {
             b2.wait();
-            s2.try_transition(SystemState::INITIAL, SystemState::new(Phase::PrepareGrow, 0), || {})
+            s2.try_transition(
+                SystemState::INITIAL,
+                SystemState::new(Phase::PrepareGrow, 0),
+                || {},
+            )
         });
         let (a, b) = (ha.join().unwrap(), hb.join().unwrap());
         assert_ne!(a, b, "exactly one should win");
@@ -368,14 +405,33 @@ mod tests {
         let mut last = 0u64;
         for cycle in 0u64..5 {
             let t = |from: Phase, to: Phase, fv: u64, tv: u64| {
-                assert!(s.try_transition(SystemState::new(from, fv), SystemState::new(to, tv), || {}));
+                assert!(s.try_transition(
+                    SystemState::new(from, fv),
+                    SystemState::new(to, tv),
+                    || {}
+                ));
             };
             t(Phase::Rest, Phase::Prepare, cycle, cycle);
             t(Phase::Prepare, Phase::InProgress, cycle, cycle + 1);
             t(Phase::InProgress, Phase::WaitFlush, cycle + 1, cycle + 1);
-            t(Phase::WaitFlush, Phase::WaitCompletion, cycle + 1, cycle + 1);
-            t(Phase::WaitCompletion, Phase::PersistenceCallback, cycle + 1, cycle + 1);
-            t(Phase::PersistenceCallback, Phase::Rest, cycle + 1, cycle + 1);
+            t(
+                Phase::WaitFlush,
+                Phase::WaitCompletion,
+                cycle + 1,
+                cycle + 1,
+            );
+            t(
+                Phase::WaitCompletion,
+                Phase::PersistenceCallback,
+                cycle + 1,
+                cycle + 1,
+            );
+            t(
+                Phase::PersistenceCallback,
+                Phase::Rest,
+                cycle + 1,
+                cycle + 1,
+            );
             let v = s.load(Ordering::Acquire).version();
             assert!(v >= last);
             last = v;
@@ -389,10 +445,15 @@ mod tests {
 
         fn phase_strategy() -> impl Strategy<Value = Phase> {
             prop_oneof![
-                Just(Phase::Rest), Just(Phase::Prepare), Just(Phase::InProgress),
-                Just(Phase::WaitFlush), Just(Phase::WaitCompletion),
-                Just(Phase::PersistenceCallback), Just(Phase::PrepareGrow),
-                Just(Phase::InProgressGrow), Just(Phase::WaitCompletionGrow),
+                Just(Phase::Rest),
+                Just(Phase::Prepare),
+                Just(Phase::InProgress),
+                Just(Phase::WaitFlush),
+                Just(Phase::WaitCompletion),
+                Just(Phase::PersistenceCallback),
+                Just(Phase::PrepareGrow),
+                Just(Phase::InProgressGrow),
+                Just(Phase::WaitCompletionGrow),
             ]
         }
 

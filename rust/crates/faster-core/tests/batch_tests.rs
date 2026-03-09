@@ -3,11 +3,11 @@
 //! These tests verify batch_read, batch_upsert, batch_rmw, batch_delete,
 //! and batch_execute against a real FasterKv store.
 
+use faster_core::InMemoryDevice;
 use faster_core::grow::GrowConfig;
 use faster_core::hybrid_log::EvictionPolicy;
 use faster_core::status::OperationStatus;
 use faster_core::store::{BatchOp, CounterFunctions, FasterKv, FasterKvConfig, SimpleFunctions};
-use faster_core::InMemoryDevice;
 
 /// Small in-memory store suitable for batch tests.
 fn small_store() -> FasterKv<SimpleFunctions<u64, u64>> {
@@ -121,8 +121,8 @@ fn batch_large() {
     assert_eq!(result.total(), n as usize);
     assert!(result.all_succeeded());
 
-    for i in 0..n as usize {
-        assert_eq!(outputs[i], Some(i as u64 + 1000));
+    for (i, output) in outputs.iter().enumerate() {
+        assert_eq!(*output, Some(i as u64 + 1000));
     }
 
     store.dispose_session(session);

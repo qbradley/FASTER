@@ -33,7 +33,7 @@
 
 use faster_core::record::{FixedSizeValue, Value};
 use faster_core::status::OperationStatus;
-use faster_core::store::{Functions, ReadInfo, RmwInfo, RmwInPlaceResult, UpsertInfo};
+use faster_core::store::{Functions, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo};
 
 // ── Event Types ─────────────────────────────────────────────────────────
 
@@ -292,9 +292,18 @@ mod tests {
     #[test]
     fn all_event_types_apply_correctly() {
         let mut stats = CampaignStats::default();
-        stats.apply(&EventInput { event_type: EventType::Click, amount: 1 });
-        stats.apply(&EventInput { event_type: EventType::Impression, amount: 2 });
-        stats.apply(&EventInput { event_type: EventType::Spend, amount: 300 });
+        stats.apply(&EventInput {
+            event_type: EventType::Click,
+            amount: 1,
+        });
+        stats.apply(&EventInput {
+            event_type: EventType::Impression,
+            amount: 2,
+        });
+        stats.apply(&EventInput {
+            event_type: EventType::Spend,
+            amount: 300,
+        });
         assert_eq!(stats.clicks, 1);
         assert_eq!(stats.impressions, 2);
         assert_eq!(stats.spend_cents, 300);

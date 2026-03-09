@@ -172,8 +172,7 @@ impl CheckpointStateMachine {
     #[inline]
     pub fn phase(&self) -> CheckpointPhase {
         let sys = self.state.load(Ordering::Acquire);
-        CheckpointPhase::from_phase(sys.phase())
-            .unwrap_or(CheckpointPhase::Rest)
+        CheckpointPhase::from_phase(sys.phase()).unwrap_or(CheckpointPhase::Rest)
     }
 
     /// Returns the current [`SystemState`] (phase + version) atomically.
@@ -218,13 +217,12 @@ impl CheckpointStateMachine {
         let expected_state = SystemState::new(expected.to_phase(), version);
 
         // Version bump on Prepare → InProgress (the EPVS key improvement).
-        let next_version = if expected == CheckpointPhase::Prepare
-            && next == CheckpointPhase::InProgress
-        {
-            version + 1
-        } else {
-            version
-        };
+        let next_version =
+            if expected == CheckpointPhase::Prepare && next == CheckpointPhase::InProgress {
+                version + 1
+            } else {
+                version
+            };
         let next_state = SystemState::new(next.to_phase(), next_version);
 
         // Two-phase intermediate CAS protocol.
@@ -300,9 +298,12 @@ mod tests {
     #[test]
     fn phase_u8_round_trip() {
         let phases = [
-            CheckpointPhase::Rest, CheckpointPhase::Prepare,
-            CheckpointPhase::InProgress, CheckpointPhase::WaitFlush,
-            CheckpointPhase::WaitCompletion, CheckpointPhase::Completed,
+            CheckpointPhase::Rest,
+            CheckpointPhase::Prepare,
+            CheckpointPhase::InProgress,
+            CheckpointPhase::WaitFlush,
+            CheckpointPhase::WaitCompletion,
+            CheckpointPhase::Completed,
         ];
         for (i, &phase) in phases.iter().enumerate() {
             assert_eq!(phase.as_u8(), i as u8);
@@ -325,9 +326,12 @@ mod tests {
     #[test]
     fn phase_to_phase_round_trip() {
         for cp in [
-            CheckpointPhase::Rest, CheckpointPhase::Prepare,
-            CheckpointPhase::InProgress, CheckpointPhase::WaitFlush,
-            CheckpointPhase::WaitCompletion, CheckpointPhase::Completed,
+            CheckpointPhase::Rest,
+            CheckpointPhase::Prepare,
+            CheckpointPhase::InProgress,
+            CheckpointPhase::WaitFlush,
+            CheckpointPhase::WaitCompletion,
+            CheckpointPhase::Completed,
         ] {
             assert_eq!(CheckpointPhase::from_phase(cp.to_phase()), Some(cp));
         }
@@ -374,7 +378,8 @@ mod tests {
         let sm = CheckpointStateMachine::new();
         sm.start(CheckpointToken::new(1)).unwrap();
         assert_eq!(sm.version(), 0);
-        sm.try_advance(CheckpointPhase::Prepare, CheckpointPhase::InProgress).unwrap();
+        sm.try_advance(CheckpointPhase::Prepare, CheckpointPhase::InProgress)
+            .unwrap();
         assert_eq!(sm.version(), 1);
     }
 
@@ -382,7 +387,8 @@ mod tests {
     fn system_state_consistent() {
         let sm = CheckpointStateMachine::new();
         sm.start(CheckpointToken::new(1)).unwrap();
-        sm.try_advance(CheckpointPhase::Prepare, CheckpointPhase::InProgress).unwrap();
+        sm.try_advance(CheckpointPhase::Prepare, CheckpointPhase::InProgress)
+            .unwrap();
         let ss = sm.system_state();
         assert_eq!(ss.phase(), Phase::InProgress);
         assert_eq!(ss.version(), 1);
@@ -397,10 +403,22 @@ mod tests {
         assert_eq!(sm.phase(), CheckpointPhase::Prepare);
         assert_eq!(sm.active_token(), Some(token));
 
-        assert!(sm.try_advance(CheckpointPhase::Prepare, CheckpointPhase::InProgress).unwrap());
-        assert!(sm.try_advance(CheckpointPhase::InProgress, CheckpointPhase::WaitFlush).unwrap());
-        assert!(sm.try_advance(CheckpointPhase::WaitFlush, CheckpointPhase::WaitCompletion).unwrap());
-        assert!(sm.try_advance(CheckpointPhase::WaitCompletion, CheckpointPhase::Completed).unwrap());
+        assert!(
+            sm.try_advance(CheckpointPhase::Prepare, CheckpointPhase::InProgress)
+                .unwrap()
+        );
+        assert!(
+            sm.try_advance(CheckpointPhase::InProgress, CheckpointPhase::WaitFlush)
+                .unwrap()
+        );
+        assert!(
+            sm.try_advance(CheckpointPhase::WaitFlush, CheckpointPhase::WaitCompletion)
+                .unwrap()
+        );
+        assert!(
+            sm.try_advance(CheckpointPhase::WaitCompletion, CheckpointPhase::Completed)
+                .unwrap()
+        );
         assert_eq!(sm.active_token(), Some(token));
 
         sm.reset().unwrap();
@@ -433,14 +451,19 @@ mod tests {
     #[test]
     fn try_advance_illegal_transition_returns_error() {
         let sm = CheckpointStateMachine::new();
-        assert!(sm.try_advance(CheckpointPhase::Rest, CheckpointPhase::InProgress).is_err());
+        assert!(
+            sm.try_advance(CheckpointPhase::Rest, CheckpointPhase::InProgress)
+                .is_err()
+        );
     }
 
     #[test]
     fn try_advance_wrong_expected_returns_false() {
         let sm = CheckpointStateMachine::new();
         sm.start(CheckpointToken::new(1)).unwrap();
-        let won = sm.try_advance(CheckpointPhase::InProgress, CheckpointPhase::WaitFlush).unwrap();
+        let won = sm
+            .try_advance(CheckpointPhase::InProgress, CheckpointPhase::WaitFlush)
+            .unwrap();
         assert!(!won);
         assert_eq!(sm.phase(), CheckpointPhase::Prepare);
     }
@@ -450,12 +473,21 @@ mod tests {
         use std::sync::{Arc, Barrier};
         let sm = Arc::new(CheckpointStateMachine::new());
         let barrier = Arc::new(Barrier::new(8));
-        let handles: Vec<_> = (0..8u128).map(|i| {
-            let sm = Arc::clone(&sm);
-            let barrier = Arc::clone(&barrier);
-            std::thread::spawn(move || { barrier.wait(); sm.start(CheckpointToken::new(i)) })
-        }).collect();
-        let winners = handles.into_iter().map(|h| h.join().unwrap()).filter(|r| r.is_ok()).count();
+        let handles: Vec<_> = (0..8u128)
+            .map(|i| {
+                let sm = Arc::clone(&sm);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    sm.start(CheckpointToken::new(i))
+                })
+            })
+            .collect();
+        let winners = handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|r| r.is_ok())
+            .count();
         assert_eq!(winners, 1);
         assert_eq!(sm.phase(), CheckpointPhase::Prepare);
     }
@@ -466,12 +498,21 @@ mod tests {
         let sm = Arc::new(CheckpointStateMachine::new());
         sm.start(CheckpointToken::new(42)).unwrap();
         let barrier = Arc::new(Barrier::new(8));
-        let handles: Vec<_> = (0..8).map(|_| {
-            let sm = Arc::clone(&sm);
-            let barrier = Arc::clone(&barrier);
-            std::thread::spawn(move || { barrier.wait(); sm.try_advance(CheckpointPhase::Prepare, CheckpointPhase::InProgress) })
-        }).collect();
-        let winners = handles.into_iter().map(|h| h.join().unwrap()).filter(|r| matches!(r, Ok(true))).count();
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let sm = Arc::clone(&sm);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    sm.try_advance(CheckpointPhase::Prepare, CheckpointPhase::InProgress)
+                })
+            })
+            .collect();
+        let winners = handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|r| matches!(r, Ok(true)))
+            .count();
         assert_eq!(winners, 1);
         assert_eq!(sm.phase(), CheckpointPhase::InProgress);
     }
@@ -481,11 +522,15 @@ mod tests {
         let sm = CheckpointStateMachine::new();
         for cycle in 0u64..3 {
             sm.start(CheckpointToken::new(cycle as u128)).unwrap();
-            sm.try_advance(CheckpointPhase::Prepare, CheckpointPhase::InProgress).unwrap();
+            sm.try_advance(CheckpointPhase::Prepare, CheckpointPhase::InProgress)
+                .unwrap();
             assert_eq!(sm.version(), cycle + 1);
-            sm.try_advance(CheckpointPhase::InProgress, CheckpointPhase::WaitFlush).unwrap();
-            sm.try_advance(CheckpointPhase::WaitFlush, CheckpointPhase::WaitCompletion).unwrap();
-            sm.try_advance(CheckpointPhase::WaitCompletion, CheckpointPhase::Completed).unwrap();
+            sm.try_advance(CheckpointPhase::InProgress, CheckpointPhase::WaitFlush)
+                .unwrap();
+            sm.try_advance(CheckpointPhase::WaitFlush, CheckpointPhase::WaitCompletion)
+                .unwrap();
+            sm.try_advance(CheckpointPhase::WaitCompletion, CheckpointPhase::Completed)
+                .unwrap();
             sm.reset().unwrap();
             assert_eq!(sm.version(), cycle + 1);
         }
@@ -515,9 +560,12 @@ mod tests {
     #[test]
     fn phase_serde_round_trip() {
         for phase in [
-            CheckpointPhase::Rest, CheckpointPhase::Prepare,
-            CheckpointPhase::InProgress, CheckpointPhase::WaitFlush,
-            CheckpointPhase::WaitCompletion, CheckpointPhase::Completed,
+            CheckpointPhase::Rest,
+            CheckpointPhase::Prepare,
+            CheckpointPhase::InProgress,
+            CheckpointPhase::WaitFlush,
+            CheckpointPhase::WaitCompletion,
+            CheckpointPhase::Completed,
         ] {
             let json = serde_json::to_string(&phase).unwrap();
             let back: CheckpointPhase = serde_json::from_str(&json).unwrap();

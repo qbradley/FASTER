@@ -21,7 +21,9 @@ use faster_core::InMemoryDevice;
 use faster_core::grow::GrowConfig;
 use faster_core::hybrid_log::EvictionPolicy;
 use faster_core::status::OperationStatus;
-use faster_core::store::{DeleteInfo, FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo};
+use faster_core::store::{
+    FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo,
+};
 
 // ═══════════════════════════════════════════════════════════════════
 // VarLenFunctions — Functions impl for u64 keys + Vec<u8> values
@@ -46,7 +48,14 @@ impl Functions for VarLenFunctions {
     type Output = Option<Vec<u8>>;
     type Context = ();
 
-    fn read(&self, _key: &u64, value: &Vec<u8>, _input: &Vec<u8>, output: &mut Option<Vec<u8>>, _info: &ReadInfo) {
+    fn read(
+        &self,
+        _key: &u64,
+        value: &Vec<u8>,
+        _input: &Vec<u8>,
+        output: &mut Option<Vec<u8>>,
+        _info: &ReadInfo,
+    ) {
         *output = Some(value.clone());
     }
 

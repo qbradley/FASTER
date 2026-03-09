@@ -863,8 +863,14 @@ fn run_single_iteration(spec: &BenchSpec) -> SingleRunResults {
             let store = Arc::new(FasterKv::new(config, BenchFunctions, device));
             populate(&store, spec.num_keys);
             run_sync_bench(
-                store, spec.workload, dist, spec.num_keys, spec.threads,
-                spec.run_duration, spec.warmup_duration, spec.refresh_interval,
+                store,
+                spec.workload,
+                dist,
+                spec.num_keys,
+                spec.threads,
+                spec.run_duration,
+                spec.warmup_duration,
+                spec.refresh_interval,
                 spec.latency_sample_rate,
             )
         }
@@ -873,8 +879,14 @@ fn run_single_iteration(spec: &BenchSpec) -> SingleRunResults {
             let store = Arc::new(FasterKv::new(config, BenchFunctions, device));
             populate(&store, spec.num_keys);
             run_tokio_bench(
-                store, spec.workload, dist, spec.num_keys, spec.threads,
-                spec.run_duration, spec.warmup_duration, spec.refresh_interval,
+                store,
+                spec.workload,
+                dist,
+                spec.num_keys,
+                spec.threads,
+                spec.run_duration,
+                spec.warmup_duration,
+                spec.refresh_interval,
                 spec.latency_sample_rate,
             )
         }
@@ -884,8 +896,14 @@ fn run_single_iteration(spec: &BenchSpec) -> SingleRunResults {
             let store = Arc::new(FasterKv::new(config, BenchFunctions, device));
             populate(&store, spec.num_keys);
             run_sync_bench(
-                store, spec.workload, dist, spec.num_keys, spec.threads,
-                spec.run_duration, spec.warmup_duration, spec.refresh_interval,
+                store,
+                spec.workload,
+                dist,
+                spec.num_keys,
+                spec.threads,
+                spec.run_duration,
+                spec.warmup_duration,
+                spec.refresh_interval,
                 spec.latency_sample_rate,
             )
         }
@@ -895,8 +913,14 @@ fn run_single_iteration(spec: &BenchSpec) -> SingleRunResults {
             let store = Arc::new(FasterKv::new(config, BenchFunctions, device));
             populate(&store, spec.num_keys);
             run_tokio_bench(
-                store, spec.workload, dist, spec.num_keys, spec.threads,
-                spec.run_duration, spec.warmup_duration, spec.refresh_interval,
+                store,
+                spec.workload,
+                dist,
+                spec.num_keys,
+                spec.threads,
+                spec.run_duration,
+                spec.warmup_duration,
+                spec.refresh_interval,
                 spec.latency_sample_rate,
             )
         }
@@ -904,41 +928,62 @@ fn run_single_iteration(spec: &BenchSpec) -> SingleRunResults {
         (DeviceType::Uring, _) => {
             eprintln!("  Warning: UringDevice requires Linux -- skipping");
             return SingleRunResults {
-                ops_per_sec: 0.0, throughput_mb_s: 0.0,
-                p50_ns: 0.0, p99_ns: 0.0, p999_ns: 0.0,
-                pending_rate: 0.0, total_ops: 0, total_reads: 0,
-                total_writes: 0, total_pending: 0, elapsed_secs: 0.0,
+                ops_per_sec: 0.0,
+                throughput_mb_s: 0.0,
+                p50_ns: 0.0,
+                p99_ns: 0.0,
+                p999_ns: 0.0,
+                pending_rate: 0.0,
+                total_ops: 0,
+                total_reads: 0,
+                total_writes: 0,
+                total_pending: 0,
+                elapsed_secs: 0.0,
             };
         }
         (DeviceType::Tokio, ClientType::Sync) => {
             let rt = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2).enable_all().build()
+                .worker_threads(2)
+                .enable_all()
+                .build()
                 .expect("failed to build tokio runtime");
             let _guard = rt.enter();
-            let device = faster_tokio::TokioFileDevice::new(
-                &bench_dir, "log.", 4096, SEGMENT_SIZE,
-            ).expect("failed to create TokioFileDevice");
+            let device = faster_tokio::TokioFileDevice::new(&bench_dir, "log.", 4096, SEGMENT_SIZE)
+                .expect("failed to create TokioFileDevice");
             let store = Arc::new(FasterKv::new(config, BenchFunctions, device));
             populate(&store, spec.num_keys);
             run_sync_bench(
-                store, spec.workload, dist, spec.num_keys, spec.threads,
-                spec.run_duration, spec.warmup_duration, spec.refresh_interval,
+                store,
+                spec.workload,
+                dist,
+                spec.num_keys,
+                spec.threads,
+                spec.run_duration,
+                spec.warmup_duration,
+                spec.refresh_interval,
                 spec.latency_sample_rate,
             )
         }
         (DeviceType::Tokio, ClientType::Tokio) => {
             let rt = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2).enable_all().build()
+                .worker_threads(2)
+                .enable_all()
+                .build()
                 .expect("failed to build tokio runtime");
             let _guard = rt.enter();
-            let device = faster_tokio::TokioFileDevice::new(
-                &bench_dir, "log.", 4096, SEGMENT_SIZE,
-            ).expect("failed to create TokioFileDevice");
+            let device = faster_tokio::TokioFileDevice::new(&bench_dir, "log.", 4096, SEGMENT_SIZE)
+                .expect("failed to create TokioFileDevice");
             let store = Arc::new(FasterKv::new(config, BenchFunctions, device));
             populate(&store, spec.num_keys);
             run_tokio_bench(
-                store, spec.workload, dist, spec.num_keys, spec.threads,
-                spec.run_duration, spec.warmup_duration, spec.refresh_interval,
+                store,
+                spec.workload,
+                dist,
+                spec.num_keys,
+                spec.threads,
+                spec.run_duration,
+                spec.warmup_duration,
+                spec.refresh_interval,
                 spec.latency_sample_rate,
             )
         }
@@ -997,7 +1042,9 @@ fn print_table(reports: &[BenchmarkReport]) {
     println!();
     println!("  Legend: ! = HIGH VARIANCE (stddev > 10% of mean)");
     println!("  I/O Class: DISK-BOUND (pending>=5%) | MIXED (0.1-5%) | IN-MEMORY BASELINE (<0.1%)");
-    println!("  Memory budget: buffer_pages x 32 KiB = in-memory window. Reduce to force disk I/O.");
+    println!(
+        "  Memory budget: buffer_pages x 32 KiB = in-memory window. Reduce to force disk I/O."
+    );
 }
 
 fn print_json(reports: &[BenchmarkReport]) {
@@ -1177,12 +1224,8 @@ fn run_single_bench(spec: &BenchSpec) -> BenchmarkReport {
     // ── Pending-rate validation gate ────────────────────────────────
     if avg_pending_rate < 0.001 {
         eprintln!();
-        eprintln!(
-            "  WARNING: All operations completing synchronously -- this is an in-memory"
-        );
-        eprintln!(
-            "    benchmark, not disk-bound. Increase --num-keys or reduce --buffer-pages"
-        );
+        eprintln!("  WARNING: All operations completing synchronously -- this is an in-memory");
+        eprintln!("    benchmark, not disk-bound. Increase --num-keys or reduce --buffer-pages");
         eprintln!("    to force disk I/O. Use --force-disk for automatic tuning.");
         eprintln!("    Results tagged as: {io_class}");
         eprintln!();

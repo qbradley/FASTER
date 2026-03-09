@@ -57,7 +57,10 @@ mod session;
 
 pub use batch::{BatchOp, BatchResult};
 pub use builder::FasterKvBuilder;
-pub use functions::{CounterFunctions, DeleteInfo, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, SimpleFunctions, UpsertInfo};
+pub use functions::{
+    CounterFunctions, DeleteInfo, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, SimpleFunctions,
+    UpsertInfo,
+};
 pub use kv::{FasterKv, FasterKvConfig, RecoveryInfo};
 pub use pending_io::{
     CompletedIo, PendingIoConfig, PendingIoContext, PendingIoError, PendingIoManager,

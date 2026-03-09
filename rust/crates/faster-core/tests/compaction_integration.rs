@@ -5,7 +5,9 @@ use faster_core::compaction::policy::{CompactionPolicy, CompactionStats};
 use faster_core::device::NullDevice;
 use faster_core::grow::GrowConfig;
 use faster_core::hybrid_log::eviction::EvictionPolicy;
-use faster_core::store::{FasterKv, FasterKvConfig, ReadInfo, RmwInfo, SimpleFunctions, UpsertInfo};
+use faster_core::store::{
+    FasterKv, FasterKvConfig, ReadInfo, RmwInfo, SimpleFunctions, UpsertInfo,
+};
 use std::sync::Arc;
 
 type SimpleStore = FasterKv<SimpleFunctions<u64, u64>>;
@@ -272,7 +274,7 @@ fn maybe_compact_disabled_by_default() {
 
 use faster_core::InMemoryDevice;
 use faster_core::status::OperationStatus;
-use faster_core::store::{DeleteInfo, Functions, RmwInPlaceResult};
+use faster_core::store::{Functions, RmwInPlaceResult};
 
 /// Functions implementation for variable-length keys and values.
 struct VarLenFunctions;
@@ -355,7 +357,14 @@ impl Functions for MixedKeyFunctions {
     type Output = Option<Vec<u8>>;
     type Context = ();
 
-    fn read(&self, _key: &u64, value: &Vec<u8>, _input: &Vec<u8>, output: &mut Option<Vec<u8>>, _info: &ReadInfo) {
+    fn read(
+        &self,
+        _key: &u64,
+        value: &Vec<u8>,
+        _input: &Vec<u8>,
+        output: &mut Option<Vec<u8>>,
+        _info: &ReadInfo,
+    ) {
         *output = Some(value.clone());
     }
 

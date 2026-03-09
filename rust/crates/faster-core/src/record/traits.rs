@@ -422,7 +422,9 @@ impl Key for Vec<u8> {
                 .try_into()
                 .expect("buffer too short for Vec<u8> Key::hash_from_bytes"),
         ) as usize;
-        KeyHash::new(faster_hash_bytes(&buf[LENGTH_PREFIX_SIZE..LENGTH_PREFIX_SIZE + len]))
+        KeyHash::new(faster_hash_bytes(
+            &buf[LENGTH_PREFIX_SIZE..LENGTH_PREFIX_SIZE + len],
+        ))
     }
 }
 
@@ -514,7 +516,9 @@ impl Key for String {
                 .try_into()
                 .expect("buffer too short for String Key::hash_from_bytes"),
         ) as usize;
-        KeyHash::new(faster_hash_bytes(&buf[LENGTH_PREFIX_SIZE..LENGTH_PREFIX_SIZE + len]))
+        KeyHash::new(faster_hash_bytes(
+            &buf[LENGTH_PREFIX_SIZE..LENGTH_PREFIX_SIZE + len],
+        ))
     }
 }
 
@@ -1144,12 +1148,7 @@ mod tests {
 
     #[test]
     fn hash_from_bytes_vec_u8() {
-        let cases: Vec<Vec<u8>> = vec![
-            vec![],
-            vec![0],
-            vec![1, 2, 3, 4, 5],
-            vec![0xFF; 256],
-        ];
+        let cases: Vec<Vec<u8>> = vec![vec![], vec![0], vec![1, 2, 3, 4, 5], vec![0xFF; 256]];
         for key in cases {
             let mut buf = vec![0u8; Key::serialized_size(&key)];
             Key::serialize(&key, &mut buf);

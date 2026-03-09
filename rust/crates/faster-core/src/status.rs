@@ -150,7 +150,12 @@ impl OperationStatus {
     pub const fn is_success(self) -> bool {
         matches!(
             self,
-            Self::Ok | Self::Created | Self::InPlaceUpdated | Self::CopyUpdated | Self::Deleted | Self::Revivified
+            Self::Ok
+                | Self::Created
+                | Self::InPlaceUpdated
+                | Self::CopyUpdated
+                | Self::Deleted
+                | Self::Revivified
         )
     }
 
@@ -225,7 +230,11 @@ impl OperationStatus {
     pub const fn is_modified(self) -> bool {
         matches!(
             self,
-            Self::Created | Self::InPlaceUpdated | Self::CopyUpdated | Self::Deleted | Self::Revivified
+            Self::Created
+                | Self::InPlaceUpdated
+                | Self::CopyUpdated
+                | Self::Deleted
+                | Self::Revivified
         )
     }
 }

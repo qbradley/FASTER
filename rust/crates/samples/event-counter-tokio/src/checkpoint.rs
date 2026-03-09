@@ -78,10 +78,7 @@ pub async fn take_checkpoint(
     //
     // Without spawn_blocking, this would block the Tokio runtime thread
     // and starve all other async tasks (stats reporter, shutdown handler, etc.)
-    let result = tokio::task::spawn_blocking(move || {
-        store.checkpoint(&dir, checkpoint_type)
-    })
-    .await;
+    let result = tokio::task::spawn_blocking(move || store.checkpoint(&dir, checkpoint_type)).await;
 
     match result {
         Ok(Ok(token)) => {

@@ -102,9 +102,15 @@ mod tests {
     #[test]
     fn from_u8_round_trip() {
         let phases = [
-            Phase::Rest, Phase::Prepare, Phase::InProgress,
-            Phase::WaitFlush, Phase::WaitCompletion, Phase::PersistenceCallback,
-            Phase::PrepareGrow, Phase::InProgressGrow, Phase::WaitCompletionGrow,
+            Phase::Rest,
+            Phase::Prepare,
+            Phase::InProgress,
+            Phase::WaitFlush,
+            Phase::WaitCompletion,
+            Phase::PersistenceCallback,
+            Phase::PrepareGrow,
+            Phase::InProgressGrow,
+            Phase::WaitCompletionGrow,
         ];
         for phase in phases {
             assert_eq!(Phase::from_u8(phase.as_u8()), Some(phase));
@@ -130,7 +136,10 @@ mod tests {
     #[test]
     fn display_formatting() {
         assert_eq!(Phase::Rest.to_string(), "Rest");
-        assert_eq!(Phase::PersistenceCallback.to_string(), "PersistenceCallback");
+        assert_eq!(
+            Phase::PersistenceCallback.to_string(),
+            "PersistenceCallback"
+        );
         assert_eq!(Phase::WaitCompletionGrow.to_string(), "WaitCompletionGrow");
     }
 
@@ -149,10 +158,15 @@ mod tests {
 
         fn phase_strategy() -> impl Strategy<Value = Phase> {
             prop_oneof![
-                Just(Phase::Rest), Just(Phase::Prepare), Just(Phase::InProgress),
-                Just(Phase::WaitFlush), Just(Phase::WaitCompletion),
-                Just(Phase::PersistenceCallback), Just(Phase::PrepareGrow),
-                Just(Phase::InProgressGrow), Just(Phase::WaitCompletionGrow),
+                Just(Phase::Rest),
+                Just(Phase::Prepare),
+                Just(Phase::InProgress),
+                Just(Phase::WaitFlush),
+                Just(Phase::WaitCompletion),
+                Just(Phase::PersistenceCallback),
+                Just(Phase::PrepareGrow),
+                Just(Phase::InProgressGrow),
+                Just(Phase::WaitCompletionGrow),
             ]
         }
 
