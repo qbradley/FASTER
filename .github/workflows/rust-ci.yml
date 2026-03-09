@@ -146,6 +146,38 @@ jobs:
       - name: Run benchmarks
         run: cargo bench --workspace --no-fail-fast -- --save-baseline main
 
+  # ── Semver Compatibility Checks (informational pre-1.0) ──────────
+  semver-checks:
+    name: Semver Checks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    # Informational only — don't fail PRs on semver issues pre-1.0.
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+          shared-key: semver
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@cargo-semver-checks
+      - name: Check semver (faster-core)
+        run: cargo semver-checks -p faster-core || echo "⚠️ semver issue in faster-core (informational pre-1.0)"
+      - name: Check semver (faster-device)
+        run: cargo semver-checks -p faster-device || echo "⚠️ semver issue in faster-device (informational pre-1.0)"
+      - name: Check semver (faster-tokio)
+        run: cargo semver-checks -p faster-tokio || echo "⚠️ semver issue in faster-tokio (informational pre-1.0)"
+      - name: Check semver (faster-uring)
+        run: cargo semver-checks -p faster-uring || echo "⚠️ semver issue in faster-uring (informational pre-1.0)"
+      - name: Check semver (faster-ffi)
+        run: cargo semver-checks -p faster-ffi || echo "⚠️ semver issue in faster-ffi (informational pre-1.0)"
+
   # ── cargo-deny (license + advisory audit) ────────────────────────
   deny:
     name: cargo-deny

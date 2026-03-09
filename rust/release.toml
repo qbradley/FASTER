@@ -1,0 +1,90 @@
+# cargo-release configuration for the FASTER Rust workspace.
+# See: https://github.com/crate-ci/cargo-release/blob/master/docs/reference.md
+#
+# Publish order (respects dependency graph):
+#   1. faster-core       (no internal deps)
+#   2. faster-device      (depends on faster-core)
+#   3. faster-tokio       (depends on faster-core)
+#   4. faster-uring       (depends on faster-core)
+#   5. faster-ffi         (depends on faster-core, faster-device)
+#
+# Non-publishable crates (faster-bench, faster-dst, samples) are excluded
+# via `release = false` in their respective sections.
+
+[workspace]
+# Shared settings for all crates in the workspace.
+allow-branch = ["squad", "main", "gandalf/release-automation"]
+sign-commit = false
+sign-tag = false
+push = true
+push-remote = "origin"
+publish = true
+verify = true
+owners = ["github:microsoft:faster-rust"]
+
+# Tag format: rust-v{version} to distinguish from C#/C++ releases.
+tag-prefix = "rust-v"
+tag-name = "{{prefix}}{{version}}"
+tag-message = "Release {{crate_name}} {{version}}"
+consolidate-commits = true
+pre-release-commit-message = "release: {{version}}"
+
+# Pre-release hooks: format check and clippy.
+pre-release-hook = ["cargo", "clippy", "--workspace", "--", "-D", "warnings"]
+
+# Version replacement in docs.
+pre-release-replacements = [
+    { file = "README.md", search = "faster-core = \"[0-9]+\\.[0-9]+\\.[0-9]+\"", replace = "faster-core = \"{{version}}\"", exactly = 0 },
+    { file = "README.md", search = "faster-device = \"[0-9]+\\.[0-9]+\\.[0-9]+\"", replace = "faster-device = \"{{version}}\"", exactly = 0 },
+    { file = "README.md", search = "faster-tokio = \"[0-9]+\\.[0-9]+\\.[0-9]+\"", replace = "faster-tokio = \"{{version}}\"", exactly = 0 },
+    { file = "README.md", search = "faster-ffi = \"[0-9]+\\.[0-9]+\\.[0-9]+\"", replace = "faster-ffi = \"{{version}}\"", exactly = 0 },
+    { file = "README.md", search = "faster-uring = \"[0-9]+\\.[0-9]+\\.[0-9]+\"", replace = "faster-uring = \"{{version}}\"", exactly = 0 },
+    { file = "docs/releasing.md", search = "Current release: [0-9]+\\.[0-9]+\\.[0-9]+", replace = "Current release: {{version}}", exactly = 0 },
+]
+
+# ── Publishable crates ─────────────────────────────────────────────
+# Listed in dependency-graph order so cargo-release publishes them correctly.
+
+[packages.faster-core]
+release = true
+
+[packages.faster-device]
+release = true
+
+[packages.faster-tokio]
+release = true
+
+[packages.faster-uring]
+release = true
+
+[packages.faster-ffi]
+release = true
+
+# ── Non-publishable crates ─────────────────────────────────────────
+
+[packages.faster-bench]
+release = false
+
+[packages.faster-dst]
+release = false
+
+[packages.read-cache-sim]
+release = false
+
+[packages.read-cache-sim-tokio]
+release = false
+
+[packages.cross-impl-bench]
+release = false
+
+[packages.tokio-kv-server]
+release = false
+
+[packages.uring-stress]
+release = false
+
+[packages.disk-io-bench]
+release = false
+
+[packages.event-counter-tokio]
+release = false
