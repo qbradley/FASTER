@@ -282,6 +282,7 @@ impl CheckpointOrchestrator {
                 ));
             }
             crate::sync::thread::sleep(Duration::from_millis(1));
+            sim_yield!("checkpoint::flush_wait_loop");
         }
     }
 

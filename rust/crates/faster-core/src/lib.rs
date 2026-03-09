@@ -124,6 +124,10 @@
 mod instrument;
 
 #[deny(unsafe_code)]
+#[macro_use]
+mod sim_hooks;
+
+#[deny(unsafe_code)]
 pub mod metrics;
 #[deny(unsafe_code)]
 pub(crate) mod sync;

@@ -861,6 +861,7 @@ impl<F: Functions> FasterKv<F> {
         context: F::Context,
     ) -> OperationStatus {
         let mut guard = session.begin_unsafe();
+        sim_yield!("read::after_epoch_protect");
         let ctx = InternalContext {
             hash_index: &self.hash_index,
             allocator: &self.allocator,
@@ -904,6 +905,7 @@ impl<F: Functions> FasterKv<F> {
         context: F::Context,
     ) -> OperationStatus {
         let mut guard = session.begin_unsafe();
+        sim_yield!("upsert::after_epoch_protect");
         let ctx = InternalContext {
             hash_index: &self.hash_index,
             allocator: &self.allocator,
@@ -916,6 +918,7 @@ impl<F: Functions> FasterKv<F> {
             input,
             context,
         );
+        sim_yield!("upsert::after_hash_cas");
         drop(guard);
         metrics_inc!(self.metrics, total_operations);
         if status == OperationStatus::Pending {
@@ -947,6 +950,7 @@ impl<F: Functions> FasterKv<F> {
         context: F::Context,
     ) -> OperationStatus {
         let mut guard = session.begin_unsafe();
+        sim_yield!("rmw::after_epoch_protect");
         let ctx = InternalContext {
             hash_index: &self.hash_index,
             allocator: &self.allocator,
@@ -960,6 +964,7 @@ impl<F: Functions> FasterKv<F> {
             output,
             context,
         );
+        sim_yield!("rmw::after_hash_cas");
         drop(guard);
         metrics_inc!(self.metrics, total_operations);
         if status == OperationStatus::Pending {
@@ -986,6 +991,7 @@ impl<F: Functions> FasterKv<F> {
         context: F::Context,
     ) -> OperationStatus {
         let mut guard = session.begin_unsafe();
+        sim_yield!("delete::after_epoch_protect");
         let ctx = InternalContext {
             hash_index: &self.hash_index,
             allocator: &self.allocator,

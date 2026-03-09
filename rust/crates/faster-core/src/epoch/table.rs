@@ -196,6 +196,7 @@ impl EpochTable {
             // Release: pairs with Acquire in compute_safe_epoch.
             entry.local_current_epoch.store(epoch, Ordering::Release);
         }
+        sim_yield!("epoch::after_protect");
     }
 
     /// Exits an epoch-protected region for the given thread.
@@ -267,6 +268,7 @@ impl EpochTable {
         let prior_epoch = self.current_epoch.fetch_add(1, Ordering::SeqCst);
         self.drain_list.push(prior_epoch, Box::new(callback));
         self.try_drain();
+        sim_yield!("epoch::after_bump_current");
     }
 
     /// Advances the global epoch by one without queuing a callback.
@@ -363,6 +365,7 @@ impl EpochTable {
                 min = epoch;
             }
         }
+        sim_yield!("epoch::after_safe_scan");
 
         // Safe to reclaim everything strictly before the oldest active epoch.
         // If no threads are active, min == current, so safe = current - 1.
