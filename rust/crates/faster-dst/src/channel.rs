@@ -54,7 +54,7 @@ impl<T> SimChannel<T> {
 
     /// Register `task_id` as waiting for the next message.
     ///
-    /// The task should then return [`TaskAction::Park(BlockReason::Channel)`]
+    /// The task should then return `TaskAction::Park(BlockReason::Channel)`
     /// to tell the scheduler it is blocked.
     pub fn register_receiver(&mut self, task_id: TaskId) {
         self.waiting_receivers.push(task_id);

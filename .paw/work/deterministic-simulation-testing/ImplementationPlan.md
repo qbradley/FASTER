@@ -47,12 +47,12 @@ A framework where:
 ## Phase Status
 
 - [x] **Phase 1: Simulation Abstraction Layer** — cfg-gated imports in faster-core, sync.rs migration, feature flag
-- [ ] **Phase 2: Deterministic Scheduler & Task Model** — Cooperative scheduler, SimTask, deterministic channels in faster-dst
+- [x] **Phase 2: Deterministic Scheduler & Task Model** — Cooperative scheduler, SimTask, deterministic channels in faster-dst
 - [x] **Phase 3: CRUD + Epoch Simulation Integration** — FasterKv under scheduler, yield points, epoch invariant tests
 - [x] **Phase 4: Crash-Point Injection Framework** — 18 instrumentation sites, crash+recovery test scenarios
 - [x] **Phase 5: Page CRC-32C Checksums** — Flush-path CRC, recovery validation, torn write detection
-- [ ] **Phase 6: Campaign Engine & Scenario Templates** — Parallel seed exploration, standard scenarios, expanded fault injection
-- [ ] **Phase 7: Documentation** — Docs.md technical reference, project documentation updates
+- [x] **Phase 6: Campaign Engine & Scenario Templates** — Parallel seed exploration, standard scenarios, expanded fault injection
+- [x] **Phase 7: Documentation** — Docs.md technical reference, project documentation updates
 
 ## Phase Candidates
 

@@ -1,6 +1,6 @@
 //! [`SimulatedFasterKv`] — FASTER store configured for deterministic simulation.
 //!
-//! Wraps [`FasterKv`](faster_core::FasterKv) in an `Rc` for shared
+//! Wraps [`FasterKv`] in an `Rc` for shared
 //! single-threaded ownership and provides [`spawn_crud_worker`] to schedule
 //! a sequence of CRUD operations as scheduler steps.
 

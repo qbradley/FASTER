@@ -1,20 +1,39 @@
 //! # Deterministic Simulation Testing (DST) for FASTER
 //!
-//! This crate provides infrastructure for testing FASTER under deterministic,
-//! reproducible conditions. Key capabilities:
+//! FoundationDB-style deterministic simulation testing for the FASTER
+//! key-value store. Every execution with the same seed follows the **exact
+//! same path** — failures are perfectly reproducible.
 //!
-//! - **[`SimulatedDevice`]** — an in-memory [`Device`](faster_core::Device) with
+//! # Capabilities
+//!
+//! - **[`DeterministicScheduler`]** — cooperative, single-threaded, seed-controlled
+//!   task scheduler that replaces OS thread scheduling with a PRNG-driven
+//!   step-function model. Same seed → same task ordering → deterministic execution.
+//! - **[`SimulatedDevice`]** — in-memory [`Device`](faster_core::Device) with
 //!   configurable fault injection (write errors, partial writes, read errors).
 //! - **[`SimulatedStorage`]** — persistent backing store that survives device
 //!   drops, enabling crash-recovery testing without the filesystem.
+//! - **[`CrashSchedule`]** / **[`CrashRecoveryRunner`]** — 18 crash-point
+//!   injection sites across checkpoint, compaction, and recovery state machines.
+//!   Uses `crash_point!()` macros in `faster-core` that compile to nothing
+//!   without the `simulation` feature (zero-cost).
+//! - **[`SeedCampaign`]** — parallel seed-sweep engine that runs thousands of
+//!   (scenario, seed) pairs across worker threads, collecting failures with
+//!   reproduction commands.
+//! - **[`ScenarioTemplate`]** — declarative builder combining workload factory,
+//!   fault config, crash schedule, and invariants into a reusable template.
+//! - **[`Invariant`]** trait + combinators ([`And`], [`Or`], [`All`], [`Not`])
+//!   for composable post-condition verification after recovery.
+//! - **[`SimulationTrace`]** — append-only event log for debugging scheduler
+//!   decisions and task execution order.
 //! - **[`SimulationRuntime`]** — seeded PRNG wrapper for deterministic workload
 //!   generation.
 //! - **[`SimulationHarness`]** — convenient test harness that ties together a
 //!   runtime, storage, and temp checkpoint directory.
 //! - **[`SimulatedClock`]** — deterministic time source for tests that need
 //!   controlled time progression.
-//! - **[`Workload`]** / **[`Invariant`]** traits — composable abstractions for
-//!   defining test workloads and post-condition checks.
+//! - **[`Workload`]** / **[`CrudWorkload`]** — composable workload definitions
+//!   with tracked expected state for invariant checking.
 //!
 //! # Quick Example
 //!
@@ -49,18 +68,34 @@
 //! store.dispose_session(s);
 //! ```
 //!
-//! # Future Work (requires `faster-core` changes)
+//! # Campaign Example
 //!
-//! The following capabilities would improve DST coverage but require hooks
-//! inside `faster-core`:
+//! ```rust,no_run
+//! use faster_dst::campaign::SeedCampaign;
+//! use faster_dst::scenario::ScenarioTemplate;
+//! use faster_dst::workload::CrudWorkload;
 //!
-//! - **Deterministic thread scheduling** — inject a custom scheduler into the
-//!   epoch system so that thread interleavings are controlled by the seed.
-//!   Today, multi-threaded tests are non-deterministic; `loom` covers some of
-//!   this but at a different abstraction level.
-//! - **Page-level CRC validation** — add checksums to hybrid log pages so the
-//!   recovery path can detect torn pages written by [`SimulatedDevice`]'s
-//!   partial-write fault injection.
+//! let template = ScenarioTemplate::builder("basic_recovery")
+//!     .workload(|seed| CrudWorkload::new(seed, 50))
+//!     .check_committed_recoverable()
+//!     .build();
+//!
+//! let mut campaign = SeedCampaign::new();
+//! campaign.add_scenario(template).seed_range(0..100);
+//! let report = campaign.run();
+//! assert!(report.all_passed());
+//! ```
+//!
+//! # Architecture
+//!
+//! The simulation abstraction layer in `faster-core/src/sync.rs` provides a
+//! three-tier `cfg` cascade (`loom` > `simulation` > `std`) that lets the DST
+//! framework swap in deterministic replacements transparently. When the
+//! `simulation` feature is disabled, the resulting binary is identical to a
+//! standard build — zero runtime cost.
+//!
+//! See the [Technical Reference](../../.paw/work/deterministic-simulation-testing/Docs.md)
+//! for the complete architecture description, API reference, and debugging guide.
 
 pub mod campaign;
 pub mod channel;
