@@ -20,6 +20,9 @@
 ## Learnings
 <!-- Append new learnings -->
 - `log` crate added as non-optional dep for compaction runtime warnings.
+- release-gate `run_check()` and `run_check_warn()` now always show command, tail output, and "To reproduce:" on failure — never hide diagnostics behind `--verbose`.
+- Loom and Miri checks are advisory (`run_check_warn`) because no loom compatibility layer or miri-annotated tests exist yet. Promote to `run_check` once those are implemented.
+- Report markdown detail column includes the repro command (e.g., `exit 101 — \`cmd\``) instead of bare exit codes.
 - All workspace crates currently have `publish = false` — release gate tier 4 packaging checks are informational until publish is enabled.
 - `checkin` script does `git add -A` which stages everything — for multi-agent workflows, use selective `git add` + `git commit` to avoid staging other agents' uncommitted files.
 - Fuzz smoke tests (10s/target) catch most crashes; extended (5min/target) is for release candidates only.
