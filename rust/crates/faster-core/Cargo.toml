@@ -9,7 +9,6 @@ repository.workspace = true
 homepage.workspace = true
 keywords = ["kv-store", "hash-map", "concurrent", "epoch", "hybrid-log"]
 categories.workspace = true
-publish = false
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(feature, values("tracing", "metrics", "simulation"))'] }
