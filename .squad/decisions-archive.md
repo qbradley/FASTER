@@ -4748,7 +4748,8 @@ While implementing, found and fixed pre-existing compilation errors:
 
 **Author:** Legolas (Performance Guru)
 **Date:** 2026-03-09
-**Status:** Implemented
+**Status:** ~~Implemented~~ **SUPERSEDED** (2026-03-09)
+**Superseded by:** Benches now work correctly with nextest after Legolas's hash_layout_bench fix (Wave 1) and qbradley's bench integration fix. Custom main() pattern is no longer required — standard `criterion_main!()` works.
 
 ## Context
 
