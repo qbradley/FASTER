@@ -134,3 +134,54 @@ Production types use `std::sync::atomic` directly — the `crate::sync` loom shi
 
 **Critical constraint from Boromir's work — affects your DST scenarios:**
 `SyncFileDevice` prefix must be `"log."` for recovery compatibility. `LogRecoveryEngine::validate_log_file` hardcodes `log.{n}` segment names. Any DST scenario using `SyncFileDevice` must use the `"log."` prefix or recovery validation will fail.
+
+---
+
+### 2026-03-10T2: Extended DST Campaign to 1003 Scenarios (Wave 4)
+
+**What:** Expanded the DST expansion engine from 108 to 1003 parameterized scenario templates (9.3× increase), organized into 44 categories across 5 major test families.
+
+**Files Created (7 new scenario modules):**
+- `rust/crates/faster-dst/src/scenarios/sparse_key_crash.rs` — Random key distribution + crash
+- `rust/crates/faster-dst/src/scenarios/overwrite_compaction_crash.rs` — Overwrite + compaction crash
+- `rust/crates/faster-dst/src/scenarios/graduated_fault_crash.rs` — Multi-fault (write error + torn write) + crash
+- `rust/crates/faster-dst/src/scenarios/boundary_record_crash.rs` — Edge-case record counts (1, 2, 7, 15, 31, 63, 127, 255)
+- `rust/crates/faster-dst/src/scenarios/triple_crash.rs` — Three subsystem crash points (ckpt + compact + recovery)
+- `rust/crates/faster-dst/src/scenarios/write_error_crash.rs` — Write limits + crash injection
+- `rust/crates/faster-dst/src/scenarios/overwrite_torn_write.rs` — Overwrite + partial write + crash
+
+**Files Modified:**
+- `rust/crates/faster-dst/src/scenarios/mod.rs` — 7 new module declarations
+- `rust/crates/faster-dst/src/scenarios/expansion.rs` — Rewritten: 44 categories generating 1003 scenarios
+- `rust/crates/faster-dst/src/scenarios/overwrite_recovery.rs` — Bug fix: added count to name
+- `rust/crates/faster-dst/tests/campaign_tests.rs` — Updated assertions for ≥1000, added category coverage test
+
+**Scenario Breakdown (1003 across 5 families):**
+
+| Family | Categories | Count | Description |
+|--------|-----------|-------|-------------|
+| Checkpoint | 1,8,14,17,20,23,26,28,32,35 | ~300 | Per-phase × sizes, overwrite, torn write, graduated fault, boundary, delayed |
+| Compaction | 2,9,15,18,21,29,33,37,39,44 | ~200 | Per-phase × sizes, overwrite, graduated fault, boundary, delayed, torn write |
+| Recovery | 3,10,16,22,24,30,34,36,38 | ~200 | Per-phase × sizes, delayed triggers, graduated fault, boundary, torn write |
+| Cross-subsystem | 4,5,6,7,25,40 | ~200 | 6×6 concurrent, 6×6 dual, 80 triple combos |
+| Fault injection | 13,19,27,31,42,43b | ~100 | Write errors, graduated faults, sequential stress, sparse key no-crash |
+
+**Bug Found and Fixed:**
+- `overwrite_recovery::template()` did not include `count` in the scenario name, causing name collisions when called with different record counts. Fixed to `format!("overwrite_crash_{count}_{}", crash_point.label())`.
+
+**Verification:**
+- All 134 DST tests pass (75 lib + 59 integration)
+- `campaign_expanded_smoke` runs 1003 × 3 seeds = 3009 test cases, all pass (~5 min)
+- No bugs discovered in production code — all crash/recovery paths handle correctly
+
+**Coverage Gaps (what could be tested but isn't):**
+- Multi-checkpoint recovery (framework only supports single checkpoint cycle per scenario)
+- Concurrent session operations (framework uses single session)
+- Variable-length record types (only u64→u64 key/value pairs tested)
+- Actual io_uring device paths (DST uses SyncFileDevice)
+- Epoch drain timeout scenarios (FaultConfig field exists but not wired)
+
+**What This Means:**
+- **Éowyn:** `all_expanded_scenarios()` returns 1003 templates. The expansion engine uses `HashSet`-based deduplication for triple crashes.
+- **Frodo:** The `campaign_expanded_full` test (CI Tier 3, ignored) runs 1003 × 10 = 10,030 test cases.
+- **All agents:** Branch `eowyn/extended-dst-campaign` ready for merge to squad.
