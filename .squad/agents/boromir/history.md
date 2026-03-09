@@ -20,6 +20,10 @@
 ## Learnings
 <!-- Append new learnings -->
 - `log` crate added as non-optional dep for compaction runtime warnings.
+- All workspace crates currently have `publish = false` — release gate tier 4 packaging checks are informational until publish is enabled.
+- `checkin` script does `git add -A` which stages everything — for multi-agent workflows, use selective `git add` + `git commit` to avoid staging other agents' uncommitted files.
+- Fuzz smoke tests (10s/target) catch most crashes; extended (5min/target) is for release candidates only.
+- No CHANGELOG.md exists yet — tier 4 warns about this but doesn't block.
 - Recovery `LogRecoveryEngine::validate_log_file` hardcodes `log.{n}` segment names — `SyncFileDevice` prefix must be "log." for recovery to find segments.
 - `IndexRecoveryEngine` is lenient with mismatched metadata/file sizes — it reads from the file and doesn't crash, even if metadata claims more buckets than exist. Not a strict validator.
 - Multi-agent safety: other agents can switch branches in shared worktree. Always verify `branch --show-current` before committing. Use selective `git add` + `git commit` instead of `checkin` script to avoid staging others' changes.
