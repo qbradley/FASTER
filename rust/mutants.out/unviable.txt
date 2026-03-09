@@ -1,8 +1,0 @@
-crates/faster-core/src/address.rs:59:41: replace - with +
-crates/faster-core/src/address.rs:62:35: replace << with >>
-crates/faster-core/src/address.rs:65:33: replace << with >>
-crates/faster-core/src/address.rs:68:36: replace << with >>
-crates/faster-core/src/address.rs:190:32: replace << with >>
-crates/faster-core/src/address.rs:249:9: replace LogicalAddress::from_raw -> Self with Default::default()
-crates/faster-core/src/address.rs:270:9: replace LogicalAddress::page -> Page with Default::default()
-crates/faster-core/src/address.rs:285:9: replace LogicalAddress::offset -> Offset with Default::default()
