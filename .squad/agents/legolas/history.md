@@ -64,3 +64,22 @@ Changes: Pending-rate validation gate, `--force-disk` mode (auto-tunes buffer_pa
 
 **Files:** `benches/hash_layout_bench.rs`, `benches/ycsb.rs`, `benches/core_benchmarks.rs`.
 **Impact:** Precheckin 12+ min hang → 38 seconds (1709 tests).
+
+---
+
+### Fix hash_layout_bench — Remove Dead OA Prototype Code (2026-03-09)
+**Branch:** `legolas/fix-hash-bench` → merged to `squad`
+
+**Root cause:** 206 lines of dead Open Addressing prototype code never removed from `hash_layout_bench.rs`. The OA prototype ran with oversized datasets through Criterion's full harness even in smoke mode — causing >1 hour runtime in debug.
+
+**Changes:**
+- Removed 206 lines of dead OA prototype code
+- Reduced dataset sizes to match realistic benchmark scope
+- Added Criterion tuning (`measurement_time`, `warm_up_time`, `sample_size`)
+- Re-enabled `benches()` call (had been commented out by user)
+
+**Outcome:** Smoke test 0.15s (was >1 hour in debug). Bench re-enabled and healthy.
+
+**Cross-agent context:**
+- Gandalf wrote `rust/TESTING-ARCHITECTURE.md` this same session — the Release Gate tier now references a clean, working benchmark file.
+- Aragorn set up cargo-mutants with `rust/docs/mutation-testing.md` — mutation testing gap in testing architecture is now resolved.
