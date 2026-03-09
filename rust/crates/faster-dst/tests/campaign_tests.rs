@@ -259,11 +259,11 @@ fn campaign_10000_seeds_5_templates() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn expanded_scenarios_at_least_100() {
+fn expanded_scenarios_at_least_1000() {
     let scenarios = faster_dst::scenarios::expansion::all_expanded_scenarios();
     assert!(
-        scenarios.len() >= 100,
-        "expected ≥100 expanded scenarios, got {}",
+        scenarios.len() >= 1000,
+        "expected ≥1000 expanded scenarios, got {}",
         scenarios.len()
     );
     // Verify names are unique.
@@ -272,17 +272,20 @@ fn expanded_scenarios_at_least_100() {
     assert_eq!(
         names.len(),
         scenarios.len(),
-        "duplicate scenario names in expansion"
+        "duplicate scenario names in expansion ({} unique / {} total)",
+        names.len(),
+        scenarios.len()
     );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 11. Expanded campaign — smoke test (3 seeds across all 100+ scenarios)
+// 11. Expanded campaign — smoke test (3 seeds across all 1000+ scenarios)
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn campaign_expanded_smoke() {
     let scenarios = faster_dst::scenarios::expansion::all_expanded_scenarios();
+    let count = scenarios.len();
     let mut campaign = SeedCampaign::new();
     for s in scenarios {
         campaign.add_scenario(s);
@@ -296,6 +299,14 @@ fn campaign_expanded_smoke() {
         report.total,
         report.display_human()
     );
+    assert_eq!(
+        report.total,
+        count * 3,
+        "expected {} total ({}×3), got {}",
+        count * 3,
+        count,
+        report.total
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -303,14 +314,15 @@ fn campaign_expanded_smoke() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // CI Tier 3 — 100+ scenarios × 100 seeds
+#[ignore] // CI Tier 3 — 1000+ scenarios × 10 seeds
 fn campaign_expanded_full() {
     let scenarios = faster_dst::scenarios::expansion::all_expanded_scenarios();
+    let count = scenarios.len();
     let mut campaign = SeedCampaign::new();
     for s in scenarios {
         campaign.add_scenario(s);
     }
-    campaign.seed_range(0..100);
+    campaign.seed_range(0..10);
     let report = campaign.run();
     assert!(
         report.all_passed(),
@@ -319,4 +331,41 @@ fn campaign_expanded_full() {
         report.total,
         report.display_human()
     );
+    // Verify total count: scenarios × seeds
+    assert_eq!(report.total, count * 10);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 13. Extended campaign with category breakdown
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn campaign_extended_category_coverage() {
+    let scenarios = faster_dst::scenarios::expansion::all_expanded_scenarios();
+
+    // Count scenarios by name prefix to verify coverage per category.
+    let checkpoint_crash = scenarios.iter().filter(|s| s.name.starts_with("checkpoint_crash_")).count();
+    let compaction_crash = scenarios.iter().filter(|s| s.name.starts_with("compaction_crash_")).count();
+    let recovery_crash = scenarios.iter().filter(|s| s.name.starts_with("recovery_crash_")).count();
+    let concurrent = scenarios.iter().filter(|s| s.name.starts_with("concurrent_")).count();
+    let dual = scenarios.iter().filter(|s| s.name.starts_with("dual_")).count();
+    let overwrite = scenarios.iter().filter(|s| s.name.contains("overwrite")).count();
+    let torn_write = scenarios.iter().filter(|s| s.name.contains("torn")).count();
+    let sparse = scenarios.iter().filter(|s| s.name.starts_with("sparse_")).count();
+    let graduated = scenarios.iter().filter(|s| s.name.starts_with("graduated_")).count();
+    let boundary = scenarios.iter().filter(|s| s.name.starts_with("boundary_")).count();
+    let triple = scenarios.iter().filter(|s| s.name.starts_with("triple_")).count();
+
+    // Each major category should have meaningful coverage.
+    assert!(checkpoint_crash >= 40, "checkpoint_crash: {checkpoint_crash}");
+    assert!(compaction_crash >= 40, "compaction_crash: {compaction_crash}");
+    assert!(recovery_crash >= 40, "recovery_crash: {recovery_crash}");
+    assert!(concurrent >= 30, "concurrent: {concurrent}");
+    assert!(dual >= 60, "dual: {dual}");
+    assert!(overwrite >= 50, "overwrite: {overwrite}");
+    assert!(torn_write >= 40, "torn_write: {torn_write}");
+    assert!(sparse >= 40, "sparse: {sparse}");
+    assert!(graduated >= 90, "graduated: {graduated}");
+    assert!(boundary >= 100, "boundary: {boundary}");
+    assert!(triple >= 25, "triple: {triple}");
 }
