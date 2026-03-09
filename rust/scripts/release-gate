@@ -1,0 +1,875 @@
+#!/usr/bin/env bash
+#
+# release-gate — Comprehensive release validation for FASTER Rust
+#
+# Runs 4 tiers of validation from fast lint checks through deep mutation
+# testing and release-readiness verification.
+#
+# Usage: release-gate [OPTIONS] [TIER...]
+#
+#   TIER: 1, 2, 3, 4, or "all" (default: all)
+#
+#   Options:
+#     --tier N        Run only tier N (1-4)
+#     --from N        Run tiers N through 4
+#     --dry-run       Show what would run without executing
+#     --report FILE   Write results to FILE (default: release-gate-report.md)
+#     --continue      Don't stop on first tier failure
+#     --verbose       Show full test output
+#     --help          Show this help
+#
+# Exit codes:
+#   0  All checks passed
+#   1  One or more checks failed
+#   2  Warnings only (no hard failures)
+
+set -euo pipefail
+
+# ── Colors ──────────────────────────────────────────────────────────────────
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
+RESET='\033[0m'
+
+# ── Resolve paths ───────────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+    echo -e "${RED}❌ Not inside a git repository.${RESET}" >&2
+    exit 1
+}
+
+RUST_DIR="$REPO_ROOT/rust"
+if [[ ! -f "$RUST_DIR/Cargo.toml" ]]; then
+    echo -e "${RED}❌ Cannot find rust/Cargo.toml — is this the FASTER repo?${RESET}" >&2
+    exit 1
+fi
+
+# ── Defaults ────────────────────────────────────────────────────────────────
+TIERS=()
+FROM_TIER=0
+DRY_RUN=false
+REPORT_FILE="release-gate-report.md"
+CONTINUE_ON_FAIL=false
+VERBOSE=false
+
+# ── Parse arguments ─────────────────────────────────────────────────────────
+show_help() {
+    sed -n '2,/^$/{ s/^# \?//; p; }' "$0"
+    exit 0
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --tier)
+            [[ -z "${2:-}" ]] && { echo -e "${RED}--tier requires a number (1-4)${RESET}" >&2; exit 1; }
+            TIERS+=("$2"); shift 2 ;;
+        --from)
+            [[ -z "${2:-}" ]] && { echo -e "${RED}--from requires a number (1-4)${RESET}" >&2; exit 1; }
+            FROM_TIER="$2"; shift 2 ;;
+        --dry-run)    DRY_RUN=true; shift ;;
+        --report)
+            [[ -z "${2:-}" ]] && { echo -e "${RED}--report requires a filename${RESET}" >&2; exit 1; }
+            REPORT_FILE="$2"; shift 2 ;;
+        --continue)   CONTINUE_ON_FAIL=true; shift ;;
+        --verbose)    VERBOSE=true; shift ;;
+        --help|-h)    show_help ;;
+        all)          TIERS=(1 2 3 4); shift ;;
+        [1-4])        TIERS+=("$1"); shift ;;
+        *)            echo -e "${RED}Unknown option: $1${RESET}" >&2; show_help ;;
+    esac
+done
+
+# Resolve tier list
+if [[ "$FROM_TIER" -gt 0 ]]; then
+    TIERS=()
+    for ((t=FROM_TIER; t<=4; t++)); do
+        TIERS+=("$t")
+    done
+fi
+
+if [[ ${#TIERS[@]} -eq 0 ]]; then
+    TIERS=(1 2 3 4)
+fi
+
+# Validate tier numbers
+for t in "${TIERS[@]}"; do
+    if [[ "$t" -lt 1 || "$t" -gt 4 ]]; then
+        echo -e "${RED}Invalid tier: $t (must be 1-4)${RESET}" >&2
+        exit 1
+    fi
+done
+
+# Sort and deduplicate tiers
+IFS=$'\n' TIERS=($(printf '%s\n' "${TIERS[@]}" | sort -nu)); unset IFS
+
+# ── State tracking ──────────────────────────────────────────────────────────
+declare -a CHECK_NAMES=()
+declare -a CHECK_RESULTS=()   # pass, fail, skip, warn
+declare -a CHECK_TIMES=()
+declare -a CHECK_TIERS=()
+declare -a CHECK_DETAILS=()
+
+declare -A TIER_RESULTS=()    # pass, fail, warn
+declare -A TIER_TIMES=()
+
+TOTAL_PASS=0
+TOTAL_FAIL=0
+TOTAL_SKIP=0
+TOTAL_WARN=0
+
+SCRIPT_START=$(date +%s)
+
+# ── Output helpers ──────────────────────────────────────────────────────────
+REPORT_BUFFER=""
+
+log() {
+    echo -e "$@"
+}
+
+# Record a check result
+record_check() {
+    local tier="$1" name="$2" result="$3" elapsed="$4" detail="${5:-}"
+    CHECK_NAMES+=("$name")
+    CHECK_RESULTS+=("$result")
+    CHECK_TIMES+=("$elapsed")
+    CHECK_TIERS+=("$tier")
+    CHECK_DETAILS+=("$detail")
+
+    case "$result" in
+        pass) ((TOTAL_PASS++)) || true ;;
+        fail) ((TOTAL_FAIL++)) || true ;;
+        skip) ((TOTAL_SKIP++)) || true ;;
+        warn) ((TOTAL_WARN++)) || true ;;
+    esac
+}
+
+result_icon() {
+    case "$1" in
+        pass) echo -e "${GREEN}✅${RESET}" ;;
+        fail) echo -e "${RED}❌${RESET}" ;;
+        skip) echo -e "${CYAN}⏭️${RESET}"  ;;
+        warn) echo -e "${YELLOW}⚠️${RESET}"  ;;
+    esac
+}
+
+result_md_icon() {
+    case "$1" in
+        pass) echo "✅" ;;
+        fail) echo "❌" ;;
+        skip) echo "⏭️"  ;;
+        warn) echo "⚠️"  ;;
+    esac
+}
+
+format_time() {
+    local secs="$1"
+    if [[ "$secs" -ge 60 ]]; then
+        printf "%dm%02ds" $((secs / 60)) $((secs % 60))
+    else
+        printf "%ds" "$secs"
+    fi
+}
+
+# ── Check runner ────────────────────────────────────────────────────────────
+# Runs a command, captures output, records result.
+#   run_check <tier> <name> <command...>
+run_check() {
+    local tier="$1" name="$2"
+    shift 2
+
+    if [[ "$DRY_RUN" == true ]]; then
+        log "  $(result_icon skip) ${name}  ${DIM}(dry-run: $*)${RESET}"
+        record_check "$tier" "$name" "skip" 0 "dry-run"
+        return 0
+    fi
+
+    local start end elapsed
+    start=$(date +%s)
+
+    log "  ${DIM}▶ ${name}${RESET}"
+    if [[ "$VERBOSE" == true ]]; then
+        log "    ${DIM}\$ $*${RESET}"
+    fi
+
+    local output exit_code=0
+    output=$("$@" 2>&1) || exit_code=$?
+
+    end=$(date +%s)
+    elapsed=$((end - start))
+
+    if [[ $exit_code -eq 0 ]]; then
+        log "  $(result_icon pass) ${name}  ${DIM}($(format_time $elapsed))${RESET}"
+        record_check "$tier" "$name" "pass" "$elapsed"
+    else
+        log "  $(result_icon fail) ${name}  ${DIM}($(format_time $elapsed))${RESET}"
+        if [[ "$VERBOSE" == true && -n "$output" ]]; then
+            echo "$output" | tail -20 | sed 's/^/    /'
+        fi
+        record_check "$tier" "$name" "fail" "$elapsed" "exit code $exit_code"
+    fi
+
+    return $exit_code
+}
+
+# Like run_check but records a warning instead of failure
+run_check_warn() {
+    local tier="$1" name="$2"
+    shift 2
+
+    if [[ "$DRY_RUN" == true ]]; then
+        log "  $(result_icon skip) ${name}  ${DIM}(dry-run: $*)${RESET}"
+        record_check "$tier" "$name" "skip" 0 "dry-run"
+        return 0
+    fi
+
+    local start end elapsed
+    start=$(date +%s)
+
+    log "  ${DIM}▶ ${name}${RESET}"
+
+    local output exit_code=0
+    output=$("$@" 2>&1) || exit_code=$?
+
+    end=$(date +%s)
+    elapsed=$((end - start))
+
+    if [[ $exit_code -eq 0 ]]; then
+        log "  $(result_icon pass) ${name}  ${DIM}($(format_time $elapsed))${RESET}"
+        record_check "$tier" "$name" "pass" "$elapsed"
+    else
+        log "  $(result_icon warn) ${name}  ${DIM}($(format_time $elapsed))${RESET}"
+        record_check "$tier" "$name" "warn" "$elapsed" "exit code $exit_code"
+    fi
+
+    return 0
+}
+
+# Skip a check with a reason
+skip_check() {
+    local tier="$1" name="$2" reason="$3"
+    log "  $(result_icon skip) ${name}  ${DIM}(${reason})${RESET}"
+    record_check "$tier" "$name" "skip" 0 "$reason"
+}
+
+# ── Tool detection ──────────────────────────────────────────────────────────
+has_tool() {
+    command -v "$1" &>/dev/null
+}
+
+has_cargo_sub() {
+    cargo "$1" --help &>/dev/null 2>&1
+}
+
+has_nightly() {
+    rustup toolchain list 2>/dev/null | grep -q nightly
+}
+
+# ── Tier implementations ───────────────────────────────────────────────────
+
+run_tier_1() {
+    local tier=1
+    local tier_start
+    tier_start=$(date +%s)
+
+    log ""
+    log "${BOLD}╔══════════════════════════════════════════════════════════════╗${RESET}"
+    log "${BOLD}║  Tier 1: Fast Gate                          (target: <60s) ║${RESET}"
+    log "${BOLD}╚══════════════════════════════════════════════════════════════╝${RESET}"
+    log ""
+
+    local tier_failed=false
+
+    run_check $tier "cargo fmt --check" \
+        cargo fmt --all -- --check || tier_failed=true
+
+    if [[ "$tier_failed" == true && "$CONTINUE_ON_FAIL" == false ]]; then
+        TIER_RESULTS[$tier]="fail"
+        TIER_TIMES[$tier]=$(( $(date +%s) - tier_start ))
+        return 1
+    fi
+
+    run_check $tier "cargo clippy (workspace)" \
+        cargo clippy --workspace --all-targets -- -D warnings || tier_failed=true
+
+    if [[ "$tier_failed" == true && "$CONTINUE_ON_FAIL" == false ]]; then
+        TIER_RESULTS[$tier]="fail"
+        TIER_TIMES[$tier]=$(( $(date +%s) - tier_start ))
+        return 1
+    fi
+
+    run_check $tier "cargo test --doc (workspace)" \
+        cargo test --doc --workspace || tier_failed=true
+
+    if [[ "$tier_failed" == true && "$CONTINUE_ON_FAIL" == false ]]; then
+        TIER_RESULTS[$tier]="fail"
+        TIER_TIMES[$tier]=$(( $(date +%s) - tier_start ))
+        return 1
+    fi
+
+    # nextest with fallback
+    if has_tool cargo-nextest || cargo nextest --version &>/dev/null 2>&1; then
+        run_check $tier "cargo nextest run (workspace)" \
+            cargo nextest run --workspace --all-targets || tier_failed=true
+    else
+        log "  ${YELLOW}⚠ nextest not found — falling back to cargo test${RESET}"
+        run_check $tier "cargo test (workspace)" \
+            cargo test --workspace || tier_failed=true
+    fi
+
+    if [[ "$tier_failed" == true && "$CONTINUE_ON_FAIL" == false ]]; then
+        TIER_RESULTS[$tier]="fail"
+        TIER_TIMES[$tier]=$(( $(date +%s) - tier_start ))
+        return 1
+    fi
+
+    run_check $tier "cargo doc (workspace, no-deps)" \
+        cargo doc --workspace --no-deps || tier_failed=true
+
+    local tier_end
+    tier_end=$(date +%s)
+    TIER_TIMES[$tier]=$(( tier_end - tier_start ))
+
+    if [[ "$tier_failed" == true ]]; then
+        TIER_RESULTS[$tier]="fail"
+        return 1
+    fi
+
+    TIER_RESULTS[$tier]="pass"
+    return 0
+}
+
+run_tier_2() {
+    local tier=2
+    local tier_start
+    tier_start=$(date +%s)
+
+    log ""
+    log "${BOLD}╔══════════════════════════════════════════════════════════════╗${RESET}"
+    log "${BOLD}║  Tier 2: Correctness Gate                  (target: <5min) ║${RESET}"
+    log "${BOLD}╚══════════════════════════════════════════════════════════════╝${RESET}"
+    log ""
+
+    local tier_failed=false
+
+    # Loom tests
+    if has_nightly; then
+        run_check $tier "Loom concurrency tests" \
+            env RUSTFLAGS="--cfg loom" cargo nextest run -p faster-core --features loom -E 'test(loom)' \
+            || tier_failed=true
+    else
+        skip_check $tier "Loom concurrency tests" "nightly toolchain not installed"
+    fi
+
+    if [[ "$tier_failed" == true && "$CONTINUE_ON_FAIL" == false ]]; then
+        TIER_RESULTS[$tier]="fail"
+        TIER_TIMES[$tier]=$(( $(date +%s) - tier_start ))
+        return 1
+    fi
+
+    # Miri tests
+    if has_nightly && rustup component list --toolchain nightly 2>/dev/null | grep -q 'miri.*installed'; then
+        run_check $tier "Miri UB detection" \
+            cargo +nightly miri nextest run -p faster-core -E 'test(miri)' \
+            || tier_failed=true
+    else
+        skip_check $tier "Miri UB detection" "nightly miri component not installed"
+    fi
+
+    if [[ "$tier_failed" == true && "$CONTINUE_ON_FAIL" == false ]]; then
+        TIER_RESULTS[$tier]="fail"
+        TIER_TIMES[$tier]=$(( $(date +%s) - tier_start ))
+        return 1
+    fi
+
+    # Fuzz smoke test (10s per target)
+    if has_tool cargo-fuzz && has_nightly; then
+        local fuzz_dir="$RUST_DIR/fuzz"
+        local fuzz_targets=(
+            fuzz_record_parsing
+            fuzz_record_layout
+            fuzz_compaction_record_size
+            fuzz_hash
+            fuzz_store_ops
+        )
+
+        log "  ${DIM}▶ Fuzz smoke tests (10s per target)${RESET}"
+        local fuzz_start fuzz_end fuzz_elapsed
+        fuzz_start=$(date +%s)
+
+        if [[ "$DRY_RUN" == true ]]; then
+            for target in "${fuzz_targets[@]}"; do
+                skip_check $tier "Fuzz: $target (smoke)" "dry-run"
+            done
+        else
+            local fuzz_any_fail=false
+            (
+                cd "$fuzz_dir"
+                cargo fuzz build 2>&1 >/dev/null
+            ) || true
+
+            for target in "${fuzz_targets[@]}"; do
+                local t_start t_end t_elapsed
+                t_start=$(date +%s)
+                if (cd "$fuzz_dir" && cargo fuzz run "$target" -- -max_len=4096 -max_total_time=10) &>/dev/null; then
+                    t_end=$(date +%s)
+                    t_elapsed=$((t_end - t_start))
+                    log "  $(result_icon pass) Fuzz: ${target}  ${DIM}($(format_time $t_elapsed))${RESET}"
+                    record_check $tier "Fuzz: $target (smoke)" "pass" "$t_elapsed"
+                else
+                    t_end=$(date +%s)
+                    t_elapsed=$((t_end - t_start))
+                    log "  $(result_icon fail) Fuzz: ${target}  ${DIM}($(format_time $t_elapsed))${RESET}"
+                    record_check $tier "Fuzz: $target (smoke)" "fail" "$t_elapsed" "crash found"
+                    fuzz_any_fail=true
+                fi
+            done
+
+            if [[ "$fuzz_any_fail" == true ]]; then
+                tier_failed=true
+            fi
+        fi
+    else
+        skip_check $tier "Fuzz smoke tests" "cargo-fuzz or nightly not installed"
+    fi
+
+    if [[ "$tier_failed" == true && "$CONTINUE_ON_FAIL" == false ]]; then
+        TIER_RESULTS[$tier]="fail"
+        TIER_TIMES[$tier]=$(( $(date +%s) - tier_start ))
+        return 1
+    fi
+
+    # cargo deny
+    if has_tool cargo-deny || cargo deny --version &>/dev/null 2>&1; then
+        run_check $tier "cargo deny (license + advisory)" \
+            cargo deny check || tier_failed=true
+    else
+        skip_check $tier "cargo deny (license + advisory)" "cargo-deny not installed"
+    fi
+
+    if [[ "$tier_failed" == true && "$CONTINUE_ON_FAIL" == false ]]; then
+        TIER_RESULTS[$tier]="fail"
+        TIER_TIMES[$tier]=$(( $(date +%s) - tier_start ))
+        return 1
+    fi
+
+    # DST smoke
+    run_check $tier "DST scenarios (faster-dst)" \
+        cargo nextest run -p faster-dst || tier_failed=true
+
+    local tier_end
+    tier_end=$(date +%s)
+    TIER_TIMES[$tier]=$(( tier_end - tier_start ))
+
+    if [[ "$tier_failed" == true ]]; then
+        TIER_RESULTS[$tier]="fail"
+        return 1
+    fi
+
+    TIER_RESULTS[$tier]="pass"
+    return 0
+}
+
+run_tier_3() {
+    local tier=3
+    local tier_start
+    tier_start=$(date +%s)
+
+    log ""
+    log "${BOLD}╔══════════════════════════════════════════════════════════════╗${RESET}"
+    log "${BOLD}║  Tier 3: Deep Validation                  (target: <30min) ║${RESET}"
+    log "${BOLD}╚══════════════════════════════════════════════════════════════╝${RESET}"
+    log ""
+
+    local tier_failed=false
+    local tier_warned=false
+
+    # Mutation testing
+    if has_tool cargo-mutants; then
+        run_check_warn $tier "Mutation testing (faster-core)" \
+            cargo mutants --package faster-core --timeout=300 -- --release
+    else
+        skip_check $tier "Mutation testing (faster-core)" "cargo-mutants not installed"
+    fi
+
+    # Extended fuzz (5 min per target)
+    if has_tool cargo-fuzz && has_nightly; then
+        local fuzz_dir="$RUST_DIR/fuzz"
+        local fuzz_targets=(
+            fuzz_record_parsing
+            fuzz_record_layout
+            fuzz_compaction_record_size
+            fuzz_hash
+            fuzz_store_ops
+        )
+
+        log "  ${DIM}▶ Extended fuzz (5min per target)${RESET}"
+
+        if [[ "$DRY_RUN" == true ]]; then
+            for target in "${fuzz_targets[@]}"; do
+                skip_check $tier "Fuzz: $target (extended)" "dry-run"
+            done
+        else
+            for target in "${fuzz_targets[@]}"; do
+                local t_start t_end t_elapsed
+                t_start=$(date +%s)
+                if (cd "$fuzz_dir" && cargo fuzz run "$target" -- -max_len=4096 -max_total_time=300) &>/dev/null; then
+                    t_end=$(date +%s)
+                    t_elapsed=$((t_end - t_start))
+                    log "  $(result_icon pass) Fuzz: ${target} (extended)  ${DIM}($(format_time $t_elapsed))${RESET}"
+                    record_check $tier "Fuzz: $target (extended)" "pass" "$t_elapsed"
+                else
+                    t_end=$(date +%s)
+                    t_elapsed=$((t_end - t_start))
+                    log "  $(result_icon fail) Fuzz: ${target} (extended)  ${DIM}($(format_time $t_elapsed))${RESET}"
+                    record_check $tier "Fuzz: $target (extended)" "fail" "$t_elapsed" "crash found"
+                    tier_failed=true
+                fi
+            done
+        fi
+    else
+        skip_check $tier "Extended fuzz tests" "cargo-fuzz or nightly not installed"
+    fi
+
+    if [[ "$tier_failed" == true && "$CONTINUE_ON_FAIL" == false ]]; then
+        TIER_RESULTS[$tier]="fail"
+        TIER_TIMES[$tier]=$(( $(date +%s) - tier_start ))
+        return 1
+    fi
+
+    # Benchmark comparison (if baseline exists)
+    local bench_script="$SCRIPT_DIR/bench-compare.sh"
+    if [[ -x "$bench_script" ]]; then
+        local criterion_dir="$RUST_DIR/target/criterion"
+        if [[ -d "$criterion_dir" ]]; then
+            run_check_warn $tier "Benchmark regression check" \
+                "$bench_script" --quick
+        else
+            skip_check $tier "Benchmark regression check" "no baseline in target/criterion/"
+        fi
+    else
+        skip_check $tier "Benchmark regression check" "bench-compare.sh not found"
+    fi
+
+    local tier_end
+    tier_end=$(date +%s)
+    TIER_TIMES[$tier]=$(( tier_end - tier_start ))
+
+    if [[ "$tier_failed" == true ]]; then
+        TIER_RESULTS[$tier]="fail"
+        return 1
+    fi
+
+    TIER_RESULTS[$tier]="pass"
+    return 0
+}
+
+run_tier_4() {
+    local tier=4
+    local tier_start
+    tier_start=$(date +%s)
+
+    log ""
+    log "${BOLD}╔══════════════════════════════════════════════════════════════╗${RESET}"
+    log "${BOLD}║  Tier 4: Release Gate                       (target: <2hr) ║${RESET}"
+    log "${BOLD}╚══════════════════════════════════════════════════════════════╝${RESET}"
+    log ""
+
+    local tier_failed=false
+
+    # CHANGELOG.md check
+    if [[ "$DRY_RUN" == true ]]; then
+        skip_check $tier "CHANGELOG.md exists" "dry-run"
+    else
+        local changelog_found=false
+        for loc in "$REPO_ROOT/CHANGELOG.md" "$RUST_DIR/CHANGELOG.md"; do
+            if [[ -f "$loc" ]]; then
+                changelog_found=true
+                # Try to verify it has a version entry
+                local version
+                version=$(grep '^version' "$RUST_DIR/crates/faster-core/Cargo.toml" 2>/dev/null \
+                    | head -1 | sed 's/.*"\(.*\)".*/\1/' || echo "")
+                if [[ -n "$version" ]] && grep -q "$version" "$loc" 2>/dev/null; then
+                    log "  $(result_icon pass) CHANGELOG.md has entry for v${version}"
+                    record_check $tier "CHANGELOG.md version entry" "pass" 0
+                else
+                    log "  $(result_icon warn) CHANGELOG.md exists but no entry for v${version:-unknown}"
+                    record_check $tier "CHANGELOG.md version entry" "warn" 0 "no entry for current version"
+                fi
+                break
+            fi
+        done
+        if [[ "$changelog_found" == false ]]; then
+            log "  $(result_icon warn) CHANGELOG.md not found"
+            record_check $tier "CHANGELOG.md exists" "warn" 0 "file not found at repo root or rust/"
+        fi
+    fi
+
+    # Cargo.toml publish metadata check
+    if [[ "$DRY_RUN" == true ]]; then
+        skip_check $tier "Cargo.toml publish metadata" "dry-run"
+    else
+        log "  ${DIM}▶ Checking Cargo.toml publish metadata${RESET}"
+        local metadata_ok=true
+        local publishable_crates=()
+
+        # Find all Cargo.toml in workspace members
+        while IFS= read -r -d '' toml_file; do
+            local crate_name crate_dir
+            crate_dir="$(dirname "$toml_file")"
+            crate_name="$(basename "$crate_dir")"
+
+            # Skip fuzz crate, samples
+            if [[ "$crate_dir" == *"/fuzz"* || "$crate_dir" == *"/samples/"* ]]; then
+                continue
+            fi
+
+            # Check for required fields: description, license or license-file
+            local has_desc has_lic
+            has_desc=$(grep -c '^\s*description' "$toml_file" 2>/dev/null || echo 0)
+            has_lic=$(grep -cE '^\s*(license|license-file|license\.workspace)' "$toml_file" 2>/dev/null || echo 0)
+
+            if [[ "$has_desc" -eq 0 || "$has_lic" -eq 0 ]]; then
+                log "    ${YELLOW}⚠  ${crate_name}: missing description or license${RESET}"
+                metadata_ok=false
+            fi
+
+            # Track publishable crates (those without publish = false)
+            if ! grep -q 'publish\s*=\s*false' "$toml_file" 2>/dev/null; then
+                publishable_crates+=("$crate_dir")
+            fi
+        done < <(find "$RUST_DIR/crates" -name "Cargo.toml" -not -path "*/target/*" -print0 2>/dev/null)
+
+        if [[ "$metadata_ok" == true ]]; then
+            log "  $(result_icon pass) Cargo.toml publish metadata (all crates)"
+            record_check $tier "Cargo.toml publish metadata" "pass" 0
+        else
+            log "  $(result_icon warn) Cargo.toml publish metadata (some missing)"
+            record_check $tier "Cargo.toml publish metadata" "warn" 0 "missing fields in some crates"
+        fi
+    fi
+
+    # cargo package --list for each publishable crate
+    if [[ "$DRY_RUN" == true ]]; then
+        skip_check $tier "cargo package --list" "dry-run"
+    else
+        log "  ${DIM}▶ Verifying crate packaging${RESET}"
+        local package_ok=true
+        local core_crates=("faster-core" "faster-device" "faster-ffi" "faster-tokio")
+
+        for crate in "${core_crates[@]}"; do
+            local crate_dir="$RUST_DIR/crates/$crate"
+            if [[ -d "$crate_dir" ]]; then
+                if cargo package --list -p "$crate" &>/dev/null 2>&1; then
+                    log "    ${GREEN}✓${RESET} ${crate}: packages cleanly"
+                else
+                    log "    ${YELLOW}⚠${RESET} ${crate}: package --list returned warnings"
+                    package_ok=false
+                fi
+            fi
+        done
+
+        if [[ "$package_ok" == true ]]; then
+            log "  $(result_icon pass) cargo package --list (core crates)"
+            record_check $tier "cargo package --list" "pass" 0
+        else
+            log "  $(result_icon warn) cargo package --list (some warnings)"
+            record_check $tier "cargo package --list" "warn" 0 "packaging warnings"
+        fi
+    fi
+
+    # cargo semver-checks (informational)
+    if has_tool cargo-semver-checks || cargo semver-checks --version &>/dev/null 2>&1; then
+        run_check_warn $tier "cargo semver-checks (informational)" \
+            cargo semver-checks check-release --package faster-core
+    else
+        skip_check $tier "cargo semver-checks" "cargo-semver-checks not installed"
+    fi
+
+    # Full benchmark suite (if baseline available)
+    local bench_script="$SCRIPT_DIR/bench-compare.sh"
+    if [[ -x "$bench_script" ]]; then
+        local criterion_dir="$RUST_DIR/target/criterion"
+        if [[ -d "$criterion_dir" ]]; then
+            run_check_warn $tier "Full benchmark suite" \
+                "$bench_script"
+        else
+            skip_check $tier "Full benchmark suite" "no baseline in target/criterion/"
+        fi
+    else
+        skip_check $tier "Full benchmark suite" "bench-compare.sh not found"
+    fi
+
+    local tier_end
+    tier_end=$(date +%s)
+    TIER_TIMES[$tier]=$(( tier_end - tier_start ))
+
+    if [[ "$tier_failed" == true ]]; then
+        TIER_RESULTS[$tier]="fail"
+        return 1
+    fi
+
+    TIER_RESULTS[$tier]="pass"
+    return 0
+}
+
+# ── Report generation ───────────────────────────────────────────────────────
+
+generate_report() {
+    local total_end
+    total_end=$(date +%s)
+    local total_elapsed=$((total_end - SCRIPT_START))
+
+    local report=""
+    report+="# Release Gate Report\n\n"
+    report+="**Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')\n"
+    report+="**Commit:** $(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')\n"
+    report+="**Branch:** $(git branch --show-current 2>/dev/null || echo 'unknown')\n"
+    report+="**Total time:** $(format_time $total_elapsed)\n\n"
+
+    # Overall result
+    if [[ "$TOTAL_FAIL" -gt 0 ]]; then
+        report+="## Result: ❌ FAILED\n\n"
+    elif [[ "$TOTAL_WARN" -gt 0 ]]; then
+        report+="## Result: ⚠️ WARNINGS\n\n"
+    else
+        report+="## Result: ✅ PASSED\n\n"
+    fi
+
+    report+="| Metric | Count |\n"
+    report+="|--------|-------|\n"
+    report+="| ✅ Passed | $TOTAL_PASS |\n"
+    report+="| ❌ Failed | $TOTAL_FAIL |\n"
+    report+="| ⚠️ Warnings | $TOTAL_WARN |\n"
+    report+="| ⏭️ Skipped | $TOTAL_SKIP |\n\n"
+
+    # Per-tier summary
+    report+="## Tier Summary\n\n"
+    report+="| Tier | Result | Time |\n"
+    report+="|------|--------|------|\n"
+
+    for t in "${TIERS[@]}"; do
+        local tier_name
+        case "$t" in
+            1) tier_name="Fast Gate" ;;
+            2) tier_name="Correctness Gate" ;;
+            3) tier_name="Deep Validation" ;;
+            4) tier_name="Release Gate" ;;
+        esac
+
+        local tier_result="${TIER_RESULTS[$t]:-skip}"
+        local tier_time="${TIER_TIMES[$t]:-0}"
+        report+="| Tier $t: $tier_name | $(result_md_icon "$tier_result") | $(format_time "$tier_time") |\n"
+    done
+
+    report+="\n## Detailed Results\n\n"
+    report+="| Tier | Check | Result | Time | Detail |\n"
+    report+="|------|-------|--------|------|--------|\n"
+
+    for i in "${!CHECK_NAMES[@]}"; do
+        local detail="${CHECK_DETAILS[$i]}"
+        [[ -z "$detail" ]] && detail="—"
+        report+="| ${CHECK_TIERS[$i]} | ${CHECK_NAMES[$i]} | $(result_md_icon "${CHECK_RESULTS[$i]}") | $(format_time "${CHECK_TIMES[$i]}") | $detail |\n"
+    done
+
+    report+="\n---\n*Generated by \`release-gate\`*\n"
+
+    echo -e "$report"
+}
+
+print_summary() {
+    local total_end
+    total_end=$(date +%s)
+    local total_elapsed=$((total_end - SCRIPT_START))
+
+    log ""
+    log "${BOLD}╔══════════════════════════════════════════════════════════════╗${RESET}"
+    log "${BOLD}║                    Release Gate Summary                      ║${RESET}"
+    log "${BOLD}╚══════════════════════════════════════════════════════════════╝${RESET}"
+    log ""
+
+    # Tier summary
+    for t in "${TIERS[@]}"; do
+        local tier_name
+        case "$t" in
+            1) tier_name="Tier 1: Fast Gate" ;;
+            2) tier_name="Tier 2: Correctness Gate" ;;
+            3) tier_name="Tier 3: Deep Validation" ;;
+            4) tier_name="Tier 4: Release Gate" ;;
+        esac
+
+        local tier_result="${TIER_RESULTS[$t]:-skip}"
+        local tier_time="${TIER_TIMES[$t]:-0}"
+        log "  $(result_icon "$tier_result") ${tier_name}  ${DIM}($(format_time "$tier_time"))${RESET}"
+    done
+
+    log ""
+    log "  ${GREEN}Passed:${RESET}  $TOTAL_PASS    ${RED}Failed:${RESET}  $TOTAL_FAIL    ${YELLOW}Warnings:${RESET}  $TOTAL_WARN    ${CYAN}Skipped:${RESET}  $TOTAL_SKIP"
+    log "  ${DIM}Total time: $(format_time $total_elapsed)${RESET}"
+    log ""
+
+    if [[ "$TOTAL_FAIL" -gt 0 ]]; then
+        log "${RED}${BOLD}❌ RELEASE GATE FAILED — $TOTAL_FAIL check(s) did not pass.${RESET}"
+    elif [[ "$TOTAL_WARN" -gt 0 ]]; then
+        log "${YELLOW}${BOLD}⚠️  RELEASE GATE: WARNINGS — $TOTAL_WARN advisory issue(s).${RESET}"
+    else
+        log "${GREEN}${BOLD}✅ RELEASE GATE PASSED — all checks green.${RESET}"
+    fi
+}
+
+# ── Main ────────────────────────────────────────────────────────────────────
+
+cd "$RUST_DIR"
+
+log "${BOLD}═══════════════════════════════════════════════════════════════════${RESET}"
+log "${BOLD}  FASTER Rust — Release Gate Validation${RESET}"
+log "${BOLD}═══════════════════════════════════════════════════════════════════${RESET}"
+log ""
+log "  Commit:   ${DIM}$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')${RESET}"
+log "  Branch:   ${DIM}$(git branch --show-current 2>/dev/null || echo 'unknown')${RESET}"
+log "  Date:     ${DIM}$(date -u '+%Y-%m-%d %H:%M:%S UTC')${RESET}"
+log "  Tiers:    ${CYAN}${TIERS[*]}${RESET}"
+log "  Dry-run:  ${DRY_RUN}"
+log "  Continue: ${CONTINUE_ON_FAIL}"
+log ""
+
+if [[ "$DRY_RUN" == true ]]; then
+    log "${YELLOW}${BOLD}DRY RUN — showing what would execute without running anything.${RESET}"
+fi
+
+GATE_FAILED=false
+
+for tier in "${TIERS[@]}"; do
+    case "$tier" in
+        1) run_tier_1 || GATE_FAILED=true ;;
+        2) run_tier_2 || GATE_FAILED=true ;;
+        3) run_tier_3 || GATE_FAILED=true ;;
+        4) run_tier_4 || GATE_FAILED=true ;;
+    esac
+
+    if [[ "$GATE_FAILED" == true && "$CONTINUE_ON_FAIL" == false ]]; then
+        log ""
+        log "${RED}${BOLD}Stopping — tier $tier failed. Use --continue to keep going.${RESET}"
+        break
+    fi
+done
+
+# Print summary
+print_summary
+
+# Write report file
+REPORT_PATH="$RUST_DIR/$REPORT_FILE"
+generate_report > "$REPORT_PATH"
+log ""
+log "  ${DIM}Report written to: $REPORT_FILE${RESET}"
+
+# Exit code
+if [[ "$TOTAL_FAIL" -gt 0 ]]; then
+    exit 1
+elif [[ "$TOTAL_WARN" -gt 0 ]]; then
+    exit 2
+else
+    exit 0
+fi
