@@ -1,0 +1,53 @@
+# cargo-mutants configuration for FASTER Rust
+# See: https://mutants.rs/config.html
+
+# Timeout per mutant: test suite baseline ~41s, so 120s gives ~3× headroom
+# for mutations that cause expensive loops or retries.
+timeout_multiplier = 3.0
+minimum_test_timeout = 60
+
+# Use nextest for parallel test execution (matches CI).
+test_tool = "nextest"
+
+# --- Scope: critical modules first ---
+# Phase 1 targets (high-value, lower-risk of runaway timeouts):
+examine_globs = [
+    "crates/faster-core/src/address.rs",
+    "crates/faster-core/src/record/record_info.rs",
+    "crates/faster-core/src/hash/table.rs",
+    "crates/faster-core/src/hash/index.rs",
+    "crates/faster-core/src/hash/bucket.rs",
+    "crates/faster-core/src/store/mod.rs",
+    "crates/faster-core/src/store/kv.rs",
+    "crates/faster-core/src/store/operations.rs",
+    "crates/faster-core/src/store/session.rs",
+    "crates/faster-core/src/compaction/*.rs",
+    "crates/faster-core/src/error.rs",
+    "crates/faster-core/src/status.rs",
+]
+
+# --- Exclusions ---
+# Bench files (no assertions, mutants always survive → noise)
+exclude_globs = [
+    "crates/faster-core/benches/*.rs",
+    "crates/faster-bench/**/*.rs",
+    "crates/samples/**/*.rs",
+    "crates/faster-ffi/**/*.rs",
+]
+
+# Exclude specific functions that are known to cause timeouts or are
+# not meaningfully testable via mutation (unsafe bitwise ops, FFI glue,
+# display/debug impls).
+exclude_re = [
+    # Bitwise field packing in unsafe blocks — mutations cause infinite
+    # loops or nonsensical addresses, producing timeouts not useful signal.
+    "LogicalAddress::page_index",
+    "LogicalAddress::offset_in_page",
+    "LogicalAddress::from_page_offset",
+    # Display/Debug impls — surviving mutants are cosmetic, not bugs.
+    "impl .*Display",
+    "impl .*Debug",
+    # Test helper functions
+    "^test_",
+    "#\\[cfg\\(test\\)\\]",
+]

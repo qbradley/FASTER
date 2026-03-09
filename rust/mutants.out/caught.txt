@@ -1,0 +1,25 @@
+crates/faster-core/src/address.rs:59:41: replace - with /
+crates/faster-core/src/address.rs:62:51: replace - with +
+crates/faster-core/src/address.rs:62:51: replace - with /
+crates/faster-core/src/address.rs:65:47: replace - with +
+crates/faster-core/src/address.rs:65:47: replace - with /
+crates/faster-core/src/address.rs:68:53: replace - with +
+crates/faster-core/src/address.rs:68:53: replace - with /
+crates/faster-core/src/address.rs:72:38: replace << with >>
+crates/faster-core/src/address.rs:72:55: replace - with +
+crates/faster-core/src/address.rs:72:55: replace - with /
+crates/faster-core/src/address.rs:98:9: replace <impl fmt::Debug for Page>::fmt -> fmt::Result with Ok(Default::default())
+crates/faster-core/src/address.rs:104:9: replace <impl fmt::Display for Page>::fmt -> fmt::Result with Ok(Default::default())
+crates/faster-core/src/address.rs:132:9: replace <impl fmt::Debug for Offset>::fmt -> fmt::Result with Ok(Default::default())
+crates/faster-core/src/address.rs:138:9: replace <impl fmt::Display for Offset>::fmt -> fmt::Result with Ok(Default::default())
+crates/faster-core/src/address.rs:190:48: replace - with +
+crates/faster-core/src/address.rs:190:48: replace - with /
+crates/faster-core/src/address.rs:249:18: replace & with | in LogicalAddress::from_raw
+crates/faster-core/src/address.rs:249:18: replace & with ^ in LogicalAddress::from_raw
+crates/faster-core/src/address.rs:255:9: replace LogicalAddress::raw -> u64 with 0
+crates/faster-core/src/address.rs:255:9: replace LogicalAddress::raw -> u64 with 1
+crates/faster-core/src/address.rs:270:22: replace >> with << in LogicalAddress::page
+crates/faster-core/src/address.rs:285:24: replace & with | in LogicalAddress::offset
+crates/faster-core/src/address.rs:285:24: replace & with ^ in LogicalAddress::offset
+crates/faster-core/src/address.rs:304:9: replace LogicalAddress::is_valid -> bool with true
+crates/faster-core/src/address.rs:304:9: replace LogicalAddress::is_valid -> bool with false

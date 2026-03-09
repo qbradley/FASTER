@@ -1,0 +1,21 @@
+--- crates/faster-core/src/address.rs
++++ replace LogicalAddress::raw -> u64 with 1
+@@ -247,17 +247,17 @@
+     #[inline(always)]
+     pub const fn from_raw(raw: u64) -> Self {
+         Self(raw & ADDRESS_MASK)
+     }
+ 
+     /// Returns the raw `u64` representation of this address.
+     #[inline(always)]
+     pub const fn raw(self) -> u64 {
+-        self.0
++        1 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Extracts the page number from this address.
+     ///
+     /// # Examples
+     ///
+     /// ```
+     /// use faster_core::address::{LogicalAddress, Page, Offset};
