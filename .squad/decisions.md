@@ -601,3 +601,10 @@ All agents should reference `TESTING-ARCHITECTURE.md` when:
 **By:** qbradley (via Copilot)
 **What:** hash_layout_bench was broken (1+ hour in debug). Assigned as background task to Legolas. **Resolved this session** — removed 206 lines dead OA prototype code, reduced dataset sizes, re-enabled benches(). Smoke test now 0.15s.
 **Why:** Bench must run in reasonable time to be useful.
+
+---
+
+### 2026-03-09T1755: Decision superseded — Criterion custom main() no longer required
+**By:** qbradley
+**What:** The decision "Criterion Benchmarks Must Use Custom main() for Nextest Compatibility" is **cancelled/superseded**. After Legolas's hash_layout_bench fix (removed dead OA code, reduced dataset sizes) and qbradley's bench integration fix, all criterion benchmarks now work correctly with `cargo nextest run --all-targets` using standard `criterion_main!()`. The custom `main()` with `--bench` flag detection pattern is no longer required for new benchmarks.
+**Why:** The root cause was hash_layout_bench being extraordinarily slow (hours in debug mode), not a fundamental criterion/nextest incompatibility. With the bench fixed, the workaround is unnecessary.
