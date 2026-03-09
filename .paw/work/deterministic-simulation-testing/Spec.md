@@ -109,9 +109,9 @@ Acceptance Scenarios:
 - FR-003: Simulated time abstraction replacing `Instant::now()` and `SystemTime::now()` under simulation cfg, with scheduler-controlled advancement (Stories: P1, P2)
 - FR-004: Deterministic random number generation seeded from scenario seed for all randomness sources including checkpoint tokens (Stories: P1)
 - FR-005: Crash-point injection hooks in checkpoint state machine at every phase transition boundary (Stories: P3)
-- FR-006: Crash-point injection hooks in compaction orchestrator between each phase (K1→K2→K3→K4) (Stories: P3)
+- FR-006: Crash-point injection hooks in compaction orchestrator at each phase boundary and at the critical K3 pointer-swing CAS (6 injection points: before K1, K1→K2, K2→K3, mid-K3 CAS, K3→K4, after K4) (Stories: P3)
 - FR-007: Crash-point injection hooks in recovery flow at each stage boundary (Stories: P3)
-- FR-008: Page-level CRC-32C checksums in hybrid log page headers for torn write detection (Stories: P4)
+- FR-008: Page-level CRC-32C checksums stored as page trailers in hybrid log for torn write detection (Stories: P4)
 - FR-009: Checksum validation during page reads with configurable policy (reject, warn, or repair) (Stories: P4)
 - FR-010: SimulatedDevice enhancement with deterministic callback ordering and controllable completion timing (Stories: P1, P6)
 - FR-011: Expanded FaultConfig supporting allocation failures, latency injection, and epoch drain timeouts (Stories: P6)
@@ -122,7 +122,7 @@ Acceptance Scenarios:
 - FR-016: Integration with `cargo test` via standard `#[test]` functions for individual scenarios (Stories: P1, P2, P3)
 - FR-017: Execution trace logging under simulation mode recording every scheduler decision, I/O operation, and state transition (Stories: P1)
 - FR-018: Channel determinism — `mpsc::channel` operations under simulation must deliver in scheduler-controlled order (Stories: P2)
-- FR-019: Zero production overhead — all simulation instrumentation gated behind `#[cfg(feature = "simulation")]` with zero cost when disabled (Stories: all)
+- FR-019: Zero production overhead — all simulation-only instrumentation (scheduler, crash points, trace logging) gated behind `#[cfg(feature = "simulation")]` with zero cost when disabled. Page CRC-32C checksums (FR-008, FR-009) are a production durability improvement and are always-on, not simulation-gated (Stories: all)
 - FR-020: Existing faster-dst tests (crash_recovery, seed_exploration) continue to pass after enhancement (Stories: all)
 
 ### Key Entities
@@ -133,7 +133,7 @@ Acceptance Scenarios:
 - **CrashPoint**: Named injection site in a state machine where the simulator can trigger a crash (drop all state, run recovery)
 - **ScenarioTemplate**: Declarative specification of workload + fault profile + crash configuration + invariants to check
 - **Campaign**: A sweep of N seeds across M scenario templates, producing a pass/fail report
-- **PageChecksum**: CRC-32C value stored in page header, computed over page payload
+- **PageChecksum**: CRC-32C value stored in page trailer (last 8 bytes of sector-aligned region), computed over page payload
 
 ### Cross-Cutting / Non-Functional
 
@@ -150,7 +150,7 @@ Acceptance Scenarios:
 - SC-003: Crash injection at every checkpoint phase transition (6 transitions × 100 seeds = 600 scenarios) completes with all invariants passing or known-bug identification (FR-005, FR-012)
 - SC-004: Page CRC validation catches 100% of simulated torn writes with zero false positives (FR-008, FR-009)
 - SC-005: A 10,000-seed campaign across 5 scenario templates completes in under 30 minutes on a standard 8-core CI runner (FR-014)
-- SC-006: Production build (`cargo build --release` without simulation feature) shows zero code size or performance difference from baseline (FR-019)
+- SC-006: Production build (`cargo build --release` without simulation feature) shows zero code size or performance difference from baseline for simulation-only instrumentation. CRC-32C checksums are excluded from this criterion as they are a production durability feature with measured overhead < 1% on page flush throughput (FR-019)
 - SC-007: All existing faster-dst tests pass without modification after framework enhancement (FR-020)
 - SC-008: Framework detects at least one previously unknown bug during initial deployment campaign (FR-001, FR-005, FR-006 — stretch goal)
 
@@ -161,7 +161,8 @@ Acceptance Scenarios:
 - Single-threaded cooperative scheduling faithfully models the concurrency bugs that multi-threaded execution would encounter (validated by FoundationDB's decade of production use)
 - The existing `SimulatedDevice` and `SimulatedStorage` architecture is sound and should be extended, not replaced
 - Page header space is available for checksum storage without breaking the on-disk format (or format version will be bumped)
-- The `simulation` feature flag can coexist with `loom` and other existing feature flags without conflicts
+  - **Clarification**: Hybrid log pages have no explicit headers (records start at byte 0). Checksums will be stored in a page trailer using existing sector padding. Format version bumps from 2 to 3.
+- The `simulation` feature flag can coexist with `loom` and other existing feature flags without compile-time conflicts; however, `loom` and `simulation` are effectively mutually exclusive at runtime — loom tests run under loom's executor while simulation tests run under the deterministic scheduler. cfg precedence: `loom` > `simulation` > `std`
 
 ## Scope
 
