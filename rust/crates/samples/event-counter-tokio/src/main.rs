@@ -78,8 +78,8 @@ mod verify;
 mod workload;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -168,11 +168,7 @@ const FASTER_PAGE_SIZE: usize = 1 << 25;
 ///
 /// In the thread version, this would be a dedicated OS thread sleeping
 /// in a loop — wasteful for such a simple job.
-async fn stats_reporter(
-    counters: Arc<LiveCounters>,
-    shutdown: Arc<AtomicBool>,
-    start: Instant,
-) {
+async fn stats_reporter(counters: Arc<LiveCounters>, shutdown: Arc<AtomicBool>, start: Instant) {
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
     ticker.tick().await; // skip first immediate tick
 
@@ -243,11 +239,14 @@ async fn main() {
     eprintln!();
     eprintln!("  runtime:          Tokio (async)");
     eprintln!("  campaigns:        {}", args.campaigns);
-    eprintln!("  events/thread:    {}", if args.events_per_thread > 0 {
-        format!("{}", args.events_per_thread)
-    } else {
-        "unlimited".to_string()
-    });
+    eprintln!(
+        "  events/thread:    {}",
+        if args.events_per_thread > 0 {
+            format!("{}", args.events_per_thread)
+        } else {
+            "unlimited".to_string()
+        }
+    );
     eprintln!("  threads:          {}", args.threads);
     eprintln!("  read %:           {}%", args.read_pct);
     eprintln!("  delete %:         {}%", args.delete_pct);
@@ -290,7 +289,7 @@ async fn main() {
     // Size the hash index to ~2x the key space for low collision rate.
     let hash_index_log2 = ((args.campaigns as f64 * 2.0).log2().ceil() as usize).max(10);
     // Use enough pages to hold the working set in memory.
-    let buffer_size_pages = 16usize.max(4).next_power_of_two();
+    let buffer_size_pages = 16usize.next_power_of_two();
 
     let config = FasterKvConfig {
         hash_index_size_log2: hash_index_log2,
@@ -336,7 +335,9 @@ async fn main() {
     );
     let store = async_kv.store_arc();
 
-    eprintln!("  ✓ FASTER store created (hash_index=2^{hash_index_log2}, pages={buffer_size_pages})");
+    eprintln!(
+        "  ✓ FASTER store created (hash_index=2^{hash_index_log2}, pages={buffer_size_pages})"
+    );
     eprintln!();
 
     // ════════════════════════════════════════════════════════════════

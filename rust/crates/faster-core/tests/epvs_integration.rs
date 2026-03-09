@@ -98,16 +98,34 @@ fn checkpoint_cycle_no_torn_reads() {
             (Phase::Rest, Phase::Prepare, cycle, cycle),
             (Phase::Prepare, Phase::InProgress, cycle, cycle + 1),
             (Phase::InProgress, Phase::WaitFlush, cycle + 1, cycle + 1),
-            (Phase::WaitFlush, Phase::WaitCompletion, cycle + 1, cycle + 1),
-            (Phase::WaitCompletion, Phase::PersistenceCallback, cycle + 1, cycle + 1),
-            (Phase::PersistenceCallback, Phase::Rest, cycle + 1, cycle + 1),
+            (
+                Phase::WaitFlush,
+                Phase::WaitCompletion,
+                cycle + 1,
+                cycle + 1,
+            ),
+            (
+                Phase::WaitCompletion,
+                Phase::PersistenceCallback,
+                cycle + 1,
+                cycle + 1,
+            ),
+            (
+                Phase::PersistenceCallback,
+                Phase::Rest,
+                cycle + 1,
+                cycle + 1,
+            ),
         ];
 
         for (from_phase, to_phase, from_ver, to_ver) in transitions {
             let from = SystemState::new(from_phase, from_ver);
             let to = SystemState::new(to_phase, to_ver);
             let ok = state.try_transition(from, to, || {});
-            assert!(ok, "cycle {cycle}: transition {from_phase} -> {to_phase} failed");
+            assert!(
+                ok,
+                "cycle {cycle}: transition {from_phase} -> {to_phase} failed"
+            );
         }
     }
 
@@ -187,9 +205,24 @@ fn checkpoint_phase_version_consistency() {
         t(Phase::Rest, Phase::Prepare, cycle, cycle);
         t(Phase::Prepare, Phase::InProgress, cycle, cycle + 1);
         t(Phase::InProgress, Phase::WaitFlush, cycle + 1, cycle + 1);
-        t(Phase::WaitFlush, Phase::WaitCompletion, cycle + 1, cycle + 1);
-        t(Phase::WaitCompletion, Phase::PersistenceCallback, cycle + 1, cycle + 1);
-        t(Phase::PersistenceCallback, Phase::Rest, cycle + 1, cycle + 1);
+        t(
+            Phase::WaitFlush,
+            Phase::WaitCompletion,
+            cycle + 1,
+            cycle + 1,
+        );
+        t(
+            Phase::WaitCompletion,
+            Phase::PersistenceCallback,
+            cycle + 1,
+            cycle + 1,
+        );
+        t(
+            Phase::PersistenceCallback,
+            Phase::Rest,
+            cycle + 1,
+            cycle + 1,
+        );
     }
 
     done.store(true, Ordering::Release);
@@ -413,7 +446,10 @@ fn multi_thread_checkpoint_grow_interleave() {
 
         // Verify final state is valid.
         let final_state = state.load(Ordering::Acquire);
-        assert!(!final_state.is_intermediate(), "must not be in intermediate state");
+        assert!(
+            !final_state.is_intermediate(),
+            "must not be in intermediate state"
+        );
         let phase = final_state.phase();
         assert!(
             phase == Phase::Prepare || phase == Phase::PrepareGrow,
@@ -505,10 +541,9 @@ fn stress_concurrent_transitions(num_drivers: usize, cycles_per_driver: usize) {
                         current,
                         SystemState::new(next_phase, next_version),
                         || {},
-                    ) {
-                        if next_phase == Phase::Rest {
-                            cycles.fetch_add(1, Ordering::Relaxed);
-                        }
+                    ) && next_phase == Phase::Rest
+                    {
+                        cycles.fetch_add(1, Ordering::Relaxed);
                     }
                     // CAS failure is expected under contention — just retry.
                 }
@@ -656,11 +691,11 @@ fn stress_mixed_checkpoint_grow() {
 // 5. FasterKv-level EPVS: concurrent operations + checkpoint
 // ═══════════════════════════════════════════════════════════════════════
 
+use faster_core::InMemoryDevice;
 use faster_core::grow::GrowConfig;
 use faster_core::hybrid_log::EvictionPolicy;
 use faster_core::status::OperationStatus;
-use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions, CounterFunctions};
-use faster_core::InMemoryDevice;
+use faster_core::store::{CounterFunctions, FasterKv, FasterKvConfig, SimpleFunctions};
 
 /// Creates a store sized for concurrent tests.
 fn concurrent_test_store() -> Arc<FasterKv<SimpleFunctions<u64, u64>>> {
@@ -780,10 +815,7 @@ fn concurrent_upserts_during_checkpoint() {
         barrier_ckpt.wait();
         // Give writers a moment to start, then checkpoint.
         thread::yield_now();
-        store_ckpt.checkpoint(
-            &dir_path,
-            faster_core::checkpoint::CheckpointType::FoldOver,
-        )
+        store_ckpt.checkpoint(&dir_path, faster_core::checkpoint::CheckpointType::FoldOver)
     });
 
     for h in writer_handles {
@@ -806,7 +838,11 @@ fn concurrent_upserts_during_checkpoint() {
         for i in 0..1_000u64 {
             let mut out: Option<u64> = None;
             let status = store.read(&mut s, &i, &0u64, &mut out, ());
-            assert_eq!(status, OperationStatus::Ok, "key {i} missing after checkpoint");
+            assert_eq!(
+                status,
+                OperationStatus::Ok,
+                "key {i} missing after checkpoint"
+            );
             assert_eq!(out, Some(i * 7), "key {i} value corrupted after checkpoint");
         }
         store.dispose_session(s);
@@ -851,10 +887,8 @@ fn concurrent_reads_during_checkpoint() {
                 for i in 0..N {
                     let mut out: Option<u64> = None;
                     let status = store.read(&mut s, &i, &0u64, &mut out, ());
-                    if status == OperationStatus::Ok {
-                        if out != Some(i * 11) {
-                            corrupt.fetch_add(1, Ordering::Relaxed);
-                        }
+                    if status == OperationStatus::Ok && out != Some(i * 11) {
+                        corrupt.fetch_add(1, Ordering::Relaxed);
                     }
                     // Pending is acceptable (page eviction)
                 }
@@ -870,10 +904,7 @@ fn concurrent_reads_during_checkpoint() {
     let barrier_ckpt = Arc::clone(&barrier);
     let ckpt_handle = thread::spawn(move || {
         barrier_ckpt.wait();
-        let _ = store_ckpt.checkpoint(
-            &dir_path,
-            faster_core::checkpoint::CheckpointType::FoldOver,
-        );
+        let _ = store_ckpt.checkpoint(&dir_path, faster_core::checkpoint::CheckpointType::FoldOver);
     });
 
     for h in reader_handles {
@@ -956,10 +987,7 @@ fn concurrent_rmw_during_checkpoint() {
     let ckpt_handle = thread::spawn(move || {
         barrier_ckpt.wait();
         thread::yield_now();
-        let _ = store_ckpt.checkpoint(
-            &dir_path,
-            faster_core::checkpoint::CheckpointType::FoldOver,
-        );
+        let _ = store_ckpt.checkpoint(&dir_path, faster_core::checkpoint::CheckpointType::FoldOver);
     });
 
     for h in rmw_handles {
@@ -976,17 +1004,17 @@ fn concurrent_rmw_during_checkpoint() {
             let mut out: i64 = 0;
             let status = store.read(&mut s, &k, &0i64, &mut out, ());
             assert_eq!(status, OperationStatus::Ok, "key {k} missing after RMW");
-            assert!(out >= 0, "key {k} has negative count {out} — data corruption!");
+            assert!(
+                out >= 0,
+                "key {k} has negative count {out} — data corruption!"
+            );
             total += out;
         }
         store.dispose_session(s);
     }
 
     let max_possible = (THREADS * OPS_PER_THREAD) as i64;
-    assert!(
-        total > 0,
-        "at least some RMW operations must succeed"
-    );
+    assert!(total > 0, "at least some RMW operations must succeed");
     assert!(
         total <= max_possible,
         "total {total} exceeds maximum possible {max_possible} — double-counting corruption!"
@@ -1061,11 +1089,7 @@ fn concurrent_upserts_during_grow() {
                 let mut out: Option<u64> = None;
                 let status = store.read(&mut s, &key, &0u64, &mut out, ());
                 if status == OperationStatus::Ok {
-                    assert_eq!(
-                        out,
-                        Some(key * 5),
-                        "key {key} value corrupted after grow"
-                    );
+                    assert_eq!(out, Some(key * 5), "key {key} value corrupted after grow");
                     found += 1;
                 }
             }
@@ -1174,7 +1198,8 @@ fn stress_operations_with_checkpoints(
         .collect();
 
     for h in handles {
-        h.join().expect("worker panicked — possible deadlock or data corruption");
+        h.join()
+            .expect("worker panicked — possible deadlock or data corruption");
     }
 
     let upserts = total_upserts.load(Ordering::Relaxed);
@@ -1227,9 +1252,24 @@ fn intermediate_window_is_finite() {
                 (Phase::Rest, Phase::Prepare, from_ver, to_ver),
                 (Phase::Prepare, Phase::InProgress, to_ver, to_ver + 1),
                 (Phase::InProgress, Phase::WaitFlush, to_ver + 1, to_ver + 1),
-                (Phase::WaitFlush, Phase::WaitCompletion, to_ver + 1, to_ver + 1),
-                (Phase::WaitCompletion, Phase::PersistenceCallback, to_ver + 1, to_ver + 1),
-                (Phase::PersistenceCallback, Phase::Rest, to_ver + 1, to_ver + 1),
+                (
+                    Phase::WaitFlush,
+                    Phase::WaitCompletion,
+                    to_ver + 1,
+                    to_ver + 1,
+                ),
+                (
+                    Phase::WaitCompletion,
+                    Phase::PersistenceCallback,
+                    to_ver + 1,
+                    to_ver + 1,
+                ),
+                (
+                    Phase::PersistenceCallback,
+                    Phase::Rest,
+                    to_ver + 1,
+                    to_ver + 1,
+                ),
             ];
 
             for (from_p, to_p, fv, tv) in transitions {
@@ -1243,10 +1283,12 @@ fn intermediate_window_is_finite() {
         }
     });
 
-    let obs = waiter.join().expect("waiter timed out — intermediate window not finite");
+    let obs = waiter
+        .join()
+        .expect("waiter timed out — intermediate window not finite");
     driver.join().expect("driver panicked");
 
-    assert_eq!(obs, num_transitions as u64, "all waits should complete");
+    assert_eq!(obs, num_transitions, "all waits should complete");
 }
 
 /// Verifies that multiple concurrent drivers can each observe
@@ -1291,9 +1333,24 @@ fn concurrent_wait_non_intermediate() {
         t(Phase::Rest, Phase::Prepare, cycle, cycle);
         t(Phase::Prepare, Phase::InProgress, cycle, cycle + 1);
         t(Phase::InProgress, Phase::WaitFlush, cycle + 1, cycle + 1);
-        t(Phase::WaitFlush, Phase::WaitCompletion, cycle + 1, cycle + 1);
-        t(Phase::WaitCompletion, Phase::PersistenceCallback, cycle + 1, cycle + 1);
-        t(Phase::PersistenceCallback, Phase::Rest, cycle + 1, cycle + 1);
+        t(
+            Phase::WaitFlush,
+            Phase::WaitCompletion,
+            cycle + 1,
+            cycle + 1,
+        );
+        t(
+            Phase::WaitCompletion,
+            Phase::PersistenceCallback,
+            cycle + 1,
+            cycle + 1,
+        );
+        t(
+            Phase::PersistenceCallback,
+            Phase::Rest,
+            cycle + 1,
+            cycle + 1,
+        );
     }
 
     done.store(true, Ordering::Release);
@@ -1699,9 +1756,24 @@ fn sequential_transitions_no_aba() {
             (Phase::Rest, Phase::Prepare, cycle, cycle),
             (Phase::Prepare, Phase::InProgress, cycle, cycle + 1),
             (Phase::InProgress, Phase::WaitFlush, cycle + 1, cycle + 1),
-            (Phase::WaitFlush, Phase::WaitCompletion, cycle + 1, cycle + 1),
-            (Phase::WaitCompletion, Phase::PersistenceCallback, cycle + 1, cycle + 1),
-            (Phase::PersistenceCallback, Phase::Rest, cycle + 1, cycle + 1),
+            (
+                Phase::WaitFlush,
+                Phase::WaitCompletion,
+                cycle + 1,
+                cycle + 1,
+            ),
+            (
+                Phase::WaitCompletion,
+                Phase::PersistenceCallback,
+                cycle + 1,
+                cycle + 1,
+            ),
+            (
+                Phase::PersistenceCallback,
+                Phase::Rest,
+                cycle + 1,
+                cycle + 1,
+            ),
         ];
 
         for (from_p, to_p, fv, tv) in transitions {

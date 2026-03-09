@@ -40,8 +40,7 @@
 
 use faster_core::record::{FixedSizeValue, Value};
 use faster_core::status::OperationStatus;
-use faster_core::store::{DeleteInfo, ReadInfo, RmwInfo, UpsertInfo};
-use faster_core::store::{Functions, RmwInPlaceResult};
+use faster_core::store::{Functions, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo};
 
 // ── Event Types ─────────────────────────────────────────────────────────
 

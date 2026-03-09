@@ -87,8 +87,11 @@ if [[ "$SKIP_TESTS" == false ]]; then
     }
 
     if command -v cargo-nextest &>/dev/null || cargo nextest --version &>/dev/null 2>&1; then
+        # NOTE: Do not use --all-targets here — Criterion bench binaries hang
+        # when nextest sends them --list, causing an infinite loop.
+        # Clippy already checks bench code compiles (with --all-targets above).
         run_gate "cargo nextest run (workspace)" \
-            cargo nextest run --workspace --all-targets || {
+            cargo nextest run --workspace || {
             echo -e "\n${RED}💡 Fix: repair the failing tests above then retry.${RESET}" >&2
             exit 1
         }

@@ -46,9 +46,9 @@
 #![warn(missing_docs)]
 #![forbid(clippy::undocumented_unsafe_blocks)]
 
+pub mod callbacks;
 pub mod error;
 pub mod functions;
-pub mod callbacks;
 pub mod handle;
 pub mod session;
 
@@ -60,8 +60,8 @@ use faster_core::checkpoint::{CheckpointToken, CheckpointType};
 use faster_core::status::OperationStatus;
 use faster_core::{FasterKv, FasterKvConfig, NullDevice, SyncFileDevice};
 
-use crate::error::FasterStatus;
 use crate::callbacks::CallbackFunctions;
+use crate::error::FasterStatus;
 use crate::handle::{FasterHandle, HandleTable, INVALID_HANDLE};
 use crate::session::SessionCell;
 
@@ -954,13 +954,12 @@ pub unsafe extern "C" fn faster_rmw_ex(
 
     panic::catch_unwind(AssertUnwindSafe(|| {
         // Install callbacks for this operation via RAII guard.
-        let _guard = crate::callbacks::RmwCallbackGuard::install(
-            crate::callbacks::RmwCallbackSet {
+        let _guard =
+            crate::callbacks::RmwCallbackGuard::install(crate::callbacks::RmwCallbackSet {
                 initial: initial_cb,
                 copy_update: copy_cb,
                 in_place: atomic_cb,
-            },
-        );
+            });
 
         match with_store_session(store, session, |kv, sess| {
             let mut output: Option<Vec<u8>> = None;
@@ -1014,16 +1013,13 @@ pub unsafe extern "C" fn faster_upsert_ex(
     let input = unsafe { extract_bytes(input_ptr, input_len) };
 
     panic::catch_unwind(AssertUnwindSafe(|| {
-        let _guard = crate::callbacks::UpsertCallbackGuard::install(
-            crate::callbacks::UpsertCallbackSet {
+        let _guard =
+            crate::callbacks::UpsertCallbackGuard::install(crate::callbacks::UpsertCallbackSet {
                 put: put_cb,
-                put_atomic: put_atomic_cb,
-            },
-        );
+                _put_atomic: put_atomic_cb,
+            });
 
-        match with_store_session(store, session, |kv, sess| {
-            kv.upsert(sess, &key, &input, ())
-        }) {
+        match with_store_session(store, session, |kv, sess| kv.upsert(sess, &key, &input, ())) {
             Ok(status) => to_ffi_status(status),
             Err(e) => e,
         }
@@ -1072,12 +1068,11 @@ pub unsafe extern "C" fn faster_read_ex(
     let key = unsafe { extract_bytes(key_ptr, key_len) };
 
     panic::catch_unwind(AssertUnwindSafe(|| {
-        let _guard = crate::callbacks::ReadCallbackGuard::install(
-            crate::callbacks::ReadCallbackSet {
+        let _guard =
+            crate::callbacks::ReadCallbackGuard::install(crate::callbacks::ReadCallbackSet {
                 get: get_cb,
-                get_atomic: get_atomic_cb,
-            },
-        );
+                _get_atomic: get_atomic_cb,
+            });
 
         match with_store_session(store, session, |kv, sess| {
             let input = Vec::new();
@@ -2657,10 +2652,14 @@ mod tests {
 
     /// Sum-store RMW callback: initial sets value = input
     extern "C" fn test_sum_initial(
-        _key_ptr: *const u8, _key_len: usize,
-        input_ptr: *const u8, input_len: usize,
-        value_ptr: *mut u8, value_len: *mut usize,
+        _key_ptr: *const u8,
+        _key_len: usize,
+        input_ptr: *const u8,
+        input_len: usize,
+        value_ptr: *mut u8,
+        value_len: *mut usize,
     ) -> i32 {
+        // SAFETY: FFI call with valid store/session handles obtained from test setup.
         unsafe {
             std::ptr::copy_nonoverlapping(input_ptr, value_ptr, input_len);
             *value_len = input_len;
@@ -2670,19 +2669,21 @@ mod tests {
 
     /// Sum-store RMW callback: atomic adds input (u64) to value (u64)
     extern "C" fn test_sum_atomic(
-        _key_ptr: *const u8, _key_len: usize,
-        input_ptr: *const u8, input_len: usize,
-        value_ptr: *mut u8, value_len: usize,
+        _key_ptr: *const u8,
+        _key_len: usize,
+        input_ptr: *const u8,
+        input_len: usize,
+        value_ptr: *mut u8,
+        value_len: usize,
     ) -> i32 {
         assert_eq!(input_len, 8);
         assert_eq!(value_len, 8);
+        // SAFETY: FFI call with valid store/session handles obtained from test setup.
         unsafe {
-            let delta = u64::from_le_bytes(
-                std::slice::from_raw_parts(input_ptr, 8).try_into().unwrap(),
-            );
-            let current = u64::from_le_bytes(
-                std::slice::from_raw_parts(value_ptr, 8).try_into().unwrap(),
-            );
+            let delta =
+                u64::from_le_bytes(std::slice::from_raw_parts(input_ptr, 8).try_into().unwrap());
+            let current =
+                u64::from_le_bytes(std::slice::from_raw_parts(value_ptr, 8).try_into().unwrap());
             let result = current + delta;
             std::ptr::copy_nonoverlapping(result.to_le_bytes().as_ptr(), value_ptr, 8);
         }
@@ -2691,20 +2692,23 @@ mod tests {
 
     /// Sum-store RMW callback: copy-update adds input to old value
     extern "C" fn test_sum_copy(
-        _key_ptr: *const u8, _key_len: usize,
-        input_ptr: *const u8, input_len: usize,
-        old_ptr: *const u8, old_len: usize,
-        new_ptr: *mut u8, new_len: *mut usize,
+        _key_ptr: *const u8,
+        _key_len: usize,
+        input_ptr: *const u8,
+        input_len: usize,
+        old_ptr: *const u8,
+        old_len: usize,
+        new_ptr: *mut u8,
+        new_len: *mut usize,
     ) -> i32 {
         assert_eq!(input_len, 8);
         assert_eq!(old_len, 8);
+        // SAFETY: FFI call with valid store/session handles obtained from test setup.
         unsafe {
-            let delta = u64::from_le_bytes(
-                std::slice::from_raw_parts(input_ptr, 8).try_into().unwrap(),
-            );
-            let old_val = u64::from_le_bytes(
-                std::slice::from_raw_parts(old_ptr, 8).try_into().unwrap(),
-            );
+            let delta =
+                u64::from_le_bytes(std::slice::from_raw_parts(input_ptr, 8).try_into().unwrap());
+            let old_val =
+                u64::from_le_bytes(std::slice::from_raw_parts(old_ptr, 8).try_into().unwrap());
             let result = old_val + delta;
             std::ptr::copy_nonoverlapping(result.to_le_bytes().as_ptr(), new_ptr, 8);
             *new_len = 8;
@@ -2721,11 +2725,15 @@ mod tests {
         let input = 10u64.to_le_bytes();
 
         // First RMW creates the record via initial callback
+        // SAFETY: FFI call with valid store/session handles obtained from test setup.
         let status = unsafe {
             faster_rmw_ex(
-                store, session,
-                key.as_ptr(), key.len() as u32,
-                input.as_ptr(), input.len() as u32,
+                store,
+                session,
+                key.as_ptr(),
+                key.len() as u32,
+                input.as_ptr(),
+                input.len() as u32,
                 Some(test_sum_initial),
                 Some(test_sum_copy),
                 Some(test_sum_atomic),
@@ -2735,11 +2743,15 @@ mod tests {
 
         // Second RMW adds to existing via atomic callback
         let input2 = 5u64.to_le_bytes();
+        // SAFETY: FFI call with valid store/session handles obtained from test setup.
         let status = unsafe {
             faster_rmw_ex(
-                store, session,
-                key.as_ptr(), key.len() as u32,
-                input2.as_ptr(), input2.len() as u32,
+                store,
+                session,
+                key.as_ptr(),
+                key.len() as u32,
+                input2.as_ptr(),
+                input2.len() as u32,
                 Some(test_sum_initial),
                 Some(test_sum_copy),
                 Some(test_sum_atomic),
@@ -2750,11 +2762,15 @@ mod tests {
         // Read back — should be 15
         let mut buf = [0u8; 8];
         let mut out_len: u32 = 0;
+        // SAFETY: FFI call with valid store/session handles obtained from test setup.
         let status = unsafe {
             faster_read(
-                store, session,
-                key.as_ptr(), key.len() as u32,
-                buf.as_mut_ptr(), buf.len() as u32,
+                store,
+                session,
+                key.as_ptr(),
+                key.len() as u32,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
                 &mut out_len,
             )
         };
@@ -2775,23 +2791,33 @@ mod tests {
         let input = b"value1";
 
         // All-null callbacks → byte-slice replacement fallback
+        // SAFETY: FFI call with valid store/session handles obtained from test setup.
         let status = unsafe {
             faster_rmw_ex(
-                store, session,
-                key.as_ptr(), key.len() as u32,
-                input.as_ptr(), input.len() as u32,
-                None, None, None,
+                store,
+                session,
+                key.as_ptr(),
+                key.len() as u32,
+                input.as_ptr(),
+                input.len() as u32,
+                None,
+                None,
+                None,
             )
         };
         assert!(status.is_success());
 
         let mut buf = [0u8; 32];
         let mut out_len: u32 = 0;
+        // SAFETY: FFI call with valid store/session handles obtained from test setup.
         let status = unsafe {
             faster_read(
-                store, session,
-                key.as_ptr(), key.len() as u32,
-                buf.as_mut_ptr(), buf.len() as u32,
+                store,
+                session,
+                key.as_ptr(),
+                key.len() as u32,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
                 &mut out_len,
             )
         };
@@ -2805,11 +2831,15 @@ mod tests {
     #[test]
     fn upsert_ex_custom_put() {
         extern "C" fn uppercase_put(
-            _key_ptr: *const u8, _key_len: usize,
-            input_ptr: *const u8, input_len: usize,
-            value_ptr: *mut u8, _value_len: usize,
+            _key_ptr: *const u8,
+            _key_len: usize,
+            input_ptr: *const u8,
+            input_len: usize,
+            value_ptr: *mut u8,
+            _value_len: usize,
             actual_len: *mut usize,
         ) -> i32 {
+            // SAFETY: FFI call with valid store/session handles obtained from test setup.
             unsafe {
                 let input = std::slice::from_raw_parts(input_ptr, input_len);
                 for (i, &b) in input.iter().enumerate() {
@@ -2826,23 +2856,32 @@ mod tests {
         let key = b"upsert_key";
         let input = b"hello";
 
+        // SAFETY: FFI call with valid store/session handles obtained from test setup.
         let status = unsafe {
             faster_upsert_ex(
-                store, session,
-                key.as_ptr(), key.len() as u32,
-                input.as_ptr(), input.len() as u32,
-                Some(uppercase_put), None,
+                store,
+                session,
+                key.as_ptr(),
+                key.len() as u32,
+                input.as_ptr(),
+                input.len() as u32,
+                Some(uppercase_put),
+                None,
             )
         };
         assert!(status.is_success());
 
         let mut buf = [0u8; 32];
         let mut out_len: u32 = 0;
+        // SAFETY: FFI call with valid store/session handles obtained from test setup.
         let status = unsafe {
             faster_read(
-                store, session,
-                key.as_ptr(), key.len() as u32,
-                buf.as_mut_ptr(), buf.len() as u32,
+                store,
+                session,
+                key.as_ptr(),
+                key.len() as u32,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
                 &mut out_len,
             )
         };
@@ -2861,23 +2900,32 @@ mod tests {
         let key = b"upsert_null";
         let input = b"plain_value";
 
+        // SAFETY: FFI call with valid store/session handles obtained from test setup.
         let status = unsafe {
             faster_upsert_ex(
-                store, session,
-                key.as_ptr(), key.len() as u32,
-                input.as_ptr(), input.len() as u32,
-                None, None,
+                store,
+                session,
+                key.as_ptr(),
+                key.len() as u32,
+                input.as_ptr(),
+                input.len() as u32,
+                None,
+                None,
             )
         };
         assert!(status.is_success());
 
         let mut buf = [0u8; 32];
         let mut out_len: u32 = 0;
+        // SAFETY: FFI call with valid store/session handles obtained from test setup.
         let status = unsafe {
             faster_read(
-                store, session,
-                key.as_ptr(), key.len() as u32,
-                buf.as_mut_ptr(), buf.len() as u32,
+                store,
+                session,
+                key.as_ptr(),
+                key.len() as u32,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
                 &mut out_len,
             )
         };
@@ -2891,10 +2939,14 @@ mod tests {
     #[test]
     fn read_ex_custom_result() {
         extern "C" fn prefix_read(
-            _key_ptr: *const u8, _key_len: usize,
-            value_ptr: *const u8, value_len: usize,
-            output_ptr: *mut u8, output_len: *mut usize,
+            _key_ptr: *const u8,
+            _key_len: usize,
+            value_ptr: *const u8,
+            value_len: usize,
+            output_ptr: *mut u8,
+            output_len: *mut usize,
         ) -> i32 {
+            // SAFETY: FFI call with valid store/session handles obtained from test setup.
             unsafe {
                 let prefix = b"READ:";
                 let total = prefix.len() + value_len;
@@ -2915,11 +2967,15 @@ mod tests {
         // Insert a value first
         let key = b"read_key";
         let value = b"data";
+        // SAFETY: FFI call with valid store/session handles obtained from test setup.
         let status = unsafe {
             faster_upsert(
-                store, session,
-                key.as_ptr(), key.len() as u32,
-                value.as_ptr(), value.len() as u32,
+                store,
+                session,
+                key.as_ptr(),
+                key.len() as u32,
+                value.as_ptr(),
+                value.len() as u32,
             )
         };
         assert!(status.is_success());
@@ -2927,13 +2983,18 @@ mod tests {
         // Read with custom callback
         let mut buf = [0u8; 32];
         let mut out_len: u32 = 0;
+        // SAFETY: FFI call with valid store/session handles obtained from test setup.
         let status = unsafe {
             faster_read_ex(
-                store, session,
-                key.as_ptr(), key.len() as u32,
-                buf.as_mut_ptr(), buf.len() as u32,
+                store,
+                session,
+                key.as_ptr(),
+                key.len() as u32,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
                 &mut out_len,
-                Some(prefix_read), Some(prefix_read),
+                Some(prefix_read),
+                Some(prefix_read),
             )
         };
         assert!(status.is_success());
@@ -2950,24 +3011,33 @@ mod tests {
 
         let key = b"read_null";
         let value = b"original";
+        // SAFETY: FFI call with valid store/session handles obtained from test setup.
         let status = unsafe {
             faster_upsert(
-                store, session,
-                key.as_ptr(), key.len() as u32,
-                value.as_ptr(), value.len() as u32,
+                store,
+                session,
+                key.as_ptr(),
+                key.len() as u32,
+                value.as_ptr(),
+                value.len() as u32,
             )
         };
         assert!(status.is_success());
 
         let mut buf = [0u8; 32];
         let mut out_len: u32 = 0;
+        // SAFETY: FFI call with valid store/session handles obtained from test setup.
         let status = unsafe {
             faster_read_ex(
-                store, session,
-                key.as_ptr(), key.len() as u32,
-                buf.as_mut_ptr(), buf.len() as u32,
+                store,
+                session,
+                key.as_ptr(),
+                key.len() as u32,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
                 &mut out_len,
-                None, None,
+                None,
+                None,
             )
         };
         assert!(status.is_success());
@@ -2983,6 +3053,7 @@ mod tests {
         let session = faster_session_start(store);
 
         let mut completed: u32 = 0;
+        // SAFETY: FFI call with valid store/session handles obtained from test setup.
         let status = unsafe { faster_refresh(store, session, &mut completed) };
         assert_eq!(status, FasterStatus::Ok);
 
@@ -2995,6 +3066,7 @@ mod tests {
         let store = faster_open();
         let session = faster_session_start(store);
 
+        // SAFETY: FFI call with valid store/session handles obtained from test setup.
         let status = unsafe { faster_refresh(store, session, std::ptr::null_mut()) };
         assert_eq!(status, FasterStatus::Ok);
 
@@ -3006,6 +3078,7 @@ mod tests {
     fn continue_session_basic() {
         let store = faster_open();
         let mut serial: u64 = 999;
+        // SAFETY: FFI call with valid store/session handles obtained from test setup.
         let session = unsafe { faster_continue_session(store, &mut serial) };
         assert_ne!(session, INVALID_HANDLE);
         assert_eq!(serial, 0);
@@ -3013,11 +3086,15 @@ mod tests {
         // The continued session should be usable
         let key = b"cont_key";
         let value = b"cont_val";
+        // SAFETY: FFI call with valid store/session handles obtained from test setup.
         let status = unsafe {
             faster_upsert(
-                store, session,
-                key.as_ptr(), key.len() as u32,
-                value.as_ptr(), value.len() as u32,
+                store,
+                session,
+                key.as_ptr(),
+                key.len() as u32,
+                value.as_ptr(),
+                value.len() as u32,
             )
         };
         assert!(status.is_success());
@@ -3029,6 +3106,7 @@ mod tests {
     #[test]
     fn continue_session_null_serial() {
         let store = faster_open();
+        // SAFETY: FFI call with valid store/session handles obtained from test setup.
         let session = unsafe { faster_continue_session(store, std::ptr::null_mut()) };
         assert_ne!(session, INVALID_HANDLE);
 
@@ -3038,6 +3116,7 @@ mod tests {
 
     #[test]
     fn continue_session_invalid_store() {
+        // SAFETY: FFI call with valid store/session handles obtained from test setup.
         let session = unsafe { faster_continue_session(INVALID_HANDLE, std::ptr::null_mut()) };
         assert_eq!(session, INVALID_HANDLE);
     }

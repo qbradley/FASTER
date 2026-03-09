@@ -101,15 +101,14 @@ impl OpenAddressingTable {
             let current = self.slots[idx].entry.load(Ordering::Relaxed);
             if current == 0 {
                 // Empty slot — try to claim it.
-                match self.slots[idx].entry.compare_exchange(
-                    0,
-                    packed,
-                    Ordering::Release,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => return,
-                    Err(_) => {} // Lost race, continue probing.
+                if self.slots[idx]
+                    .entry
+                    .compare_exchange(0, packed, Ordering::Release, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    return;
                 }
+                // Lost race, continue probing.
             }
             idx = ((idx as u64 + 1) & self.mask) as usize;
         }
@@ -144,9 +143,7 @@ impl OpenAddressingTable {
         loop {
             // Prefetch the next probe position.
             let next_idx = ((idx as u64 + 1) & self.mask) as usize;
-            faster_core::hash::prefetch::prefetch_read(
-                &self.slots[next_idx] as *const OASlot,
-            );
+            faster_core::hash::prefetch::prefetch_read(&self.slots[next_idx] as *const OASlot);
 
             let packed = self.slots[idx].entry.load(Ordering::Acquire);
             if packed == 0 {
@@ -175,9 +172,7 @@ struct BenchSetup {
 impl BenchSetup {
     fn new(log2_size: u32, num_keys: usize) -> Self {
         // Generate deterministic key hashes.
-        let hashes: Vec<u64> = (0..num_keys as u64)
-            .map(|k| faster_hash_u64(k))
-            .collect();
+        let hashes: Vec<u64> = (0..num_keys as u64).map(faster_hash_u64).collect();
         let key_hashes: Vec<KeyHash> = hashes.iter().map(|&h| KeyHash::new(h)).collect();
 
         // FASTER multi-slot table.
@@ -187,11 +182,8 @@ impl BenchSetup {
             let result = faster_table.find_or_create_entry(kh, addr);
             if result.created {
                 // Commit the tentative entry.
-                let committed = faster_core::hash_bucket::HashBucketEntry::new(
-                    result.entry.tag(),
-                    addr,
-                    false,
-                );
+                let committed =
+                    faster_core::hash_bucket::HashBucketEntry::new(result.entry.tag(), addr, false);
                 faster_table.update_entry(result.slot, result.entry, committed);
             }
         }

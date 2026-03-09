@@ -116,7 +116,15 @@ pub trait Functions: Send + Sync + 'static {
 
     fn rmw_need_initial_update(&self, _key: &Self::Key, _input: &Self::Input, _info: &RmwInfo) -> bool { true }
 
-    fn rmw_initial(&self, key: &Self::Key, input: &Self::Input, value: &mut Self::Value, output: &mut Self::Output, info: &RmwInfo);
+    /// Decide whether to create a new record when the key is not found.
+    fn rmw_need_initial_update(
+        &self,
+        _key: &Self::Key,
+        _input: &Self::Input,
+        _info: &RmwInfo,
+    ) -> bool {
+        true
+    }
 
     fn rmw_in_place(&self, key: &Self::Key, input: &Self::Input, value: &mut Self::Value, output: &mut Self::Output, info: &RmwInfo) -> RmwInPlaceResult;
 
@@ -259,8 +267,27 @@ mod tests {
         let f = SimpleFunctions::<u64, u64>::new();
         let mut output: Option<u64> = None;
         let mut value = 0u64;
-        f.upsert(&1u64, &mut value, &100u64, None, &mut output, &dummy_upsert_info());
+        f.upsert(
+            &key,
+            &mut value,
+            &100u64,
+            None,
+            &mut output,
+            &dummy_upsert_info(),
+        );
         assert_eq!(value, 100);
+
+        // Upsert with old value (in-place update).
+        let old = 100u64;
+        f.upsert(
+            &key,
+            &mut value,
+            &200u64,
+            Some(&old),
+            &mut output,
+            &dummy_upsert_info(),
+        );
+        assert_eq!(value, 200);
     }
 
     #[test]
@@ -277,7 +304,14 @@ mod tests {
         let old_value = 20u64;
         assert!(f.rmw_need_copy_update(&1u64, &30u64, &old_value, &dummy_rmw_info()));
         let mut new_value = 0u64;
-        f.rmw_copy_update(&1u64, &30u64, &old_value, &mut new_value, &mut output, &dummy_rmw_info());
+        f.rmw_copy_update(
+            &key,
+            &30u64,
+            &old_value,
+            &mut new_value,
+            &mut output,
+            &dummy_rmw_info(),
+        );
         assert_eq!(new_value, 30);
     }
 
@@ -306,7 +340,14 @@ mod tests {
         assert_eq!(result, RmwInPlaceResult::InPlaceOk);
         assert_eq!(value, 150);
         let mut new_value = 0i64;
-        f.rmw_copy_update(&42u64, &25i64, &value, &mut new_value, &mut output, &dummy_rmw_info());
+        f.rmw_copy_update(
+            &key,
+            &25i64,
+            &value,
+            &mut new_value,
+            &mut output,
+            &dummy_rmw_info(),
+        );
         assert_eq!(new_value, 175);
     }
 
@@ -370,7 +411,14 @@ mod tests {
         let f = CounterFunctions::<u64>::new();
         let mut value = 0i64;
         let mut output = 0i64;
-        f.upsert(&1u64, &mut value, &99i64, None, &mut output, &dummy_upsert_info());
+        f.upsert(
+            &1u64,
+            &mut value,
+            &99i64,
+            None,
+            &mut output,
+            &dummy_upsert_info(),
+        );
         assert_eq!(value, 99);
     }
 
@@ -391,7 +439,17 @@ mod tests {
         let value_ptr = buf.as_mut_ptr();
         let value_len = core::mem::size_of::<u64>();
         let mut output: Option<u64> = None;
-        unsafe { f.upsert_in_place_raw(&1u64, value_ptr, value_len, &42u64, &mut output, &dummy_upsert_info()); }
+        // SAFETY: `value_ptr` and `value_len` refer to a valid, aligned `u64` buffer on the stack.
+        unsafe {
+            f.upsert_in_place_raw(
+                &1u64,
+                value_ptr,
+                value_len,
+                &42u64,
+                &mut output,
+                &dummy_upsert_info(),
+            );
+        }
         assert_eq!(u64::from_le_bytes(buf), 42);
     }
 
@@ -402,7 +460,17 @@ mod tests {
         let value_ptr = buf.as_mut_ptr();
         let value_len = core::mem::size_of::<u64>();
         let mut output: Option<u64> = None;
-        let result = unsafe { f.rmw_in_place_raw(&1u64, value_ptr, value_len, &99u64, &mut output, &dummy_rmw_info()) };
+        // SAFETY: `value_ptr` and `value_len` refer to a valid, aligned `u64` buffer on the stack.
+        let result = unsafe {
+            f.rmw_in_place_raw(
+                &1u64,
+                value_ptr,
+                value_len,
+                &99u64,
+                &mut output,
+                &dummy_rmw_info(),
+            )
+        };
         assert_eq!(result, RmwInPlaceResult::InPlaceOk);
         assert_eq!(u64::from_le_bytes(buf), 99);
     }
@@ -414,7 +482,17 @@ mod tests {
         let value_ptr = buf.as_mut_ptr();
         let value_len = core::mem::size_of::<u32>();
         let mut output: Option<u32> = None;
-        unsafe { f.upsert_in_place_raw(&1u64, value_ptr, value_len, &12345u32, &mut output, &dummy_upsert_info()); }
+        // SAFETY: `value_ptr` and `value_len` refer to a valid, aligned `u32` buffer on the stack.
+        unsafe {
+            f.upsert_in_place_raw(
+                &1u64,
+                value_ptr,
+                value_len,
+                &12345u32,
+                &mut output,
+                &dummy_upsert_info(),
+            );
+        }
         assert_eq!(u32::from_le_bytes(buf), 12345);
     }
 

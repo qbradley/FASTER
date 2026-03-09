@@ -506,7 +506,6 @@ impl<F: Functions> FasterKv<F> {
         UnsafeContext::new(session)
     }
 
-
     // -- Batch Methods --
 
     /// Execute a batch of reads with hash-bucket prefetching.
@@ -1207,8 +1206,13 @@ impl<F: Functions> FasterKv<F> {
                 let mut output = F::Output::default();
 
                 if let Some(ref input) = cio.operation.input {
-                    self.functions
-                        .read(&cio.operation.key, &value, input, &mut output, &ReadInfo::new(0, cio.operation.address, ri));
+                    self.functions.read(
+                        &cio.operation.key,
+                        &value,
+                        input,
+                        &mut output,
+                        &ReadInfo::new(0, cio.operation.address, ri),
+                    );
                 }
 
                 Some((output, cio.operation.context))
@@ -1267,8 +1271,14 @@ impl<F: Functions> FasterKv<F> {
                     .input
                     .as_ref()
                     .expect("upsert pending must have input");
-                self.functions
-                    .upsert(key, &mut new_val, input, old_ref, &mut output, &UpsertInfo::new(0, old_addr, ri));
+                self.functions.upsert(
+                    key,
+                    &mut new_val,
+                    input,
+                    old_ref,
+                    &mut output,
+                    &UpsertInfo::new(0, old_addr, ri),
+                );
 
                 let (new_addr, mut accessor) = match self.allocate_with_retry(key, &new_val) {
                     Some(pair) => pair,
@@ -1292,8 +1302,13 @@ impl<F: Functions> FasterKv<F> {
                     // No existing value — create from initial.
                     let mut new_val = F::Value::default();
                     let mut output = F::Output::default();
-                    self.functions
-                        .rmw_initial(key, input, &mut new_val, &mut output, &RmwInfo::new(0, old_addr, ri, false));
+                    self.functions.rmw_initial(
+                        key,
+                        input,
+                        &mut new_val,
+                        &mut output,
+                        &RmwInfo::new(0, old_addr, ri, false),
+                    );
 
                     let (new_addr, mut accessor) = match self.allocate_with_retry(key, &new_val) {
                         Some(pair) => pair,

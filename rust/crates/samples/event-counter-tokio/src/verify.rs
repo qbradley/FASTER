@@ -197,9 +197,7 @@ pub fn verify_store(
         eprintln!("  [{label}] {missing} campaigns had zero events (correctly absent)");
     }
     if total_mismatches > 0 {
-        eprintln!(
-            "  [{label}] ✗ {total_mismatches} campaigns FAILED verification"
-        );
+        eprintln!("  [{label}] ✗ {total_mismatches} campaigns FAILED verification");
         false
     } else {
         eprintln!("  [{label}] ✓ All campaigns verified successfully");

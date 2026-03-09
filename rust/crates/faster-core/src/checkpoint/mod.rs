@@ -53,8 +53,8 @@ pub mod snapshot_writer;
 
 pub use manager::{CheckpointError, CheckpointManager, CheckpointManagerImpl, CheckpointStatus};
 pub use metadata::{
-    CheckpointToken, CheckpointType, IndexRecoveryInfo, LogRecoveryInfo, SessionRecoveryInfo,
-    FORMAT_VERSION_CURRENT,
+    CheckpointToken, CheckpointType, FORMAT_VERSION_CURRENT, IndexRecoveryInfo, LogRecoveryInfo,
+    SessionRecoveryInfo,
 };
 pub use metadata_store::{CheckpointMetadata, CheckpointMetadataStore};
 pub use orchestrator::{CheckpointConfig, CheckpointOrchestrator};

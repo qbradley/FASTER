@@ -20,7 +20,9 @@ use crate::address::LogicalAddress;
 use crate::hybrid_log::HybridLogAllocator;
 
 use super::snapshot_writer::SnapshotCheckpointContext;
-use super::{CheckpointError, CheckpointToken, CheckpointType, LogRecoveryInfo, FORMAT_VERSION_CURRENT};
+use super::{
+    CheckpointError, CheckpointToken, CheckpointType, FORMAT_VERSION_CURRENT, LogRecoveryInfo,
+};
 
 // ---------------------------------------------------------------------------
 // LogCheckpointContext

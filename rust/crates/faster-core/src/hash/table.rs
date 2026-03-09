@@ -1458,7 +1458,11 @@ mod proptests {
         let hash = KeyHash::new(999);
         let result = table.find_or_create_entry(hash, LogicalAddress::INVALID);
         assert!(result.created);
-        let committed = HashBucketEntry::new(result.entry.tag(), LogicalAddress::new(Page(1), Offset(100)), false);
+        let committed = HashBucketEntry::new(
+            result.entry.tag(),
+            LogicalAddress::new(Page(1), Offset(100)),
+            false,
+        );
         assert!(table.update_entry(result.slot, result.entry, committed));
         let found = table.find_entry(hash);
         assert!(found.is_some());

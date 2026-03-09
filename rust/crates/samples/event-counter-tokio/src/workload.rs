@@ -41,8 +41,8 @@
 //! moves the work to a dedicated thread pool, keeping the async runtime
 //! responsive for control-plane tasks (stats, shutdown, checkpoints).
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use faster_core::status::OperationStatus;
 use faster_core::store::FasterKv;
@@ -198,13 +198,7 @@ pub fn run_worker(
             // we exercise the read path to stress pending I/O handling
             // when records are on disk.
             let mut output: Option<CampaignStats> = None;
-            let status = store.read(
-                &mut session,
-                &campaign_id,
-                &read_input,
-                &mut output,
-                (),
-            );
+            let status = store.read(&mut session, &campaign_id, &read_input, &mut output, ());
 
             // If the read returned Pending, the record is on disk.
             // complete_pending() will issue the I/O and block until
@@ -241,13 +235,7 @@ pub fn run_worker(
 
             // Apply the RMW — this is the core FASTER operation
             let mut output: Option<CampaignStats> = None;
-            let status = store.rmw(
-                &mut session,
-                &campaign_id,
-                &input,
-                &mut output,
-                (),
-            );
+            let status = store.rmw(&mut session, &campaign_id, &input, &mut output, ());
 
             if status == OperationStatus::Pending {
                 store.complete_pending(&mut session);

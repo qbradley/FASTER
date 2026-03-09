@@ -23,7 +23,9 @@ use clap::Parser;
 use faster_core::grow::GrowConfig;
 use faster_core::hybrid_log::eviction::EvictionPolicy;
 use faster_core::status::OperationStatus;
-use faster_core::store::{FasterKv, FasterKvConfig, DeleteInfo, Functions, ReadInfo, RmwInfo, UpsertInfo, RmwInPlaceResult};
+use faster_core::store::{
+    FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo,
+};
 use faster_tokio::TokioFileDevice;
 use rand::Rng;
 
@@ -111,7 +113,14 @@ impl Functions for BlockFunctions {
     type Output = Option<Vec<u8>>;
     type Context = ();
 
-    fn read(&self, _key: &u64, value: &Vec<u8>, _input: &Vec<u8>, output: &mut Option<Vec<u8>>, _info: &ReadInfo) {
+    fn read(
+        &self,
+        _key: &u64,
+        value: &Vec<u8>,
+        _input: &Vec<u8>,
+        output: &mut Option<Vec<u8>>,
+        _info: &ReadInfo,
+    ) {
         *output = Some(value.clone());
     }
 

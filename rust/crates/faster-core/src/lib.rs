@@ -163,7 +163,7 @@ pub use device::{
 };
 pub use metrics::Metrics;
 pub use store::{
-    BatchOp, BatchResult, FasterKv, FasterKvBuilder, FasterKvConfig, FasterSession, Functions, SessionStats,
-    SimpleFunctions, UnsafeContext,
+    BatchOp, BatchResult, FasterKv, FasterKvBuilder, FasterKvConfig, FasterSession, Functions,
+    SessionStats, SimpleFunctions, UnsafeContext,
 };
 pub use sync_file_device::SyncFileDevice;

@@ -386,7 +386,10 @@ mod tests {
     use crate::hybrid_log::eviction::EvictionPolicy;
     use crate::record::{RecordSizeError, record_size_from_bytes};
     use crate::status::OperationStatus;
-    use crate::store::{DeleteInfo, FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInfo, RmwInPlaceResult, SimpleFunctions, UpsertInfo};
+    use crate::store::{
+        FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, SimpleFunctions,
+        UpsertInfo,
+    };
 
     type SimpleStore = FasterKv<SimpleFunctions<u64, u64>>;
 
@@ -410,7 +413,14 @@ mod tests {
         type Input = Vec<u8>;
         type Output = Option<Vec<u8>>;
         type Context = ();
-        fn read(&self, _k: &Vec<u8>, v: &Vec<u8>, _i: &Vec<u8>, o: &mut Option<Vec<u8>>, _info: &ReadInfo) {
+        fn read(
+            &self,
+            _k: &Vec<u8>,
+            v: &Vec<u8>,
+            _i: &Vec<u8>,
+            o: &mut Option<Vec<u8>>,
+            _info: &ReadInfo,
+        ) {
             *o = Some(v.clone());
         }
         fn upsert(

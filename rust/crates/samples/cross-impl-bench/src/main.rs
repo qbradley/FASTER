@@ -33,7 +33,10 @@ use faster_core::NullDevice;
 use faster_core::hybrid_log::eviction::EvictionPolicy;
 use faster_core::record::Value;
 use faster_core::status::OperationStatus;
-use faster_core::store::{FasterKv, FasterKvConfig, DeleteInfo, Functions, ReadInfo, RmwInfo, UpsertInfo, RmwInPlaceResult, SimpleFunctions};
+use faster_core::store::{
+    DeleteInfo, FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInPlaceResult, RmwInfo,
+    SimpleFunctions, UpsertInfo,
+};
 
 use distribution::{Distribution, KeyGenerator};
 use report::{BenchmarkResult, Reporter};
@@ -223,7 +226,14 @@ impl<V: Value + Copy + 'static> Functions for PaddedFunctions<V> {
         *new_value = *input;
     }
 
-    fn rmw_initial(&self, _key: &u64, input: &V, value: &mut V, _output: &mut Option<V>, _info: &RmwInfo) {
+    fn rmw_initial(
+        &self,
+        _key: &u64,
+        input: &V,
+        value: &mut V,
+        _output: &mut Option<V>,
+        _info: &RmwInfo,
+    ) {
         *value = *input;
     }
 
