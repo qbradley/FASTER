@@ -368,21 +368,18 @@ run_tier_2() {
 
     local tier_failed=false
 
-    # Loom tests — advisory only: loom support is aspirational. No cfg(loom) type
-    # aliases or loom-specific tests exist yet, so compiling with --cfg loom errors.
-    # Promote to run_check once a loom compatibility layer is implemented.
+    # Loom concurrency tests — dedicated test binary gated on #[cfg(feature = "loom")]
     if has_nightly; then
-        run_check_warn $tier "Loom concurrency tests" \
-            env RUSTFLAGS="--cfg loom" cargo nextest run -p faster-core --features loom -E 'test(loom)'
+        run_check $tier "Loom concurrency tests" \
+            cargo nextest run --features loom -p faster-core --test loom_tests
     else
         skip_check $tier "Loom concurrency tests" "nightly toolchain not installed"
     fi
 
-    # Miri tests — advisory only: no miri-specific tests (matching 'test(miri)')
-    # exist yet. Promote to run_check once miri test annotations are added.
+    # Miri UB detection — dedicated test binary gated on #[cfg(miri)]
     if has_nightly && rustup component list --toolchain nightly 2>/dev/null | grep -q 'miri.*installed'; then
-        run_check_warn $tier "Miri UB detection" \
-            cargo +nightly miri nextest run -p faster-core -E 'test(miri)'
+        run_check $tier "Miri UB detection" \
+            cargo +nightly miri nextest run -p faster-core --test miri_tests
     else
         skip_check $tier "Miri UB detection" "nightly miri component not installed"
     fi
