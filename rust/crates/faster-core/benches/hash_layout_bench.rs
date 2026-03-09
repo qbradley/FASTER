@@ -12,7 +12,7 @@
 use std::hint::black_box;
 use std::time::Duration;
 
-use criterion::{BenchmarkId, Criterion, criterion_group};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use faster_core::address::LogicalAddress;
 use faster_core::hash::{KeyHash, faster_hash_u64};
 use faster_core::hash_table::HashTable;
@@ -137,18 +137,4 @@ criterion_group! {
     config = Criterion::default().sample_size(10).measurement_time(Duration::from_secs(3));
     targets = bench_hash_layout, bench_batched_lookup
 }
-
-/// Custom main: run full criterion benchmarks only when `--bench` is passed
-/// (i.e., `cargo bench`).  Under `cargo nextest --all-targets` the binary is
-/// invoked without `--bench`, so we run a fast smoke test instead.
-fn main() {
-    if std::env::args().any(|a| a == "--bench") {
-        benches();
-    } else {
-        // Smoke test: verify setup doesn't panic, without criterion overhead.
-        let table = HashTable::new(10); // 2^10 = 1024 buckets
-        let key: u64 = 42;
-        let hash = KeyHash::new(faster_hash_u64(key));
-        let _ = table.find_entry(hash);
-    }
-}
+criterion_main!(benches);
