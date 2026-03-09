@@ -218,3 +218,18 @@ Production types use `std::sync::atomic` directly — the `crate::sync` loom shi
 - **Galadriel (Security):** SECURITY-AUDIT.md is reference for future unsafe code review. 302 unsafe sites cataloged, 1 Critical fixed, 4 High findings documented. Include this in PR review checklist.
 
 - **Gimli (Storage):** io_uring integration proven stable. 50 total integration tests (40 existing + 10 new). Battle testing with stress, comparison, and recovery modes all pass. Ready for production deployment.
+
+---
+
+### 2026-03-09T1817Z: Wave 2 Completion — Team Context Update
+
+**Wave 2 summary (all 5 agents merged to `squad`, 2,067 tests pass in 58s):**
+
+- **Éowyn (you):** DST expanded 5→108 scenario templates (14 categories, 324 test cases in ~30s). Commits `fd165bfb`, `790186f0`. Filed `eowyn-dst-expansion-architecture.md` to decisions. Note: Your stray commits landed on Boromir (`80dca96c`) and Saruman (`f5f9ed7a`) branches during parallel execution — coordinator dropped them before merge.
+- **Elrond:** 29 tokio integration tests in `rust/crates/faster-tokio/tests/integration.rs`.
+- **Saruman:** 29 I/O error injection tests with `FaultInjectingDevice` in `rust/crates/faster-core/tests/io_error_injection.rs` (1,307 LOC).
+- **Legolas:** Performance regression detection scripts (`bench-compare.sh`, `bench-baseline.sh`) + `benchmarking.md`. 5% threshold, exit 1 on violation.
+- **Boromir:** 20 recovery edge case tests in `rust/crates/faster-core/tests/recovery_edge_cases.rs` (1,064 LOC). Filed `SyncFileDevice` `"log."` prefix coupling decision.
+
+**Critical constraint from Boromir's work — affects your DST scenarios:**
+`SyncFileDevice` prefix must be `"log."` for recovery compatibility. `LogRecoveryEngine::validate_log_file` hardcodes `log.{n}` segment names. Any DST scenario using `SyncFileDevice` must use the `"log."` prefix or recovery validation will fail.
