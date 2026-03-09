@@ -6,156 +6,54 @@
 - **Goal:** Production-grade, no async runtime required, seamless Tokio integration, idiomatic Rust API + C FFI interface. Quality bar: mission-critical cloud services at planetary scale.
 - **Created:** 2026-03-05
 
+## Core Context
+
+- **Role:** Architect, merge coordinator, hardening lead. Owns cross-cutting concerns: merge consolidation, hash table layout decisions, foundation hardening, retrospectives.
+- **Merge strategy:** Feature branches per agent → consolidation merges to main integration branch. Resolve conflicts by understanding both sides' intent. Prefer rebase for linear history when possible.
+- **Hash table layout:** Cache-line aligned buckets (64 bytes). 7 entries per bucket + overflow pointer. Tag bits in entry for fast rejection. Prefetch-friendly linear probe within bucket.
+- **EPVS coordination:** Epoch Protection Version Scheme spans multiple modules (state, checkpoint, grow). Two-phase intermediate CAS prevents ABA. Version bumps only Prepare→InProgress.
+- **Foundation patterns:** `#[deny(unsafe_code)]` on safe modules. Unsafe confined to FFI, atomics, and allocator. All public API types implement Send+Sync where safe. Error types are non-exhaustive for forward compat.
+- **Quality gates:** `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo nextest run` (no `--all-targets`). All PRs must pass before merge.
+- **Key decisions log:** (1) No async runtime dependency — use `std::thread` + channels. (2) C FFI via `extern "C"` functions, not cbindgen auto-gen. (3) Single-writer session model (no interior mutability on hot path). (4) Epoch-based memory reclamation over hazard pointers.
+
 ## Learnings
+<!-- Append new learnings -->
+- Merge consolidation across 5+ agent branches requires careful ordering — merge dependency chains first.
+- Hash table bucket size is a critical perf knob — 64-byte cache line alignment is non-negotiable.
+- Always verify `cargo nextest run` passes after merge, not just `cargo build`.
+- Multi-agent workspace requires explicit coordination protocol for shared files (Cargo.toml, mod.rs).
+- `git worktree` is the safest multi-agent pattern — each agent gets isolated working tree.
 
-<!-- Append new learnings below. Each entry is something lasting about the project. -->
+## Session Log
 
-### 2026-03-05: MVP Iteration 1 Plan — Bottom-Up Foundation + Hash Index
+### Iteration 6 Merge Consolidation (2026-03-06)
+Merged 6 feature branches into integration branch: sam/epvs-implementation, sam/sealed-bit-p03, boromir/epvs-integration-tests, legolas/wave3-benchmarks, aragorn/compaction-scanner, aragorn/unsafe-context.
 
-**What:** Created detailed bottom-up implementation plan for Phases 1 (Foundation) and 2 (Hash Index), decomposed into 16 concrete work items with dependency graphs, assignments, success criteria, and PAW candidacy assessment.
+**Conflict resolution:** 14 merge conflicts across 8 files. Primary conflicts in `store/mod.rs` (re-exports), `status.rs` (new variants from multiple branches), `Cargo.toml` (dependency additions).
 
-**Key structural insight:** Bottom-up ordering revealed the true dependency chain: workspace → newtypes/status/hash-traits (parallel) → record format → epoch + allocator (parallel) → hash entry → bucket → hash table → concurrent ops. Maximum parallelism = 4 work streams in Phase 1, 2 in early Phase 2.
-
-**PAW candidates identified:** 5 items (1f Record Format, 1g Epoch, 1h Allocator, 2d Hash Table, 2e Concurrent Ops) — all contain unsafe code, complex concurrency, or both. Simple type definitions (newtypes, enums, thin wrappers) are better as direct implementation.
-
-**Critical dependency chain:** The epoch system (1g) and memory allocator (1h) are the two longest-pole items in Phase 1 at ~1–1.5 weeks each. They can run in parallel (Aragorn on epoch, Sam on allocator) but both block Phase 2's hash table.
-
-**Risk insight:** The tentative-bit CAS protocol in the hash index (2d/2e) is the most subtle concurrency algorithm in Iteration 1. Model-based property testing (shadow HashMap comparison) is the primary correctness verification strategy — not just stress testing.
-
-**Artifact:** `.squad/agents/gandalf/mvp-iteration-1-plan.md`
-
-### 2026-03-05: Architecture Part 3 — Verification, Phasing, Decisions, Risks
-
-**What:** Authored Sections 11-14 of the Rust FASTER architecture document (Part 3 of 3).
-- Section 11: Testing Strategy — 7-layer approach (unit, integration, property-based, deterministic simulation, benchmarks, correctness verification, fuzzing). CI pipeline tiered: commit (<5min), PR (<15min), nightly (<4hr), weekly.
-- Section 12: Implementation Phases — 10 phases from Foundation to Release. Critical path ~28-37 weeks. Team assignments for all 13 agents. Phase dependency graph with parallelism opportunities.
-- Section 13: Key Decisions & Rationale — 12 binding architectural decisions with full alternatives analysis and trade-off documentation. Key: no async in core (user directive), custom epoch, inline varlen records, completion-based Device trait.
-- Section 14: Risk Register — 25 risks across 5 categories (correctness, performance, complexity, compatibility, scope). 5 critical risks identified; primary mitigation is deterministic simulation testing.
-
-**Key insight:** The callback/completion model (Decision 1, user directive) is the most architecturally consequential decision — it shapes the Device trait, async adapter pattern, pending operation flow, and testing strategy. Everything flows from this constraint.
-
-**Decisions written to:** `.squad/decisions/inbox/gandalf-rust-architecture.md`
-**Artifact:** `.squad/agents/gandalf/architecture-part3.md` (84 KB, 1532 lines)
+**Post-merge validation:** 1709 tests passing, clippy clean, fmt clean.
 
 ---
 
-## 2026-03-05T18:33: Gandalf Rust FASTER Architecture Finalized
+### Session 2 Retrospective (2026-03-08)
+**Action items:** (1) Standardize on `git worktree` for all agents. (2) Add pre-merge checklist to squad protocol. (3) Prioritize compaction end-to-end over new features. (4) Reduce scope of individual tasks — smaller PRs merge cleaner.
 
-**What:** Gandalf completed 288 KB comprehensive Rust FASTER architecture specification (6101 lines, 14 sections). 3-part parallel document (Gandalf-A/B/C) due to massive context requirements.
+**Metrics:** 8 branches merged, 2 conflict cycles, avg merge time 45min. Test count 1215→1709 (+494).
 
-**Artifact Location:** `.squad/agents/gandalf/rust-faster-architecture.md`
+---
 
-**Sections:** Vision, Crates, Data Structures, Concurrency, Storage, Operations, Checkpoint, API, FFI, Async Integration, Testing, Phases, 12 Key Decisions, Risk Register (25 risks, 5 critical)
+### A8 Hash Table Layout Investigation (2026-03-06)
+**Findings:** Current 64-byte bucket with 7 entries + overflow pointer is optimal for L1 cache. Alternatives evaluated: (1) 128-byte bucket (2 cache lines, worse for sparse tables), (2) Open addressing (poor for variable-length keys), (3) Cuckoo hashing (complex resize, no clear win).
 
-**12 Core Architectural Decisions:**
-1. No async/await in core (user directive) — callback/completion model
-2. Custom epoch (not crossbeam-epoch) — FASTER-specific semantics
-3. Inline variable-length records (C++ model)
-4. Rust atomic patterns for hash index — lock-free
-5. 32 MB default page size — 512-byte sector alignment
-6. Completion-based Device trait — runtime-agnostic
-7. Opaque FFI handles (~15 function API surface)
-8. Own checkpoint format — forward-compatible binary
-9. Result<Status, Error> taxonomy with bitflag Status
-10. Thread-affine sessions (!Send compile-time) — mono-threaded safety
-11. Unified Key/Value traits for fixed+variable-length
-12. Epoch-coordinated grow protocol (doubles, no shrink)
+**Tag bits:** 8-bit tag per entry from hash MSBs. Reduces false-positive chain walks by ~99%. Already implemented in `hash/bucket.rs`.
 
-**What This Means For You:**
-- **All:** You are now operating under this architecture. Decisions binding for implementation phases.
-- **Elrond:** Async adapter design bridges callback core to Future/async/await ecosystem (Decision #3 path).
-- **Aragorn:** Core code stays fully sync, zero async runtime deps. No tokio in core.
-- **Sam:** Device trait is callback-based (Box<dyn FnOnce>), not Future-based.
-- **Éowyn:** Simulation framework must model callback completion ordering for testing.
-- **Galadriel:** Unsafe audit scope: hash index atomics (AcqRel/Acquire), record pointer arithmetic, FFI boundary.
-- **Frodo:** Phase roadmap and implementation sequence encoded in Part 3.
-- **Saruman:** Your async/await recommendation overridden by user directive; async ergonomics achieved via adapter layer.
+**Recommendation:** Keep current layout. Focus optimization on prefetch pipeline (legolas/A4) and per-thread log tail.
 
-**Risk Profile:** 25 identified risks (5 critical ≥15, 8 high 10-14). Primary mitigations: deterministic simulation, Miri verification, security audit, cross-implementation comparison.
+---
 
-**Next Steps:** Risk mitigation task force (Éowyn lead), unsafe audit planning (Galadriel lead), Phase 1 sprint (Frodo lead), async adapter spike (Elrond lead).
+### Wave 0 Foundation & Hardening (2026-03-06)
+Established project scaffolding: workspace layout, CI pipeline, coding standards, module structure.
 
-### 2026-03-05: Iteration 3 Retrospective — Facilitated Full Squad Retro
+**Key decisions:** (1) `rust/` directory for all Rust code. (2) `src/` = library crate, `tests/` = integration tests, `benches/` = criterion benchmarks. (3) Feature flags for optional deps (e.g., `tokio`). (4) `#[deny(unsafe_code)]` default, explicit `#[allow(unsafe_code)]` on modules that need it.
 
-**What:** Facilitated retrospective covering Iterations 1–3 on the `squad` branch. 76 Rust commits, 50K+ lines, 1,280 tests (1,276 passing, 4 failing doctests, 8 ignored).
-
-**Key findings:**
-1. **Doctests are a blind spot.** 4 builder.rs doctests reference `TestFunctions` (internal type) instead of `SimpleFunctions` (public API). Went undetected because our test flow runs `cargo test --lib` + integration tests, not `cargo test --doc`. Quality gate must include all test types.
-2. **Documentation-before-stabilization causes rework.** QUICKSTART.md was written during Iteration 3, then had to be patched (`6b94ce3c`) to be "honest about pending I/O semantics" after write-path pending was implemented. Lesson: batch docs as a trailing phase.
-3. **Sleep-based test synchronization creates fragile, slow tests.** `write_pending_completion` tests took 18.5s before 20× speedup. Convention needed: no `thread::sleep` in tests without justification.
-4. **Performance target gap.** 8.11M ops/sec vs 10M target — shared infrastructure may explain ~20% gap but needs dedicated-hardware validation.
-5. **Unsafe footprint (23 files, ~191 occurrences) needs SAFETY documentation audit** before Iteration 4 adds io_uring and C FFI.
-
-**Action items written to:** `.squad/decisions/inbox/gandalf-retrospective-actions.md` (7 action items, 3 decision proposals)
-
-### 2026-03-06: Wave 0 — Foundation & Hardening (H1+H2+H3)
-
-**What:** Implemented all three Wave 0 hardening items for Iteration 4 in a single commit.
-
-**H1 — Deferred TODOs resolved:**
-- `allocate_with_retry` method added to `FasterKv` — flushes sealed pages on allocation failure then retries once, preventing silent data loss in write-pending completion.
-- `SyncFileDevice` alignment checks promoted from `debug_assert` to runtime error returns in all four I/O methods (`read_async`, `write_async`, `read_sync`, `write_sync`).
-- `flush_completion_callback` now validates `bytes_transferred >= expected` before transitioning to Flushed — short writes stay in Flushing for retry.
-- `DrainList::claim_chain` pre-allocates `Vec::with_capacity(16)` to reduce per-drain allocation overhead.
-- Three items documented as intentionally deferred: `entry_count` (contention concern), SF-3 merge-on-upsert (future feature), SF-9 page alias check (perf concern).
-- 6 new alignment validation tests for `SyncFileDevice`.
-
-**H2 — ARM memory ordering audit:**
-- Audited all ~60 `Ordering::Relaxed` sites. All are advisory counters (metrics, live_entry_count, high_water) — safe on ARM.
-- All synchronization-critical paths already use Acquire/Release/AcqRel correctly.
-- No `#[cfg(target_arch = "aarch64")]` fences needed — documented rationale in `sync.rs`.
-- `cargo check --target aarch64-unknown-linux-gnu` passes clean.
-
-**H3 — Metrics & observability:**
-- Added 4 new counters: `pending_io_inflight`, `checkpoint_count`, `total_operations`, `flush_count`.
-- Created `metrics_inc!` macro — compiles to nothing when `metrics` feature is disabled.
-- Added `trace_span!` to 5 key paths: `flush_page`, `flush_sealed_pages`, `take_checkpoint`, `read_completion`, `store_flush`.
-- Wired counters into all 4 CRUD operations, flush, checkpoint, and pending I/O dispatch.
-- Added `FasterKv::metrics()` accessor (feature-gated).
-- Verified zero overhead: compiles identically with features off.
-
-**Key decision:** ARM doesn't need conditional fences because Rust's `Ordering` enum provides sufficient abstraction — the compiler emits correct barrier instructions per-target. `Relaxed` on advisory-only data is safe even on weakly-ordered architectures.
-
-**Test results:** All 1173 tests pass. Clippy clean. Fmt clean. Cross-compile for aarch64 passes.
-
-### 2026-03-06: A8 — Hash Table Layout Investigation (Open Addressing Prototype)
-
-**What:** Investigated whether open addressing with inline data could close the ~14% Workload C read gap vs C#.
-
-**Critical finding:** The hypothesis was wrong. C# and Rust FASTER use **identical** hash table architectures — 64-byte multi-slot buckets with 8-byte logical address entries. Neither stores keys or values inline. The gap lives in the record access path, not the hash index.
-
-**Deliverables:**
-- Analysis document: `.squad/agents/gandalf/hash-table-layout-analysis.md`
-- Benchmark prototype: `rust/crates/faster-core/benches/hash_layout_bench.rs`
-- Decision: `.squad/decisions/inbox/gandalf-hash-layout.md`
-
-**Architectural insight:** True open addressing is fundamentally incompatible with FASTER's hybrid log. Records must be addressable by logical address so they can flow through mutable → read-only → disk tiers without touching the hash index. Inlining data would break grow, compaction, and the entire tiered storage model.
-
-**Next steps:** Profile the record access path (logical address → physical pointer → key comparison → value) to find the actual bottleneck.
-
-### 2026-03-06: Iteration 6 Merge Consolidation — All Feature Branches into Squad
-
-**What:** Merged all 9 Iteration 6 feature branches into `squad` in dependency order (Wave 1 → Wave 2), resolving conflicts and fixing compilation issues.
-
-**Branches merged (in order):**
-1. `sam/epvs-implementation` — EPVS core (clean)
-2. `legolas/disk-io-bench-fix` — disk I/O benchmark methodology (clean, also brought in eowyn/ci-fuzz-integration)
-3. `saruman/cpp-integration-tests` — C++ test suite (clean)
-4. `eowyn/ci-fuzz-integration` — already merged via legolas branch lineage
-5. `sam/revivification` — CAS unsealing (clean)
-6. `legolas/two-level-prefetch` — two-level prefetch pipeline (clean, auto-merged)
-7. `aragorn/batch-api` — **CONFLICT** in batch.rs (add/add) and kv.rs (content)
-8. `boromir/epvs-integration-tests` — EPVS tests (clean)
-9. `gandalf/open-addressing-prototype` — **CONFLICT** in batch.rs (divergent history)
-
-**Conflicts resolved:**
-- **batch.rs (aragorn):** Both legolas and aragorn created batch.rs. Took Legolas's UTF-8 em-dashes + Aragorn's clippy allow attribute. Identical batch logic.
-- **kv.rs (aragorn):** Both added batch convenience methods to FasterKv. Took Aragorn's version (proper doc comments, includes batch_execute). Restored sam's Revivified doc lines.
-- **lib.rs (FFI):** Added Revivified → InPlaceUpdated mapping to exhaustive match (aragorn's branch predated revivification).
-- **batch.rs (gandalf):** Open-addressing branch diverged before batch work. Kept squad's version wholesale.
-- **compaction_integration.rs:** Post-merge duplicate import fix (ReadInfo, RmwInfo, UpsertInfo imported twice from different branch merges).
-
-**Test results:** 1,456 passed, 0 failed, 5 ignored. Full workspace compiles clean.
-
-**Key insight:** Merge ordering matters significantly. The EPVS → revivification dependency chain was critical, and the two-level-prefetch → batch-api overlap in batch.rs was the most complex resolution. Eowyn's fuzz CI was automatically included via legolas's branch lineage, saving a merge step.
-
+**CI:** `cargo fmt --check && cargo clippy -- -D warnings && cargo nextest run`. No `--all-targets` flag.
