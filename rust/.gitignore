@@ -26,3 +26,6 @@ tarpaulin-report.html
 # Fuzz testing artifacts (crashes + build output)
 fuzz/target/
 fuzz/artifacts/
+
+# Mutation testing output
+mutants.out/
