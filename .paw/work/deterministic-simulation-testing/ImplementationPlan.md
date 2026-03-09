@@ -42,7 +42,7 @@ A framework where:
 - Cross-process or multi-node simulation
 - Performance benchmarking under simulation mode
 - Formal verification or model checking
-- Making page checksums the default on-disk format (feature-flag gated initially)
+- Making page checksums mandatory for reading old data (backward compatibility via format version detection)
 
 ## Phase Status
 
@@ -56,7 +56,6 @@ A framework where:
 
 ## Phase Candidates
 
-- [ ] Execution trace visualization (structured log output for debugging)
 - [ ] Shrinking / minimization (find minimal seed that reproduces a failure)
 - [ ] Coverage-guided seed selection (prioritize seeds that explore new code paths)
 - [ ] Snapshot/restore for long-running simulations (checkpoint simulator state)
@@ -64,6 +63,8 @@ A framework where:
 ---
 
 ## Phase 1: Simulation Abstraction Layer
+
+**Depends on**: None (foundation phase)
 
 **Objective**: Establish the cfg-gated abstraction layer in faster-core so that all synchronization, threading, time, and channel operations route through substitutable imports. This is the foundation every subsequent phase depends on.
 
@@ -87,7 +88,7 @@ A framework where:
 
 - **2 SystemTime::now() sites**: `orchestrator.rs:296`, `metadata_store.rs:355` — route through `crate::sync::SystemTime`
 
-- **2 mpsc channel sites**: `sync_file_device.rs:26`, `faster-uring/device.rs:55` — route through channel abstraction. Note: the uring channel is in faster-uring (not faster-core), so the faster-uring crate needs a similar sync.rs or dependency on faster-core's abstraction.
+- **2 mpsc channel sites**: `sync_file_device.rs:26` — route through channel abstraction. Note: `faster-uring/device.rs:55` also uses mpsc, but under simulation the `UringDevice` is replaced entirely by `SimulatedDevice`, so the uring channel does NOT need abstraction — it is never instantiated in simulation mode.
 
 - **Tests**: Unit tests in sync.rs verifying that the cfg resolution works correctly for each tier (std, simulation). Compile-test that `simulation` feature enables successfully.
 
@@ -108,7 +109,13 @@ A framework where:
 
 ## Phase 2: Deterministic Scheduler & Task Model
 
+**Depends on**: Phase 1 (simulation feature flag and sync.rs abstractions must exist)
+
 **Objective**: Implement the cooperative single-threaded scheduler in faster-dst that replaces OS thread scheduling with seed-controlled deterministic task selection. This is the core of the DST framework.
+
+### Key Design Decisions
+
+**Task model — closure-based cooperative tasks (not async/await):** Closures that explicitly yield at scheduling points are simpler to reason about for simulation, require no async runtime, and make yield points visible and deterministic. Async/await would add implicit yield points at every `.await` and require a custom executor — more machinery for no benefit since we need explicit control over scheduling. Generator/coroutine approaches are nightly-only and unstable. Trade-off: closure-based tasks are less composable than futures but provide the explicit control the scheduler requires.
 
 ### Changes Required
 
@@ -132,6 +139,8 @@ A framework where:
 
 - **`rust/crates/faster-dst/src/clock.rs`** (modify): Enhance `SimulatedClock` to support both `Instant`-style monotonic time and `SystemTime`-style wall clock. Add `sim_instant_now()` and `sim_system_time_now()` methods. Scheduler advances time when all tasks are blocked on time-based waits.
 
+- **`rust/crates/faster-dst/src/trace.rs`** (new): `SimulationTrace` — structured execution trace logger (FR-017). Records every scheduler decision (task selected, yield reason), I/O operation (read/write issued, completion delivered), and time advancement. Output is deterministic per seed. Enabled via `RUST_LOG=trace` or programmatic configuration. Uses a `Vec<TraceEvent>` buffer for in-memory collection with optional streaming output.
+
 - **`rust/crates/faster-dst/Cargo.toml`**: Add dependency on faster-core with `simulation` feature enabled
 
 - **Tests** (`rust/crates/faster-dst/tests/scheduler_tests.rs`): 
@@ -142,6 +151,7 @@ A framework where:
   - Deadlock detection triggers when all tasks block
   - Time advancement is deterministic
   - At least 3 distinct interleaving patterns observed across 10 seeds (scheduler diversity)
+  - Trace output from a simulation run shows every scheduler decision and I/O operation in deterministic order (FR-017, P1-AS3)
 
 ### Success Criteria
 
@@ -157,6 +167,8 @@ A framework where:
 ---
 
 ## Phase 3: CRUD + Epoch Simulation Integration
+
+**Depends on**: Phase 2 (scheduler and task model must exist)
 
 **Objective**: Make FasterKv operations run under the deterministic scheduler. Insert yield points at scheduling-relevant locations so the scheduler can explore different interleavings of concurrent CRUD operations under epoch protection.
 
@@ -175,7 +187,7 @@ A framework where:
 - **`rust/crates/faster-core/src/hybrid_log/flush.rs`**: Add yield point:
   - After issuing async write (`flush.rs:252`) — allow scheduler to reorder completions
 
-- **`rust/crates/faster-dst/src/sim_store.rs`** (new): `SimulatedFasterKv` factory — convenience wrapper that creates a `FasterKv` configured for simulation (SimulatedDevice, SimClock, etc.) and spawns CRUD operations as SimTasks on the scheduler.
+- **`rust/crates/faster-dst/src/sim_store.rs`** (new): `SimulatedFasterKv` factory — convenience wrapper that creates a `FasterKv` configured for simulation (SimulatedDevice, SimClock, etc.) and spawns CRUD operations as SimTasks on the scheduler. Each CRUD operation emits trace events (FR-017) via the `SimulationTrace` infrastructure from Phase 2.
 
 - **Tests** (`rust/crates/faster-dst/tests/crud_simulation.rs`):
   - 4 simulated tasks × 100 upserts to overlapping keys → deterministic per seed, all CAS races resolved correctly (P2-AS1)
@@ -199,11 +211,19 @@ A framework where:
 
 ## Phase 4: Crash-Point Injection Framework
 
+**Depends on**: Phase 3 (SimulatedFasterKv and yield points must exist for crash scenarios)
+
+**Parallelizable with**: Phase 5 (CRC checksums have no dependency on crash injection)
+
 **Objective**: Instrument all state machine transition points with crash-point hooks that the simulation framework can trigger. When a crash fires, all in-flight state is dropped, a fresh FasterKv is created from the persisted SimulatedStorage snapshot, recovery runs, and invariants are verified.
+
+### Key Design Decisions
+
+**Crash mechanism — controlled panic with catch_unwind (not longjmp):** The scheduler wraps each task's execution in `std::panic::catch_unwind()`. When a crash point triggers, it panics with a sentinel type (`SimulatedCrash`). The scheduler catches the unwind, drops all task state (including FasterKv), and proceeds to recovery. Trade-off: panic unwinding runs Drop impls which may flush partial state — but this is actually desirable since it tests whether FASTER's Drop behavior is crash-safe. longjmp would skip destructors entirely, which doesn't model real crash behavior (the OS does run cleanup on some resources). Panic-based is both safer (no UB) and more realistic.
 
 ### Changes Required
 
-- **`rust/crates/faster-core/src/sim_hooks.rs`** (new): `crash_point!()` macro gated behind `#[cfg(feature = "simulation")]`. When simulation is active, the macro checks a thread-local/task-local crash schedule. If the current crash point is scheduled, it triggers a controlled panic (or longjmp-style unwind) that the scheduler catches. When simulation is not active, the macro expands to nothing.
+- **`rust/crates/faster-core/src/sim_hooks.rs`** (new): `crash_point!()` macro gated behind `#[cfg(feature = "simulation")]`. When simulation is active, the macro checks a thread-local/task-local crash schedule. If the current crash point is scheduled, it panics with a `SimulatedCrash` sentinel that the scheduler catches via `catch_unwind`. Each crash point also emits a trace event (FR-017) recording the crash point name and whether it fired. When simulation is not active, the macro expands to nothing.
 
 - **`rust/crates/faster-core/src/checkpoint/state_machine.rs`**: Insert `crash_point!(CrashPoint::Checkpoint(phase))` at each of the 6 phase transition sites identified in CodeResearch.md (lines 236, 381, 411, 415, 419, 424).
 
@@ -244,7 +264,15 @@ A framework where:
 
 ## Phase 5: Page CRC-32C Checksums
 
+**Depends on**: Phase 1 (simulation feature flag for testing). Independent of Phases 3-4.
+
+**Parallelizable with**: Phase 4 (crash injection is independent of checksum logic)
+
 **Objective**: Add page-level CRC-32C integrity checksums to the hybrid log. Pages are checksummed before flush and validated during recovery. This enables torn write detection in simulation and improves production durability.
+
+### Key Design Decisions
+
+**Checksums are always-on (not feature-gated):** CRC-32C checksums benefit production builds directly — they catch torn writes, silent corruption, and storage errors. The `crc32fast` crate uses hardware SIMD (SSE4.2 CRC32 instructions on x86_64), making the overhead negligible for 32MB pages. Gating behind a feature flag would create two on-disk format variants, complicating recovery and deployment. Instead: checksums are always computed and written. Format version bumps from 2 to 3. Recovery detects version 2 pages (no checksum) and skips validation for backward compatibility. This is a production durability improvement that happens to also enable torn-write testing in simulation.
 
 ### Changes Required
 
@@ -277,7 +305,7 @@ A framework where:
 #### Automated Verification
 - [ ] `cargo nextest run --workspace --all-targets` — all tests pass (including existing crash_recovery with new checksum code)
 - [ ] CRC validation catches 100% of injected torn writes with zero false positives (SC-004)
-- [ ] `cargo build --release -p faster-core` — production binary size unchanged (CRC is always-on but negligible)
+- [ ] `cargo build --release -p faster-core` — CRC overhead negligible (crc32fast uses SIMD; always-on, not feature-gated)
 - [ ] Format version 2 backward compatibility preserved
 
 #### Manual Verification
@@ -288,6 +316,8 @@ A framework where:
 
 ## Phase 6: Campaign Engine & Scenario Templates
 
+**Depends on**: Phases 2, 3, 4, 5 (needs scheduler, CRUD integration, crash injection, and checksums for full scenario coverage)
+
 **Objective**: Build the seed exploration campaign system that sweeps thousands of seed/fault combinations across scenario templates, executing in parallel and reporting failures with reproduction commands.
 
 ### Changes Required
@@ -296,8 +326,10 @@ A framework where:
   - Workload: which operations (CRUD mix, key distribution, operation count)
   - Fault profile: FaultConfig settings (error rates, partial writes, limits)
   - Crash schedule: which crash points to trigger and when
-  - Invariants: which invariant checks to run post-scenario
+  - Invariants: which invariant checks to run post-scenario (using composable combinators)
   - Builder pattern for ergonomic construction
+
+- **`rust/crates/faster-dst/src/invariant.rs`** (modify): Extend the existing `Invariant` trait with composable combinators (FR-012): `And<A, B>`, `Or<A, B>`, `All(Vec<Box<dyn Invariant>>)`, `Not<I>`. Add standard invariant library: `AllCommittedRecoverable` (existing), `NoPhantomRecords`, `MonotonicAddresses`, `ConsistentHashIndex`, `ValidPageChecksums`. ScenarioTemplate consumes composed invariants via `invariants: Vec<Box<dyn Invariant>>`.
 
 - **`rust/crates/faster-dst/src/campaign.rs`** (new): `SeedCampaign` — execution engine:
   - Accepts Vec<ScenarioTemplate> and seed range
@@ -349,6 +381,8 @@ A framework where:
 ---
 
 ## Phase 7: Documentation
+
+**Depends on**: Phases 1-6 (documents the completed framework)
 
 **Objective**: Create comprehensive documentation covering the simulation testing framework's architecture, usage, and integration with CI.
 
