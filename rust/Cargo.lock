@@ -414,6 +414,7 @@ dependencies = [
 name = "faster-dst"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
  "faster-core",
  "rand",
  "tempfile",

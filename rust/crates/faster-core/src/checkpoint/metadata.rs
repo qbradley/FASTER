@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::address::LogicalAddress;
 
 /// Current metadata format version. Bump when the on-disk layout changes.
-pub const FORMAT_VERSION_CURRENT: u64 = 2;
+pub const FORMAT_VERSION_CURRENT: u64 = 3;
 
 // ---------------------------------------------------------------------------
 // CheckpointType
