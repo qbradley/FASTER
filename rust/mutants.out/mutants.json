@@ -1,0 +1,1829 @@
+[
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace - with +\n@@ -51,17 +51,17 @@\n /// The upper 16 bits of the `u64` are reserved for the hash table.\n pub const ADDRESS_BITS: u32 = 48;\n \n /// Number of bits used for the offset within a page.\n /// Default 25 → page size of 2^25 = 32 MB.\n pub const OFFSET_BITS: u32 = 25;\n \n /// Number of bits used for the page index: `ADDRESS_BITS - OFFSET_BITS`.\n-pub const PAGE_BITS: u32 = ADDRESS_BITS - OFFSET_BITS; // 23\n+pub const PAGE_BITS: u32 = ADDRESS_BITS + /* ~ changed by cargo-mutants ~ */ OFFSET_BITS; // 23\n \n /// Maximum valid offset value: `(1 << OFFSET_BITS) - 1`.\n pub const MAX_OFFSET: u32 = (1u32 << OFFSET_BITS) - 1;\n \n /// Maximum valid page number: `(1 << PAGE_BITS) - 1`.\n pub const MAX_PAGE: u32 = (1u32 << PAGE_BITS) - 1;\n \n /// Maximum raw address value (48 bits set): `(1 << ADDRESS_BITS) - 1`.\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:59:41: replace - with +",
+    "package": "faster-core",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 42,
+        "line": 59
+      },
+      "start": {
+        "column": 41,
+        "line": 59
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace - with /\n@@ -51,17 +51,17 @@\n /// The upper 16 bits of the `u64` are reserved for the hash table.\n pub const ADDRESS_BITS: u32 = 48;\n \n /// Number of bits used for the offset within a page.\n /// Default 25 → page size of 2^25 = 32 MB.\n pub const OFFSET_BITS: u32 = 25;\n \n /// Number of bits used for the page index: `ADDRESS_BITS - OFFSET_BITS`.\n-pub const PAGE_BITS: u32 = ADDRESS_BITS - OFFSET_BITS; // 23\n+pub const PAGE_BITS: u32 = ADDRESS_BITS / /* ~ changed by cargo-mutants ~ */ OFFSET_BITS; // 23\n \n /// Maximum valid offset value: `(1 << OFFSET_BITS) - 1`.\n pub const MAX_OFFSET: u32 = (1u32 << OFFSET_BITS) - 1;\n \n /// Maximum valid page number: `(1 << PAGE_BITS) - 1`.\n pub const MAX_PAGE: u32 = (1u32 << PAGE_BITS) - 1;\n \n /// Maximum raw address value (48 bits set): `(1 << ADDRESS_BITS) - 1`.\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:59:41: replace - with /",
+    "package": "faster-core",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 42,
+        "line": 59
+      },
+      "start": {
+        "column": 41,
+        "line": 59
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace - with +\n@@ -54,17 +54,17 @@\n /// Number of bits used for the offset within a page.\n /// Default 25 → page size of 2^25 = 32 MB.\n pub const OFFSET_BITS: u32 = 25;\n \n /// Number of bits used for the page index: `ADDRESS_BITS - OFFSET_BITS`.\n pub const PAGE_BITS: u32 = ADDRESS_BITS - OFFSET_BITS; // 23\n \n /// Maximum valid offset value: `(1 << OFFSET_BITS) - 1`.\n-pub const MAX_OFFSET: u32 = (1u32 << OFFSET_BITS) - 1;\n+pub const MAX_OFFSET: u32 = (1u32 << OFFSET_BITS) + /* ~ changed by cargo-mutants ~ */ 1;\n \n /// Maximum valid page number: `(1 << PAGE_BITS) - 1`.\n pub const MAX_PAGE: u32 = (1u32 << PAGE_BITS) - 1;\n \n /// Maximum raw address value (48 bits set): `(1 << ADDRESS_BITS) - 1`.\n pub const MAX_ADDRESS: u64 = (1u64 << ADDRESS_BITS) - 1;\n \n /// Read-cache bit: the MSB of the 48-bit address (bit 47).\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:62:51: replace - with +",
+    "package": "faster-core",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 52,
+        "line": 62
+      },
+      "start": {
+        "column": 51,
+        "line": 62
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace - with /\n@@ -54,17 +54,17 @@\n /// Number of bits used for the offset within a page.\n /// Default 25 → page size of 2^25 = 32 MB.\n pub const OFFSET_BITS: u32 = 25;\n \n /// Number of bits used for the page index: `ADDRESS_BITS - OFFSET_BITS`.\n pub const PAGE_BITS: u32 = ADDRESS_BITS - OFFSET_BITS; // 23\n \n /// Maximum valid offset value: `(1 << OFFSET_BITS) - 1`.\n-pub const MAX_OFFSET: u32 = (1u32 << OFFSET_BITS) - 1;\n+pub const MAX_OFFSET: u32 = (1u32 << OFFSET_BITS) / /* ~ changed by cargo-mutants ~ */ 1;\n \n /// Maximum valid page number: `(1 << PAGE_BITS) - 1`.\n pub const MAX_PAGE: u32 = (1u32 << PAGE_BITS) - 1;\n \n /// Maximum raw address value (48 bits set): `(1 << ADDRESS_BITS) - 1`.\n pub const MAX_ADDRESS: u64 = (1u64 << ADDRESS_BITS) - 1;\n \n /// Read-cache bit: the MSB of the 48-bit address (bit 47).\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:62:51: replace - with /",
+    "package": "faster-core",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 52,
+        "line": 62
+      },
+      "start": {
+        "column": 51,
+        "line": 62
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace << with >>\n@@ -54,17 +54,17 @@\n /// Number of bits used for the offset within a page.\n /// Default 25 → page size of 2^25 = 32 MB.\n pub const OFFSET_BITS: u32 = 25;\n \n /// Number of bits used for the page index: `ADDRESS_BITS - OFFSET_BITS`.\n pub const PAGE_BITS: u32 = ADDRESS_BITS - OFFSET_BITS; // 23\n \n /// Maximum valid offset value: `(1 << OFFSET_BITS) - 1`.\n-pub const MAX_OFFSET: u32 = (1u32 << OFFSET_BITS) - 1;\n+pub const MAX_OFFSET: u32 = (1u32 >> /* ~ changed by cargo-mutants ~ */ OFFSET_BITS) - 1;\n \n /// Maximum valid page number: `(1 << PAGE_BITS) - 1`.\n pub const MAX_PAGE: u32 = (1u32 << PAGE_BITS) - 1;\n \n /// Maximum raw address value (48 bits set): `(1 << ADDRESS_BITS) - 1`.\n pub const MAX_ADDRESS: u64 = (1u64 << ADDRESS_BITS) - 1;\n \n /// Read-cache bit: the MSB of the 48-bit address (bit 47).\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:62:35: replace << with >>",
+    "package": "faster-core",
+    "replacement": ">>",
+    "span": {
+      "end": {
+        "column": 37,
+        "line": 62
+      },
+      "start": {
+        "column": 35,
+        "line": 62
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace - with +\n@@ -57,17 +57,17 @@\n \n /// Number of bits used for the page index: `ADDRESS_BITS - OFFSET_BITS`.\n pub const PAGE_BITS: u32 = ADDRESS_BITS - OFFSET_BITS; // 23\n \n /// Maximum valid offset value: `(1 << OFFSET_BITS) - 1`.\n pub const MAX_OFFSET: u32 = (1u32 << OFFSET_BITS) - 1;\n \n /// Maximum valid page number: `(1 << PAGE_BITS) - 1`.\n-pub const MAX_PAGE: u32 = (1u32 << PAGE_BITS) - 1;\n+pub const MAX_PAGE: u32 = (1u32 << PAGE_BITS) + /* ~ changed by cargo-mutants ~ */ 1;\n \n /// Maximum raw address value (48 bits set): `(1 << ADDRESS_BITS) - 1`.\n pub const MAX_ADDRESS: u64 = (1u64 << ADDRESS_BITS) - 1;\n \n /// Read-cache bit: the MSB of the 48-bit address (bit 47).\n /// When set, the address refers to the read cache rather than the main log.\n pub const READ_CACHE_BIT: u64 = 1u64 << (ADDRESS_BITS - 1);\n \n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:65:47: replace - with +",
+    "package": "faster-core",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 48,
+        "line": 65
+      },
+      "start": {
+        "column": 47,
+        "line": 65
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace - with /\n@@ -57,17 +57,17 @@\n \n /// Number of bits used for the page index: `ADDRESS_BITS - OFFSET_BITS`.\n pub const PAGE_BITS: u32 = ADDRESS_BITS - OFFSET_BITS; // 23\n \n /// Maximum valid offset value: `(1 << OFFSET_BITS) - 1`.\n pub const MAX_OFFSET: u32 = (1u32 << OFFSET_BITS) - 1;\n \n /// Maximum valid page number: `(1 << PAGE_BITS) - 1`.\n-pub const MAX_PAGE: u32 = (1u32 << PAGE_BITS) - 1;\n+pub const MAX_PAGE: u32 = (1u32 << PAGE_BITS) / /* ~ changed by cargo-mutants ~ */ 1;\n \n /// Maximum raw address value (48 bits set): `(1 << ADDRESS_BITS) - 1`.\n pub const MAX_ADDRESS: u64 = (1u64 << ADDRESS_BITS) - 1;\n \n /// Read-cache bit: the MSB of the 48-bit address (bit 47).\n /// When set, the address refers to the read cache rather than the main log.\n pub const READ_CACHE_BIT: u64 = 1u64 << (ADDRESS_BITS - 1);\n \n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:65:47: replace - with /",
+    "package": "faster-core",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 48,
+        "line": 65
+      },
+      "start": {
+        "column": 47,
+        "line": 65
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace << with >>\n@@ -57,17 +57,17 @@\n \n /// Number of bits used for the page index: `ADDRESS_BITS - OFFSET_BITS`.\n pub const PAGE_BITS: u32 = ADDRESS_BITS - OFFSET_BITS; // 23\n \n /// Maximum valid offset value: `(1 << OFFSET_BITS) - 1`.\n pub const MAX_OFFSET: u32 = (1u32 << OFFSET_BITS) - 1;\n \n /// Maximum valid page number: `(1 << PAGE_BITS) - 1`.\n-pub const MAX_PAGE: u32 = (1u32 << PAGE_BITS) - 1;\n+pub const MAX_PAGE: u32 = (1u32 >> /* ~ changed by cargo-mutants ~ */ PAGE_BITS) - 1;\n \n /// Maximum raw address value (48 bits set): `(1 << ADDRESS_BITS) - 1`.\n pub const MAX_ADDRESS: u64 = (1u64 << ADDRESS_BITS) - 1;\n \n /// Read-cache bit: the MSB of the 48-bit address (bit 47).\n /// When set, the address refers to the read cache rather than the main log.\n pub const READ_CACHE_BIT: u64 = 1u64 << (ADDRESS_BITS - 1);\n \n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:65:33: replace << with >>",
+    "package": "faster-core",
+    "replacement": ">>",
+    "span": {
+      "end": {
+        "column": 35,
+        "line": 65
+      },
+      "start": {
+        "column": 33,
+        "line": 65
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace - with +\n@@ -60,17 +60,17 @@\n \n /// Maximum valid offset value: `(1 << OFFSET_BITS) - 1`.\n pub const MAX_OFFSET: u32 = (1u32 << OFFSET_BITS) - 1;\n \n /// Maximum valid page number: `(1 << PAGE_BITS) - 1`.\n pub const MAX_PAGE: u32 = (1u32 << PAGE_BITS) - 1;\n \n /// Maximum raw address value (48 bits set): `(1 << ADDRESS_BITS) - 1`.\n-pub const MAX_ADDRESS: u64 = (1u64 << ADDRESS_BITS) - 1;\n+pub const MAX_ADDRESS: u64 = (1u64 << ADDRESS_BITS) + /* ~ changed by cargo-mutants ~ */ 1;\n \n /// Read-cache bit: the MSB of the 48-bit address (bit 47).\n /// When set, the address refers to the read cache rather than the main log.\n pub const READ_CACHE_BIT: u64 = 1u64 << (ADDRESS_BITS - 1);\n \n // ---------------------------------------------------------------------------\n // Page newtype\n // ---------------------------------------------------------------------------\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:68:53: replace - with +",
+    "package": "faster-core",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 54,
+        "line": 68
+      },
+      "start": {
+        "column": 53,
+        "line": 68
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace - with /\n@@ -60,17 +60,17 @@\n \n /// Maximum valid offset value: `(1 << OFFSET_BITS) - 1`.\n pub const MAX_OFFSET: u32 = (1u32 << OFFSET_BITS) - 1;\n \n /// Maximum valid page number: `(1 << PAGE_BITS) - 1`.\n pub const MAX_PAGE: u32 = (1u32 << PAGE_BITS) - 1;\n \n /// Maximum raw address value (48 bits set): `(1 << ADDRESS_BITS) - 1`.\n-pub const MAX_ADDRESS: u64 = (1u64 << ADDRESS_BITS) - 1;\n+pub const MAX_ADDRESS: u64 = (1u64 << ADDRESS_BITS) / /* ~ changed by cargo-mutants ~ */ 1;\n \n /// Read-cache bit: the MSB of the 48-bit address (bit 47).\n /// When set, the address refers to the read cache rather than the main log.\n pub const READ_CACHE_BIT: u64 = 1u64 << (ADDRESS_BITS - 1);\n \n // ---------------------------------------------------------------------------\n // Page newtype\n // ---------------------------------------------------------------------------\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:68:53: replace - with /",
+    "package": "faster-core",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 54,
+        "line": 68
+      },
+      "start": {
+        "column": 53,
+        "line": 68
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace << with >>\n@@ -60,17 +60,17 @@\n \n /// Maximum valid offset value: `(1 << OFFSET_BITS) - 1`.\n pub const MAX_OFFSET: u32 = (1u32 << OFFSET_BITS) - 1;\n \n /// Maximum valid page number: `(1 << PAGE_BITS) - 1`.\n pub const MAX_PAGE: u32 = (1u32 << PAGE_BITS) - 1;\n \n /// Maximum raw address value (48 bits set): `(1 << ADDRESS_BITS) - 1`.\n-pub const MAX_ADDRESS: u64 = (1u64 << ADDRESS_BITS) - 1;\n+pub const MAX_ADDRESS: u64 = (1u64 >> /* ~ changed by cargo-mutants ~ */ ADDRESS_BITS) - 1;\n \n /// Read-cache bit: the MSB of the 48-bit address (bit 47).\n /// When set, the address refers to the read cache rather than the main log.\n pub const READ_CACHE_BIT: u64 = 1u64 << (ADDRESS_BITS - 1);\n \n // ---------------------------------------------------------------------------\n // Page newtype\n // ---------------------------------------------------------------------------\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:68:36: replace << with >>",
+    "package": "faster-core",
+    "replacement": ">>",
+    "span": {
+      "end": {
+        "column": 38,
+        "line": 68
+      },
+      "start": {
+        "column": 36,
+        "line": 68
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace << with >>\n@@ -64,17 +64,17 @@\n /// Maximum valid page number: `(1 << PAGE_BITS) - 1`.\n pub const MAX_PAGE: u32 = (1u32 << PAGE_BITS) - 1;\n \n /// Maximum raw address value (48 bits set): `(1 << ADDRESS_BITS) - 1`.\n pub const MAX_ADDRESS: u64 = (1u64 << ADDRESS_BITS) - 1;\n \n /// Read-cache bit: the MSB of the 48-bit address (bit 47).\n /// When set, the address refers to the read cache rather than the main log.\n-pub const READ_CACHE_BIT: u64 = 1u64 << (ADDRESS_BITS - 1);\n+pub const READ_CACHE_BIT: u64 = 1u64 >> /* ~ changed by cargo-mutants ~ */ (ADDRESS_BITS - 1);\n \n // ---------------------------------------------------------------------------\n // Page newtype\n // ---------------------------------------------------------------------------\n \n /// A page number in the hybrid log.\n ///\n /// Pages are numbered 0 through [`MAX_PAGE`] (8,388,607 with default settings).\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:72:38: replace << with >>",
+    "package": "faster-core",
+    "replacement": ">>",
+    "span": {
+      "end": {
+        "column": 40,
+        "line": 72
+      },
+      "start": {
+        "column": 38,
+        "line": 72
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace - with +\n@@ -64,17 +64,17 @@\n /// Maximum valid page number: `(1 << PAGE_BITS) - 1`.\n pub const MAX_PAGE: u32 = (1u32 << PAGE_BITS) - 1;\n \n /// Maximum raw address value (48 bits set): `(1 << ADDRESS_BITS) - 1`.\n pub const MAX_ADDRESS: u64 = (1u64 << ADDRESS_BITS) - 1;\n \n /// Read-cache bit: the MSB of the 48-bit address (bit 47).\n /// When set, the address refers to the read cache rather than the main log.\n-pub const READ_CACHE_BIT: u64 = 1u64 << (ADDRESS_BITS - 1);\n+pub const READ_CACHE_BIT: u64 = 1u64 << (ADDRESS_BITS + /* ~ changed by cargo-mutants ~ */ 1);\n \n // ---------------------------------------------------------------------------\n // Page newtype\n // ---------------------------------------------------------------------------\n \n /// A page number in the hybrid log.\n ///\n /// Pages are numbered 0 through [`MAX_PAGE`] (8,388,607 with default settings).\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:72:55: replace - with +",
+    "package": "faster-core",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 56,
+        "line": 72
+      },
+      "start": {
+        "column": 55,
+        "line": 72
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace - with /\n@@ -64,17 +64,17 @@\n /// Maximum valid page number: `(1 << PAGE_BITS) - 1`.\n pub const MAX_PAGE: u32 = (1u32 << PAGE_BITS) - 1;\n \n /// Maximum raw address value (48 bits set): `(1 << ADDRESS_BITS) - 1`.\n pub const MAX_ADDRESS: u64 = (1u64 << ADDRESS_BITS) - 1;\n \n /// Read-cache bit: the MSB of the 48-bit address (bit 47).\n /// When set, the address refers to the read cache rather than the main log.\n-pub const READ_CACHE_BIT: u64 = 1u64 << (ADDRESS_BITS - 1);\n+pub const READ_CACHE_BIT: u64 = 1u64 << (ADDRESS_BITS / /* ~ changed by cargo-mutants ~ */ 1);\n \n // ---------------------------------------------------------------------------\n // Page newtype\n // ---------------------------------------------------------------------------\n \n /// A page number in the hybrid log.\n ///\n /// Pages are numbered 0 through [`MAX_PAGE`] (8,388,607 with default settings).\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:72:55: replace - with /",
+    "package": "faster-core",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 56,
+        "line": 72
+      },
+      "start": {
+        "column": 55,
+        "line": 72
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace <impl fmt::Debug for Page>::fmt -> fmt::Result with Ok(Default::default())\n@@ -90,17 +90,17 @@\n /// assert_eq!(format!(\"{p}\"), \"Page(100)\");\n /// ```\n #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]\n #[repr(transparent)]\n pub struct Page(pub u32);\n \n impl fmt::Debug for Page {\n     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\n-        write!(f, \"Page({})\", self.0)\n+        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n impl fmt::Display for Page {\n     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\n         write!(f, \"Page({})\", self.0)\n     }\n }\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "<impl fmt::Debug for Page>::fmt",
+      "return_type": "-> fmt::Result",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 99
+        },
+        "start": {
+          "column": 5,
+          "line": 97
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:98:9: replace <impl fmt::Debug for Page>::fmt -> fmt::Result with Ok(Default::default())",
+    "package": "faster-core",
+    "replacement": "Ok(Default::default())",
+    "span": {
+      "end": {
+        "column": 38,
+        "line": 98
+      },
+      "start": {
+        "column": 9,
+        "line": 98
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace <impl fmt::Display for Page>::fmt -> fmt::Result with Ok(Default::default())\n@@ -96,17 +96,17 @@\n impl fmt::Debug for Page {\n     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\n         write!(f, \"Page({})\", self.0)\n     }\n }\n \n impl fmt::Display for Page {\n     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\n-        write!(f, \"Page({})\", self.0)\n+        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n // ---------------------------------------------------------------------------\n // Offset newtype\n // ---------------------------------------------------------------------------\n \n /// An offset within a page.\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "<impl fmt::Display for Page>::fmt",
+      "return_type": "-> fmt::Result",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 105
+        },
+        "start": {
+          "column": 5,
+          "line": 103
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:104:9: replace <impl fmt::Display for Page>::fmt -> fmt::Result with Ok(Default::default())",
+    "package": "faster-core",
+    "replacement": "Ok(Default::default())",
+    "span": {
+      "end": {
+        "column": 38,
+        "line": 104
+      },
+      "start": {
+        "column": 9,
+        "line": 104
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace <impl fmt::Debug for Offset>::fmt -> fmt::Result with Ok(Default::default())\n@@ -124,17 +124,17 @@\n /// assert_eq!(format!(\"{o}\"), \"Offset(512)\");\n /// ```\n #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]\n #[repr(transparent)]\n pub struct Offset(pub u32);\n \n impl fmt::Debug for Offset {\n     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\n-        write!(f, \"Offset({})\", self.0)\n+        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n impl fmt::Display for Offset {\n     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\n         write!(f, \"Offset({})\", self.0)\n     }\n }\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "<impl fmt::Debug for Offset>::fmt",
+      "return_type": "-> fmt::Result",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 133
+        },
+        "start": {
+          "column": 5,
+          "line": 131
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:132:9: replace <impl fmt::Debug for Offset>::fmt -> fmt::Result with Ok(Default::default())",
+    "package": "faster-core",
+    "replacement": "Ok(Default::default())",
+    "span": {
+      "end": {
+        "column": 40,
+        "line": 132
+      },
+      "start": {
+        "column": 9,
+        "line": 132
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace <impl fmt::Display for Offset>::fmt -> fmt::Result with Ok(Default::default())\n@@ -130,17 +130,17 @@\n impl fmt::Debug for Offset {\n     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\n         write!(f, \"Offset({})\", self.0)\n     }\n }\n \n impl fmt::Display for Offset {\n     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\n-        write!(f, \"Offset({})\", self.0)\n+        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n // ---------------------------------------------------------------------------\n // LogicalAddress\n // ---------------------------------------------------------------------------\n \n /// A logical address in the FASTER hybrid log.\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "<impl fmt::Display for Offset>::fmt",
+      "return_type": "-> fmt::Result",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 139
+        },
+        "start": {
+          "column": 5,
+          "line": 137
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:138:9: replace <impl fmt::Display for Offset>::fmt -> fmt::Result with Ok(Default::default())",
+    "package": "faster-core",
+    "replacement": "Ok(Default::default())",
+    "span": {
+      "end": {
+        "column": 40,
+        "line": 138
+      },
+      "start": {
+        "column": 9,
+        "line": 138
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace - with +\n@@ -182,17 +182,17 @@\n #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]\n #[repr(transparent)]\n pub struct LogicalAddress(u64);\n \n /// Mask for the lower 48 address bits.\n const ADDRESS_MASK: u64 = MAX_ADDRESS;\n \n /// Mask for the lower 25 offset bits.\n-const OFFSET_MASK: u64 = (1u64 << OFFSET_BITS) - 1;\n+const OFFSET_MASK: u64 = (1u64 << OFFSET_BITS) + /* ~ changed by cargo-mutants ~ */ 1;\n \n impl LogicalAddress {\n     /// An invalid address sentinel.\n     ///\n     /// Set to `1` (not `0`) to distinguish a hash bucket entry that points to an\n     /// invalid address from an all-zeros empty entry. Matches C++\n     /// `Address::kInvalidAddress`.\n     pub const INVALID: Self = Self(1);\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:190:48: replace - with +",
+    "package": "faster-core",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 49,
+        "line": 190
+      },
+      "start": {
+        "column": 48,
+        "line": 190
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace - with /\n@@ -182,17 +182,17 @@\n #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]\n #[repr(transparent)]\n pub struct LogicalAddress(u64);\n \n /// Mask for the lower 48 address bits.\n const ADDRESS_MASK: u64 = MAX_ADDRESS;\n \n /// Mask for the lower 25 offset bits.\n-const OFFSET_MASK: u64 = (1u64 << OFFSET_BITS) - 1;\n+const OFFSET_MASK: u64 = (1u64 << OFFSET_BITS) / /* ~ changed by cargo-mutants ~ */ 1;\n \n impl LogicalAddress {\n     /// An invalid address sentinel.\n     ///\n     /// Set to `1` (not `0`) to distinguish a hash bucket entry that points to an\n     /// invalid address from an all-zeros empty entry. Matches C++\n     /// `Address::kInvalidAddress`.\n     pub const INVALID: Self = Self(1);\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:190:48: replace - with /",
+    "package": "faster-core",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 49,
+        "line": 190
+      },
+      "start": {
+        "column": 48,
+        "line": 190
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace << with >>\n@@ -182,17 +182,17 @@\n #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]\n #[repr(transparent)]\n pub struct LogicalAddress(u64);\n \n /// Mask for the lower 48 address bits.\n const ADDRESS_MASK: u64 = MAX_ADDRESS;\n \n /// Mask for the lower 25 offset bits.\n-const OFFSET_MASK: u64 = (1u64 << OFFSET_BITS) - 1;\n+const OFFSET_MASK: u64 = (1u64 >> /* ~ changed by cargo-mutants ~ */ OFFSET_BITS) - 1;\n \n impl LogicalAddress {\n     /// An invalid address sentinel.\n     ///\n     /// Set to `1` (not `0`) to distinguish a hash bucket entry that points to an\n     /// invalid address from an all-zeros empty entry. Matches C++\n     /// `Address::kInvalidAddress`.\n     pub const INVALID: Self = Self(1);\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:190:32: replace << with >>",
+    "package": "faster-core",
+    "replacement": ">>",
+    "span": {
+      "end": {
+        "column": 34,
+        "line": 190
+      },
+      "start": {
+        "column": 32,
+        "line": 190
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace LogicalAddress::from_raw -> Self with Default::default()\n@@ -241,17 +241,17 @@\n     /// ```\n     /// use faster_core::address::LogicalAddress;\n     ///\n     /// let addr = LogicalAddress::from_raw(0x0000_DEAD_BEEF_1234);\n     /// assert_eq!(addr.raw(), 0x0000_DEAD_BEEF_1234);\n     /// ```\n     #[inline(always)]\n     pub const fn from_raw(raw: u64) -> Self {\n-        Self(raw & ADDRESS_MASK)\n+        Default::default() /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Returns the raw `u64` representation of this address.\n     #[inline(always)]\n     pub const fn raw(self) -> u64 {\n         self.0\n     }\n \n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::from_raw",
+      "return_type": "-> Self",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 250
+        },
+        "start": {
+          "column": 5,
+          "line": 235
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:249:9: replace LogicalAddress::from_raw -> Self with Default::default()",
+    "package": "faster-core",
+    "replacement": "Default::default()",
+    "span": {
+      "end": {
+        "column": 33,
+        "line": 249
+      },
+      "start": {
+        "column": 9,
+        "line": 249
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace & with | in LogicalAddress::from_raw\n@@ -241,17 +241,17 @@\n     /// ```\n     /// use faster_core::address::LogicalAddress;\n     ///\n     /// let addr = LogicalAddress::from_raw(0x0000_DEAD_BEEF_1234);\n     /// assert_eq!(addr.raw(), 0x0000_DEAD_BEEF_1234);\n     /// ```\n     #[inline(always)]\n     pub const fn from_raw(raw: u64) -> Self {\n-        Self(raw & ADDRESS_MASK)\n+        Self(raw | /* ~ changed by cargo-mutants ~ */ ADDRESS_MASK)\n     }\n \n     /// Returns the raw `u64` representation of this address.\n     #[inline(always)]\n     pub const fn raw(self) -> u64 {\n         self.0\n     }\n \n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::from_raw",
+      "return_type": "-> Self",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 250
+        },
+        "start": {
+          "column": 5,
+          "line": 235
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:249:18: replace & with | in LogicalAddress::from_raw",
+    "package": "faster-core",
+    "replacement": "|",
+    "span": {
+      "end": {
+        "column": 19,
+        "line": 249
+      },
+      "start": {
+        "column": 18,
+        "line": 249
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace & with ^ in LogicalAddress::from_raw\n@@ -241,17 +241,17 @@\n     /// ```\n     /// use faster_core::address::LogicalAddress;\n     ///\n     /// let addr = LogicalAddress::from_raw(0x0000_DEAD_BEEF_1234);\n     /// assert_eq!(addr.raw(), 0x0000_DEAD_BEEF_1234);\n     /// ```\n     #[inline(always)]\n     pub const fn from_raw(raw: u64) -> Self {\n-        Self(raw & ADDRESS_MASK)\n+        Self(raw ^ /* ~ changed by cargo-mutants ~ */ ADDRESS_MASK)\n     }\n \n     /// Returns the raw `u64` representation of this address.\n     #[inline(always)]\n     pub const fn raw(self) -> u64 {\n         self.0\n     }\n \n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::from_raw",
+      "return_type": "-> Self",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 250
+        },
+        "start": {
+          "column": 5,
+          "line": 235
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:249:18: replace & with ^ in LogicalAddress::from_raw",
+    "package": "faster-core",
+    "replacement": "^",
+    "span": {
+      "end": {
+        "column": 19,
+        "line": 249
+      },
+      "start": {
+        "column": 18,
+        "line": 249
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace LogicalAddress::raw -> u64 with 0\n@@ -247,17 +247,17 @@\n     #[inline(always)]\n     pub const fn from_raw(raw: u64) -> Self {\n         Self(raw & ADDRESS_MASK)\n     }\n \n     /// Returns the raw `u64` representation of this address.\n     #[inline(always)]\n     pub const fn raw(self) -> u64 {\n-        self.0\n+        0 /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Extracts the page number from this address.\n     ///\n     /// # Examples\n     ///\n     /// ```\n     /// use faster_core::address::{LogicalAddress, Page, Offset};\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::raw",
+      "return_type": "-> u64",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 256
+        },
+        "start": {
+          "column": 5,
+          "line": 252
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:255:9: replace LogicalAddress::raw -> u64 with 0",
+    "package": "faster-core",
+    "replacement": "0",
+    "span": {
+      "end": {
+        "column": 15,
+        "line": 255
+      },
+      "start": {
+        "column": 9,
+        "line": 255
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace LogicalAddress::raw -> u64 with 1\n@@ -247,17 +247,17 @@\n     #[inline(always)]\n     pub const fn from_raw(raw: u64) -> Self {\n         Self(raw & ADDRESS_MASK)\n     }\n \n     /// Returns the raw `u64` representation of this address.\n     #[inline(always)]\n     pub const fn raw(self) -> u64 {\n-        self.0\n+        1 /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Extracts the page number from this address.\n     ///\n     /// # Examples\n     ///\n     /// ```\n     /// use faster_core::address::{LogicalAddress, Page, Offset};\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::raw",
+      "return_type": "-> u64",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 256
+        },
+        "start": {
+          "column": 5,
+          "line": 252
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:255:9: replace LogicalAddress::raw -> u64 with 1",
+    "package": "faster-core",
+    "replacement": "1",
+    "span": {
+      "end": {
+        "column": 15,
+        "line": 255
+      },
+      "start": {
+        "column": 9,
+        "line": 255
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace LogicalAddress::page -> Page with Default::default()\n@@ -262,17 +262,17 @@\n     /// ```\n     /// use faster_core::address::{LogicalAddress, Page, Offset};\n     ///\n     /// let addr = LogicalAddress::new(Page(42), Offset(100));\n     /// assert_eq!(addr.page(), Page(42));\n     /// ```\n     #[inline(always)]\n     pub const fn page(self) -> Page {\n-        Page((self.0 >> OFFSET_BITS) as u32)\n+        Default::default() /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Extracts the offset within the page from this address.\n     ///\n     /// # Examples\n     ///\n     /// ```\n     /// use faster_core::address::{LogicalAddress, Page, Offset};\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::page",
+      "return_type": "-> Page",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 271
+        },
+        "start": {
+          "column": 5,
+          "line": 258
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:270:9: replace LogicalAddress::page -> Page with Default::default()",
+    "package": "faster-core",
+    "replacement": "Default::default()",
+    "span": {
+      "end": {
+        "column": 45,
+        "line": 270
+      },
+      "start": {
+        "column": 9,
+        "line": 270
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace >> with << in LogicalAddress::page\n@@ -262,17 +262,17 @@\n     /// ```\n     /// use faster_core::address::{LogicalAddress, Page, Offset};\n     ///\n     /// let addr = LogicalAddress::new(Page(42), Offset(100));\n     /// assert_eq!(addr.page(), Page(42));\n     /// ```\n     #[inline(always)]\n     pub const fn page(self) -> Page {\n-        Page((self.0 >> OFFSET_BITS) as u32)\n+        Page((self.0 << /* ~ changed by cargo-mutants ~ */ OFFSET_BITS) as u32)\n     }\n \n     /// Extracts the offset within the page from this address.\n     ///\n     /// # Examples\n     ///\n     /// ```\n     /// use faster_core::address::{LogicalAddress, Page, Offset};\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::page",
+      "return_type": "-> Page",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 271
+        },
+        "start": {
+          "column": 5,
+          "line": 258
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:270:22: replace >> with << in LogicalAddress::page",
+    "package": "faster-core",
+    "replacement": "<<",
+    "span": {
+      "end": {
+        "column": 24,
+        "line": 270
+      },
+      "start": {
+        "column": 22,
+        "line": 270
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace LogicalAddress::offset -> Offset with Default::default()\n@@ -277,17 +277,17 @@\n     /// ```\n     /// use faster_core::address::{LogicalAddress, Page, Offset};\n     ///\n     /// let addr = LogicalAddress::new(Page(0), Offset(512));\n     /// assert_eq!(addr.offset(), Offset(512));\n     /// ```\n     #[inline(always)]\n     pub const fn offset(self) -> Offset {\n-        Offset((self.0 & OFFSET_MASK) as u32)\n+        Default::default() /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Returns `true` if this address is valid (i.e. greater than [`INVALID`](Self::INVALID)).\n     ///\n     /// Both [`ZERO`](Self::ZERO) and [`INVALID`](Self::INVALID) are considered\n     /// not valid — only addresses ≥ [`MIN_VALID`](Self::MIN_VALID) return `true`.\n     ///\n     /// # Examples\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::offset",
+      "return_type": "-> Offset",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 286
+        },
+        "start": {
+          "column": 5,
+          "line": 273
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:285:9: replace LogicalAddress::offset -> Offset with Default::default()",
+    "package": "faster-core",
+    "replacement": "Default::default()",
+    "span": {
+      "end": {
+        "column": 46,
+        "line": 285
+      },
+      "start": {
+        "column": 9,
+        "line": 285
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace & with | in LogicalAddress::offset\n@@ -277,17 +277,17 @@\n     /// ```\n     /// use faster_core::address::{LogicalAddress, Page, Offset};\n     ///\n     /// let addr = LogicalAddress::new(Page(0), Offset(512));\n     /// assert_eq!(addr.offset(), Offset(512));\n     /// ```\n     #[inline(always)]\n     pub const fn offset(self) -> Offset {\n-        Offset((self.0 & OFFSET_MASK) as u32)\n+        Offset((self.0 | /* ~ changed by cargo-mutants ~ */ OFFSET_MASK) as u32)\n     }\n \n     /// Returns `true` if this address is valid (i.e. greater than [`INVALID`](Self::INVALID)).\n     ///\n     /// Both [`ZERO`](Self::ZERO) and [`INVALID`](Self::INVALID) are considered\n     /// not valid — only addresses ≥ [`MIN_VALID`](Self::MIN_VALID) return `true`.\n     ///\n     /// # Examples\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::offset",
+      "return_type": "-> Offset",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 286
+        },
+        "start": {
+          "column": 5,
+          "line": 273
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:285:24: replace & with | in LogicalAddress::offset",
+    "package": "faster-core",
+    "replacement": "|",
+    "span": {
+      "end": {
+        "column": 25,
+        "line": 285
+      },
+      "start": {
+        "column": 24,
+        "line": 285
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace & with ^ in LogicalAddress::offset\n@@ -277,17 +277,17 @@\n     /// ```\n     /// use faster_core::address::{LogicalAddress, Page, Offset};\n     ///\n     /// let addr = LogicalAddress::new(Page(0), Offset(512));\n     /// assert_eq!(addr.offset(), Offset(512));\n     /// ```\n     #[inline(always)]\n     pub const fn offset(self) -> Offset {\n-        Offset((self.0 & OFFSET_MASK) as u32)\n+        Offset((self.0 ^ /* ~ changed by cargo-mutants ~ */ OFFSET_MASK) as u32)\n     }\n \n     /// Returns `true` if this address is valid (i.e. greater than [`INVALID`](Self::INVALID)).\n     ///\n     /// Both [`ZERO`](Self::ZERO) and [`INVALID`](Self::INVALID) are considered\n     /// not valid — only addresses ≥ [`MIN_VALID`](Self::MIN_VALID) return `true`.\n     ///\n     /// # Examples\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::offset",
+      "return_type": "-> Offset",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 286
+        },
+        "start": {
+          "column": 5,
+          "line": 273
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:285:24: replace & with ^ in LogicalAddress::offset",
+    "package": "faster-core",
+    "replacement": "^",
+    "span": {
+      "end": {
+        "column": 25,
+        "line": 285
+      },
+      "start": {
+        "column": 24,
+        "line": 285
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace LogicalAddress::is_valid -> bool with true\n@@ -296,17 +296,17 @@\n     /// use faster_core::address::{LogicalAddress, Page, Offset};\n     ///\n     /// assert!(!LogicalAddress::ZERO.is_valid());\n     /// assert!(!LogicalAddress::INVALID.is_valid());\n     /// assert!(LogicalAddress::new(Page(0), Offset(2)).is_valid());\n     /// ```\n     #[inline(always)]\n     pub const fn is_valid(self) -> bool {\n-        self.0 > Self::INVALID.0\n+        true /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Returns `true` if this is the null/zero address.\n     #[inline(always)]\n     pub const fn is_null(self) -> bool {\n         self.0 == 0\n     }\n \n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::is_valid",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 305
+        },
+        "start": {
+          "column": 5,
+          "line": 288
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:304:9: replace LogicalAddress::is_valid -> bool with true",
+    "package": "faster-core",
+    "replacement": "true",
+    "span": {
+      "end": {
+        "column": 33,
+        "line": 304
+      },
+      "start": {
+        "column": 9,
+        "line": 304
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace LogicalAddress::is_valid -> bool with false\n@@ -296,17 +296,17 @@\n     /// use faster_core::address::{LogicalAddress, Page, Offset};\n     ///\n     /// assert!(!LogicalAddress::ZERO.is_valid());\n     /// assert!(!LogicalAddress::INVALID.is_valid());\n     /// assert!(LogicalAddress::new(Page(0), Offset(2)).is_valid());\n     /// ```\n     #[inline(always)]\n     pub const fn is_valid(self) -> bool {\n-        self.0 > Self::INVALID.0\n+        false /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Returns `true` if this is the null/zero address.\n     #[inline(always)]\n     pub const fn is_null(self) -> bool {\n         self.0 == 0\n     }\n \n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::is_valid",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 305
+        },
+        "start": {
+          "column": 5,
+          "line": 288
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:304:9: replace LogicalAddress::is_valid -> bool with false",
+    "package": "faster-core",
+    "replacement": "false",
+    "span": {
+      "end": {
+        "column": 33,
+        "line": 304
+      },
+      "start": {
+        "column": 9,
+        "line": 304
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace > with == in LogicalAddress::is_valid\n@@ -296,17 +296,17 @@\n     /// use faster_core::address::{LogicalAddress, Page, Offset};\n     ///\n     /// assert!(!LogicalAddress::ZERO.is_valid());\n     /// assert!(!LogicalAddress::INVALID.is_valid());\n     /// assert!(LogicalAddress::new(Page(0), Offset(2)).is_valid());\n     /// ```\n     #[inline(always)]\n     pub const fn is_valid(self) -> bool {\n-        self.0 > Self::INVALID.0\n+        self.0 == /* ~ changed by cargo-mutants ~ */ Self::INVALID.0\n     }\n \n     /// Returns `true` if this is the null/zero address.\n     #[inline(always)]\n     pub const fn is_null(self) -> bool {\n         self.0 == 0\n     }\n \n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::is_valid",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 305
+        },
+        "start": {
+          "column": 5,
+          "line": 288
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:304:16: replace > with == in LogicalAddress::is_valid",
+    "package": "faster-core",
+    "replacement": "==",
+    "span": {
+      "end": {
+        "column": 17,
+        "line": 304
+      },
+      "start": {
+        "column": 16,
+        "line": 304
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace > with < in LogicalAddress::is_valid\n@@ -296,17 +296,17 @@\n     /// use faster_core::address::{LogicalAddress, Page, Offset};\n     ///\n     /// assert!(!LogicalAddress::ZERO.is_valid());\n     /// assert!(!LogicalAddress::INVALID.is_valid());\n     /// assert!(LogicalAddress::new(Page(0), Offset(2)).is_valid());\n     /// ```\n     #[inline(always)]\n     pub const fn is_valid(self) -> bool {\n-        self.0 > Self::INVALID.0\n+        self.0 < /* ~ changed by cargo-mutants ~ */ Self::INVALID.0\n     }\n \n     /// Returns `true` if this is the null/zero address.\n     #[inline(always)]\n     pub const fn is_null(self) -> bool {\n         self.0 == 0\n     }\n \n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::is_valid",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 305
+        },
+        "start": {
+          "column": 5,
+          "line": 288
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:304:16: replace > with < in LogicalAddress::is_valid",
+    "package": "faster-core",
+    "replacement": "<",
+    "span": {
+      "end": {
+        "column": 17,
+        "line": 304
+      },
+      "start": {
+        "column": 16,
+        "line": 304
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace > with >= in LogicalAddress::is_valid\n@@ -296,17 +296,17 @@\n     /// use faster_core::address::{LogicalAddress, Page, Offset};\n     ///\n     /// assert!(!LogicalAddress::ZERO.is_valid());\n     /// assert!(!LogicalAddress::INVALID.is_valid());\n     /// assert!(LogicalAddress::new(Page(0), Offset(2)).is_valid());\n     /// ```\n     #[inline(always)]\n     pub const fn is_valid(self) -> bool {\n-        self.0 > Self::INVALID.0\n+        self.0 >= /* ~ changed by cargo-mutants ~ */ Self::INVALID.0\n     }\n \n     /// Returns `true` if this is the null/zero address.\n     #[inline(always)]\n     pub const fn is_null(self) -> bool {\n         self.0 == 0\n     }\n \n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::is_valid",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 305
+        },
+        "start": {
+          "column": 5,
+          "line": 288
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:304:16: replace > with >= in LogicalAddress::is_valid",
+    "package": "faster-core",
+    "replacement": ">=",
+    "span": {
+      "end": {
+        "column": 17,
+        "line": 304
+      },
+      "start": {
+        "column": 16,
+        "line": 304
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace LogicalAddress::is_null -> bool with true\n@@ -302,17 +302,17 @@\n     #[inline(always)]\n     pub const fn is_valid(self) -> bool {\n         self.0 > Self::INVALID.0\n     }\n \n     /// Returns `true` if this is the null/zero address.\n     #[inline(always)]\n     pub const fn is_null(self) -> bool {\n-        self.0 == 0\n+        true /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Returns `true` if this address refers to the read cache.\n     ///\n     /// The read-cache bit is bit 47 (the MSB of the 48-bit address space).\n     /// Matches C++ `Address::in_readcache()`.\n     #[inline(always)]\n     pub const fn in_read_cache(self) -> bool {\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::is_null",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 311
+        },
+        "start": {
+          "column": 5,
+          "line": 307
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:310:9: replace LogicalAddress::is_null -> bool with true",
+    "package": "faster-core",
+    "replacement": "true",
+    "span": {
+      "end": {
+        "column": 20,
+        "line": 310
+      },
+      "start": {
+        "column": 9,
+        "line": 310
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace LogicalAddress::is_null -> bool with false\n@@ -302,17 +302,17 @@\n     #[inline(always)]\n     pub const fn is_valid(self) -> bool {\n         self.0 > Self::INVALID.0\n     }\n \n     /// Returns `true` if this is the null/zero address.\n     #[inline(always)]\n     pub const fn is_null(self) -> bool {\n-        self.0 == 0\n+        false /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Returns `true` if this address refers to the read cache.\n     ///\n     /// The read-cache bit is bit 47 (the MSB of the 48-bit address space).\n     /// Matches C++ `Address::in_readcache()`.\n     #[inline(always)]\n     pub const fn in_read_cache(self) -> bool {\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::is_null",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 311
+        },
+        "start": {
+          "column": 5,
+          "line": 307
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:310:9: replace LogicalAddress::is_null -> bool with false",
+    "package": "faster-core",
+    "replacement": "false",
+    "span": {
+      "end": {
+        "column": 20,
+        "line": 310
+      },
+      "start": {
+        "column": 9,
+        "line": 310
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace == with != in LogicalAddress::is_null\n@@ -302,17 +302,17 @@\n     #[inline(always)]\n     pub const fn is_valid(self) -> bool {\n         self.0 > Self::INVALID.0\n     }\n \n     /// Returns `true` if this is the null/zero address.\n     #[inline(always)]\n     pub const fn is_null(self) -> bool {\n-        self.0 == 0\n+        self.0 != /* ~ changed by cargo-mutants ~ */ 0\n     }\n \n     /// Returns `true` if this address refers to the read cache.\n     ///\n     /// The read-cache bit is bit 47 (the MSB of the 48-bit address space).\n     /// Matches C++ `Address::in_readcache()`.\n     #[inline(always)]\n     pub const fn in_read_cache(self) -> bool {\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::is_null",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 311
+        },
+        "start": {
+          "column": 5,
+          "line": 307
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:310:16: replace == with != in LogicalAddress::is_null",
+    "package": "faster-core",
+    "replacement": "!=",
+    "span": {
+      "end": {
+        "column": 18,
+        "line": 310
+      },
+      "start": {
+        "column": 16,
+        "line": 310
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace LogicalAddress::in_read_cache -> bool with true\n@@ -311,17 +311,17 @@\n     }\n \n     /// Returns `true` if this address refers to the read cache.\n     ///\n     /// The read-cache bit is bit 47 (the MSB of the 48-bit address space).\n     /// Matches C++ `Address::in_readcache()`.\n     #[inline(always)]\n     pub const fn in_read_cache(self) -> bool {\n-        (self.0 & READ_CACHE_BIT) != 0\n+        true /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n impl Default for LogicalAddress {\n     /// Defaults to [`LogicalAddress::ZERO`].\n     fn default() -> Self {\n         Self::ZERO\n     }\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::in_read_cache",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 320
+        },
+        "start": {
+          "column": 5,
+          "line": 313
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:319:9: replace LogicalAddress::in_read_cache -> bool with true",
+    "package": "faster-core",
+    "replacement": "true",
+    "span": {
+      "end": {
+        "column": 39,
+        "line": 319
+      },
+      "start": {
+        "column": 9,
+        "line": 319
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace LogicalAddress::in_read_cache -> bool with false\n@@ -311,17 +311,17 @@\n     }\n \n     /// Returns `true` if this address refers to the read cache.\n     ///\n     /// The read-cache bit is bit 47 (the MSB of the 48-bit address space).\n     /// Matches C++ `Address::in_readcache()`.\n     #[inline(always)]\n     pub const fn in_read_cache(self) -> bool {\n-        (self.0 & READ_CACHE_BIT) != 0\n+        false /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n impl Default for LogicalAddress {\n     /// Defaults to [`LogicalAddress::ZERO`].\n     fn default() -> Self {\n         Self::ZERO\n     }\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::in_read_cache",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 320
+        },
+        "start": {
+          "column": 5,
+          "line": 313
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:319:9: replace LogicalAddress::in_read_cache -> bool with false",
+    "package": "faster-core",
+    "replacement": "false",
+    "span": {
+      "end": {
+        "column": 39,
+        "line": 319
+      },
+      "start": {
+        "column": 9,
+        "line": 319
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace != with == in LogicalAddress::in_read_cache\n@@ -311,17 +311,17 @@\n     }\n \n     /// Returns `true` if this address refers to the read cache.\n     ///\n     /// The read-cache bit is bit 47 (the MSB of the 48-bit address space).\n     /// Matches C++ `Address::in_readcache()`.\n     #[inline(always)]\n     pub const fn in_read_cache(self) -> bool {\n-        (self.0 & READ_CACHE_BIT) != 0\n+        (self.0 & READ_CACHE_BIT) == /* ~ changed by cargo-mutants ~ */ 0\n     }\n }\n \n impl Default for LogicalAddress {\n     /// Defaults to [`LogicalAddress::ZERO`].\n     fn default() -> Self {\n         Self::ZERO\n     }\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::in_read_cache",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 320
+        },
+        "start": {
+          "column": 5,
+          "line": 313
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:319:35: replace != with == in LogicalAddress::in_read_cache",
+    "package": "faster-core",
+    "replacement": "==",
+    "span": {
+      "end": {
+        "column": 37,
+        "line": 319
+      },
+      "start": {
+        "column": 35,
+        "line": 319
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace & with | in LogicalAddress::in_read_cache\n@@ -311,17 +311,17 @@\n     }\n \n     /// Returns `true` if this address refers to the read cache.\n     ///\n     /// The read-cache bit is bit 47 (the MSB of the 48-bit address space).\n     /// Matches C++ `Address::in_readcache()`.\n     #[inline(always)]\n     pub const fn in_read_cache(self) -> bool {\n-        (self.0 & READ_CACHE_BIT) != 0\n+        (self.0 | /* ~ changed by cargo-mutants ~ */ READ_CACHE_BIT) != 0\n     }\n }\n \n impl Default for LogicalAddress {\n     /// Defaults to [`LogicalAddress::ZERO`].\n     fn default() -> Self {\n         Self::ZERO\n     }\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::in_read_cache",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 320
+        },
+        "start": {
+          "column": 5,
+          "line": 313
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:319:17: replace & with | in LogicalAddress::in_read_cache",
+    "package": "faster-core",
+    "replacement": "|",
+    "span": {
+      "end": {
+        "column": 18,
+        "line": 319
+      },
+      "start": {
+        "column": 17,
+        "line": 319
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace & with ^ in LogicalAddress::in_read_cache\n@@ -311,17 +311,17 @@\n     }\n \n     /// Returns `true` if this address refers to the read cache.\n     ///\n     /// The read-cache bit is bit 47 (the MSB of the 48-bit address space).\n     /// Matches C++ `Address::in_readcache()`.\n     #[inline(always)]\n     pub const fn in_read_cache(self) -> bool {\n-        (self.0 & READ_CACHE_BIT) != 0\n+        (self.0 ^ /* ~ changed by cargo-mutants ~ */ READ_CACHE_BIT) != 0\n     }\n }\n \n impl Default for LogicalAddress {\n     /// Defaults to [`LogicalAddress::ZERO`].\n     fn default() -> Self {\n         Self::ZERO\n     }\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "LogicalAddress::in_read_cache",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 320
+        },
+        "start": {
+          "column": 5,
+          "line": 313
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/address.rs:319:17: replace & with ^ in LogicalAddress::in_read_cache",
+    "package": "faster-core",
+    "replacement": "^",
+    "span": {
+      "end": {
+        "column": 18,
+        "line": 319
+      },
+      "start": {
+        "column": 17,
+        "line": 319
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace <impl fmt::Debug for LogicalAddress>::fmt -> fmt::Result with Ok(Default::default())\n@@ -324,23 +324,17 @@\n     /// Defaults to [`LogicalAddress::ZERO`].\n     fn default() -> Self {\n         Self::ZERO\n     }\n }\n \n impl fmt::Debug for LogicalAddress {\n     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\n-        write!(\n-            f,\n-            \"LogicalAddress(page={}, offset={}, raw=0x{:012x})\",\n-            self.page().0,\n-            self.offset().0,\n-            self.0,\n-        )\n+        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n impl fmt::Display for LogicalAddress {\n     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\n         write!(f, \"{}:{}\", self.page().0, self.offset().0)\n     }\n }\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "<impl fmt::Debug for LogicalAddress>::fmt",
+      "return_type": "-> fmt::Result",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 339
+        },
+        "start": {
+          "column": 5,
+          "line": 331
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:332:9: replace <impl fmt::Debug for LogicalAddress>::fmt -> fmt::Result with Ok(Default::default())",
+    "package": "faster-core",
+    "replacement": "Ok(Default::default())",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 338
+      },
+      "start": {
+        "column": 9,
+        "line": 332
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace <impl fmt::Display for LogicalAddress>::fmt -> fmt::Result with Ok(Default::default())\n@@ -336,17 +336,17 @@\n             self.offset().0,\n             self.0,\n         )\n     }\n }\n \n impl fmt::Display for LogicalAddress {\n     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\n-        write!(f, \"{}:{}\", self.page().0, self.offset().0)\n+        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n impl From<u64> for LogicalAddress {\n     /// Converts from raw `u64`, masking the upper 16 bits.\n     fn from(raw: u64) -> Self {\n         Self::from_raw(raw)\n     }\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "<impl fmt::Display for LogicalAddress>::fmt",
+      "return_type": "-> fmt::Result",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 345
+        },
+        "start": {
+          "column": 5,
+          "line": 343
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:344:9: replace <impl fmt::Display for LogicalAddress>::fmt -> fmt::Result with Ok(Default::default())",
+    "package": "faster-core",
+    "replacement": "Ok(Default::default())",
+    "span": {
+      "end": {
+        "column": 59,
+        "line": 344
+      },
+      "start": {
+        "column": 9,
+        "line": 344
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace <impl From<u64> for LogicalAddress>::from -> Self with Default::default()\n@@ -343,17 +343,17 @@\n     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\n         write!(f, \"{}:{}\", self.page().0, self.offset().0)\n     }\n }\n \n impl From<u64> for LogicalAddress {\n     /// Converts from raw `u64`, masking the upper 16 bits.\n     fn from(raw: u64) -> Self {\n-        Self::from_raw(raw)\n+        Default::default() /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n impl From<LogicalAddress> for u64 {\n     fn from(addr: LogicalAddress) -> Self {\n         addr.raw()\n     }\n }\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "<impl From<u64> for LogicalAddress>::from",
+      "return_type": "-> Self",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 352
+        },
+        "start": {
+          "column": 5,
+          "line": 349
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:351:9: replace <impl From<u64> for LogicalAddress>::from -> Self with Default::default()",
+    "package": "faster-core",
+    "replacement": "Default::default()",
+    "span": {
+      "end": {
+        "column": 28,
+        "line": 351
+      },
+      "start": {
+        "column": 9,
+        "line": 351
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace <impl From<LogicalAddress> for u64>::from -> Self with Default::default()\n@@ -349,17 +349,17 @@\n     /// Converts from raw `u64`, masking the upper 16 bits.\n     fn from(raw: u64) -> Self {\n         Self::from_raw(raw)\n     }\n }\n \n impl From<LogicalAddress> for u64 {\n     fn from(addr: LogicalAddress) -> Self {\n-        addr.raw()\n+        Default::default() /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n // ---------------------------------------------------------------------------\n // AtomicLogicalAddress\n // ---------------------------------------------------------------------------\n \n /// A thread-safe atomic wrapper around [`LogicalAddress`].\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "<impl From<LogicalAddress> for u64>::from",
+      "return_type": "-> Self",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 358
+        },
+        "start": {
+          "column": 5,
+          "line": 356
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:357:9: replace <impl From<LogicalAddress> for u64>::from -> Self with Default::default()",
+    "package": "faster-core",
+    "replacement": "Default::default()",
+    "span": {
+      "end": {
+        "column": 19,
+        "line": 357
+      },
+      "start": {
+        "column": 9,
+        "line": 357
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace AtomicLogicalAddress::load -> LogicalAddress with Default::default()\n@@ -390,17 +390,17 @@\n     /// Creates a new `AtomicLogicalAddress` with the given initial value.\n     pub const fn new(addr: LogicalAddress) -> Self {\n         Self(AtomicU64::new(addr.0))\n     }\n \n     /// Loads the address with the given memory ordering.\n     #[inline]\n     pub fn load(&self, order: Ordering) -> LogicalAddress {\n-        LogicalAddress(self.0.load(order))\n+        Default::default() /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Stores the address with the given memory ordering.\n     #[inline]\n     pub fn store(&self, addr: LogicalAddress, order: Ordering) {\n         self.0.store(addr.0, order);\n     }\n \n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "AtomicLogicalAddress::load",
+      "return_type": "-> LogicalAddress",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 399
+        },
+        "start": {
+          "column": 5,
+          "line": 395
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:398:9: replace AtomicLogicalAddress::load -> LogicalAddress with Default::default()",
+    "package": "faster-core",
+    "replacement": "Default::default()",
+    "span": {
+      "end": {
+        "column": 43,
+        "line": 398
+      },
+      "start": {
+        "column": 9,
+        "line": 398
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace AtomicLogicalAddress::store with ()\n@@ -396,17 +396,17 @@\n     #[inline]\n     pub fn load(&self, order: Ordering) -> LogicalAddress {\n         LogicalAddress(self.0.load(order))\n     }\n \n     /// Stores the address with the given memory ordering.\n     #[inline]\n     pub fn store(&self, addr: LogicalAddress, order: Ordering) {\n-        self.0.store(addr.0, order);\n+        () /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Performs an atomic compare-and-exchange.\n     ///\n     /// If the current value equals `current`, stores `new_val` and returns\n     /// `Ok(current)`. Otherwise returns `Err(actual)` where `actual` is the\n     /// value that was found.\n     ///\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "AtomicLogicalAddress::store",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 405
+        },
+        "start": {
+          "column": 5,
+          "line": 401
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:404:9: replace AtomicLogicalAddress::store with ()",
+    "package": "faster-core",
+    "replacement": "()",
+    "span": {
+      "end": {
+        "column": 37,
+        "line": 404
+      },
+      "start": {
+        "column": 9,
+        "line": 404
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace AtomicLogicalAddress::compare_exchange -> Result<LogicalAddress, LogicalAddress> with Ok(Default::default())\n@@ -431,20 +431,17 @@\n     #[inline]\n     pub fn compare_exchange(\n         &self,\n         current: LogicalAddress,\n         new_val: LogicalAddress,\n         success: Ordering,\n         failure: Ordering,\n     ) -> Result<LogicalAddress, LogicalAddress> {\n-        self.0\n-            .compare_exchange(current.0, new_val.0, success, failure)\n-            .map(LogicalAddress)\n-            .map_err(LogicalAddress)\n+        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Weak compare-and-exchange — may spuriously fail on some platforms,\n     /// but can be more efficient in retry loops.\n     #[inline]\n     pub fn compare_exchange_weak(\n         &self,\n         current: LogicalAddress,\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "AtomicLogicalAddress::compare_exchange",
+      "return_type": "-> Result<LogicalAddress, LogicalAddress>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 443
+        },
+        "start": {
+          "column": 5,
+          "line": 407
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:439:9: replace AtomicLogicalAddress::compare_exchange -> Result<LogicalAddress, LogicalAddress> with Ok(Default::default())",
+    "package": "faster-core",
+    "replacement": "Ok(Default::default())",
+    "span": {
+      "end": {
+        "column": 37,
+        "line": 442
+      },
+      "start": {
+        "column": 9,
+        "line": 439
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace AtomicLogicalAddress::compare_exchange_weak -> Result<LogicalAddress, LogicalAddress> with Ok(Default::default())\n@@ -447,20 +447,17 @@\n     #[inline]\n     pub fn compare_exchange_weak(\n         &self,\n         current: LogicalAddress,\n         new_val: LogicalAddress,\n         success: Ordering,\n         failure: Ordering,\n     ) -> Result<LogicalAddress, LogicalAddress> {\n-        self.0\n-            .compare_exchange_weak(current.0, new_val.0, success, failure)\n-            .map(LogicalAddress)\n-            .map_err(LogicalAddress)\n+        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n impl Default for AtomicLogicalAddress {\n     /// Defaults to [`LogicalAddress::ZERO`].\n     fn default() -> Self {\n         Self::new(LogicalAddress::ZERO)\n     }\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "AtomicLogicalAddress::compare_exchange_weak",
+      "return_type": "-> Result<LogicalAddress, LogicalAddress>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 459
+        },
+        "start": {
+          "column": 5,
+          "line": 445
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:455:9: replace AtomicLogicalAddress::compare_exchange_weak -> Result<LogicalAddress, LogicalAddress> with Ok(Default::default())",
+    "package": "faster-core",
+    "replacement": "Ok(Default::default())",
+    "span": {
+      "end": {
+        "column": 37,
+        "line": 458
+      },
+      "start": {
+        "column": 9,
+        "line": 455
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/address.rs\n+++ replace <impl fmt::Debug for AtomicLogicalAddress>::fmt -> fmt::Result with Ok(Default::default())\n@@ -463,18 +463,17 @@\n     /// Defaults to [`LogicalAddress::ZERO`].\n     fn default() -> Self {\n         Self::new(LogicalAddress::ZERO)\n     }\n }\n \n impl fmt::Debug for AtomicLogicalAddress {\n     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\n-        let addr = self.load(Ordering::Relaxed);\n-        write!(f, \"AtomicLogicalAddress({addr:?})\")\n+        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n // ---------------------------------------------------------------------------\n // Tests\n // ---------------------------------------------------------------------------\n \n #[cfg(test)]\n",
+    "file": "crates/faster-core/src/address.rs",
+    "function": {
+      "function_name": "<impl fmt::Debug for AtomicLogicalAddress>::fmt",
+      "return_type": "-> fmt::Result",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 473
+        },
+        "start": {
+          "column": 5,
+          "line": 470
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/address.rs:471:9: replace <impl fmt::Debug for AtomicLogicalAddress>::fmt -> fmt::Result with Ok(Default::default())",
+    "package": "faster-core",
+    "replacement": "Ok(Default::default())",
+    "span": {
+      "end": {
+        "column": 52,
+        "line": 472
+      },
+      "start": {
+        "column": 9,
+        "line": 471
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/compaction/begin_address.rs\n+++ replace BeginAddressAdvancer<'a>::advance -> TruncationResult with Default::default()\n@@ -84,50 +84,17 @@\n     /// The device is truncated up to the byte offset corresponding to\n     /// `new_begin`. This frees all device segments below that point.\n     ///\n     /// # Monotonicity\n     ///\n     /// `begin_address` only moves forward. If `new_begin` is below the\n     /// current begin, the call succeeds but has no effect.\n     pub fn advance(&self, new_begin: LogicalAddress) -> TruncationResult {\n-        let old_begin = self.allocator.begin_address();\n-\n-        // Attempt to advance. try_advance_begin uses a CAS loop internally\n-        // and returns the actual begin after the attempt.\n-        let actual = self.allocator.try_advance_begin(new_begin);\n-        let advanced = actual.raw() > old_begin.raw();\n-\n-        if !advanced {\n-            return TruncationResult {\n-                old_begin,\n-                new_begin: old_begin,\n-                advanced: false,\n-                truncated: false,\n-                truncated_until_offset: 0,\n-            };\n-        }\n-\n-        crash_point!(\"compaction_begin_address_advanced\");\n-\n-        // Compute the device offset for the new begin-address.\n-        // Device offsets are linear: page * page_size + offset.\n-        let page_size = 1u64 << OFFSET_BITS;\n-        let device_offset = actual.page().0 as u64 * page_size + actual.offset().0 as u64;\n-\n-        // Truncate device segments below the new begin.\n-        self.device.truncate_until(device_offset);\n-\n-        TruncationResult {\n-            old_begin,\n-            new_begin: actual,\n-            advanced: true,\n-            truncated: true,\n-            truncated_until_offset: device_offset,\n-        }\n+        Default::default() /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n // ── Tests ───────────────────────────────────────────────────────────\n \n #[cfg(test)]\n mod tests {\n     use super::*;\n",
+    "file": "crates/faster-core/src/compaction/begin_address.rs",
+    "function": {
+      "function_name": "BeginAddressAdvancer<'a>::advance",
+      "return_type": "-> TruncationResult",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 126
+        },
+        "start": {
+          "column": 5,
+          "line": 79
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/faster-core/src/compaction/begin_address.rs:92:9: replace BeginAddressAdvancer<'a>::advance -> TruncationResult with Default::default()",
+    "package": "faster-core",
+    "replacement": "Default::default()",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 125
+      },
+      "start": {
+        "column": 9,
+        "line": 92
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/compaction/begin_address.rs\n+++ replace > with == in BeginAddressAdvancer<'a>::advance\n@@ -89,17 +89,17 @@\n     /// `begin_address` only moves forward. If `new_begin` is below the\n     /// current begin, the call succeeds but has no effect.\n     pub fn advance(&self, new_begin: LogicalAddress) -> TruncationResult {\n         let old_begin = self.allocator.begin_address();\n \n         // Attempt to advance. try_advance_begin uses a CAS loop internally\n         // and returns the actual begin after the attempt.\n         let actual = self.allocator.try_advance_begin(new_begin);\n-        let advanced = actual.raw() > old_begin.raw();\n+        let advanced = actual.raw() == /* ~ changed by cargo-mutants ~ */ old_begin.raw();\n \n         if !advanced {\n             return TruncationResult {\n                 old_begin,\n                 new_begin: old_begin,\n                 advanced: false,\n                 truncated: false,\n                 truncated_until_offset: 0,\n",
+    "file": "crates/faster-core/src/compaction/begin_address.rs",
+    "function": {
+      "function_name": "BeginAddressAdvancer<'a>::advance",
+      "return_type": "-> TruncationResult",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 126
+        },
+        "start": {
+          "column": 5,
+          "line": 79
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/compaction/begin_address.rs:97:37: replace > with == in BeginAddressAdvancer<'a>::advance",
+    "package": "faster-core",
+    "replacement": "==",
+    "span": {
+      "end": {
+        "column": 38,
+        "line": 97
+      },
+      "start": {
+        "column": 37,
+        "line": 97
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/compaction/begin_address.rs\n+++ replace > with < in BeginAddressAdvancer<'a>::advance\n@@ -89,17 +89,17 @@\n     /// `begin_address` only moves forward. If `new_begin` is below the\n     /// current begin, the call succeeds but has no effect.\n     pub fn advance(&self, new_begin: LogicalAddress) -> TruncationResult {\n         let old_begin = self.allocator.begin_address();\n \n         // Attempt to advance. try_advance_begin uses a CAS loop internally\n         // and returns the actual begin after the attempt.\n         let actual = self.allocator.try_advance_begin(new_begin);\n-        let advanced = actual.raw() > old_begin.raw();\n+        let advanced = actual.raw() < /* ~ changed by cargo-mutants ~ */ old_begin.raw();\n \n         if !advanced {\n             return TruncationResult {\n                 old_begin,\n                 new_begin: old_begin,\n                 advanced: false,\n                 truncated: false,\n                 truncated_until_offset: 0,\n",
+    "file": "crates/faster-core/src/compaction/begin_address.rs",
+    "function": {
+      "function_name": "BeginAddressAdvancer<'a>::advance",
+      "return_type": "-> TruncationResult",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 126
+        },
+        "start": {
+          "column": 5,
+          "line": 79
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/compaction/begin_address.rs:97:37: replace > with < in BeginAddressAdvancer<'a>::advance",
+    "package": "faster-core",
+    "replacement": "<",
+    "span": {
+      "end": {
+        "column": 38,
+        "line": 97
+      },
+      "start": {
+        "column": 37,
+        "line": 97
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/compaction/begin_address.rs\n+++ replace > with >= in BeginAddressAdvancer<'a>::advance\n@@ -89,17 +89,17 @@\n     /// `begin_address` only moves forward. If `new_begin` is below the\n     /// current begin, the call succeeds but has no effect.\n     pub fn advance(&self, new_begin: LogicalAddress) -> TruncationResult {\n         let old_begin = self.allocator.begin_address();\n \n         // Attempt to advance. try_advance_begin uses a CAS loop internally\n         // and returns the actual begin after the attempt.\n         let actual = self.allocator.try_advance_begin(new_begin);\n-        let advanced = actual.raw() > old_begin.raw();\n+        let advanced = actual.raw() >= /* ~ changed by cargo-mutants ~ */ old_begin.raw();\n \n         if !advanced {\n             return TruncationResult {\n                 old_begin,\n                 new_begin: old_begin,\n                 advanced: false,\n                 truncated: false,\n                 truncated_until_offset: 0,\n",
+    "file": "crates/faster-core/src/compaction/begin_address.rs",
+    "function": {
+      "function_name": "BeginAddressAdvancer<'a>::advance",
+      "return_type": "-> TruncationResult",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 126
+        },
+        "start": {
+          "column": 5,
+          "line": 79
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/compaction/begin_address.rs:97:37: replace > with >= in BeginAddressAdvancer<'a>::advance",
+    "package": "faster-core",
+    "replacement": ">=",
+    "span": {
+      "end": {
+        "column": 38,
+        "line": 97
+      },
+      "start": {
+        "column": 37,
+        "line": 97
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/compaction/begin_address.rs\n+++ delete ! in BeginAddressAdvancer<'a>::advance\n@@ -91,17 +91,17 @@\n     pub fn advance(&self, new_begin: LogicalAddress) -> TruncationResult {\n         let old_begin = self.allocator.begin_address();\n \n         // Attempt to advance. try_advance_begin uses a CAS loop internally\n         // and returns the actual begin after the attempt.\n         let actual = self.allocator.try_advance_begin(new_begin);\n         let advanced = actual.raw() > old_begin.raw();\n \n-        if !advanced {\n+        if  /* ~ changed by cargo-mutants ~ */advanced {\n             return TruncationResult {\n                 old_begin,\n                 new_begin: old_begin,\n                 advanced: false,\n                 truncated: false,\n                 truncated_until_offset: 0,\n             };\n         }\n",
+    "file": "crates/faster-core/src/compaction/begin_address.rs",
+    "function": {
+      "function_name": "BeginAddressAdvancer<'a>::advance",
+      "return_type": "-> TruncationResult",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 126
+        },
+        "start": {
+          "column": 5,
+          "line": 79
+        }
+      }
+    },
+    "genre": "UnaryOperator",
+    "name": "crates/faster-core/src/compaction/begin_address.rs:99:12: delete ! in BeginAddressAdvancer<'a>::advance",
+    "package": "faster-core",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 13,
+        "line": 99
+      },
+      "start": {
+        "column": 12,
+        "line": 99
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/compaction/begin_address.rs\n+++ replace << with >> in BeginAddressAdvancer<'a>::advance\n@@ -105,17 +105,17 @@\n                 truncated_until_offset: 0,\n             };\n         }\n \n         crash_point!(\"compaction_begin_address_advanced\");\n \n         // Compute the device offset for the new begin-address.\n         // Device offsets are linear: page * page_size + offset.\n-        let page_size = 1u64 << OFFSET_BITS;\n+        let page_size = 1u64 >> /* ~ changed by cargo-mutants ~ */ OFFSET_BITS;\n         let device_offset = actual.page().0 as u64 * page_size + actual.offset().0 as u64;\n \n         // Truncate device segments below the new begin.\n         self.device.truncate_until(device_offset);\n \n         TruncationResult {\n             old_begin,\n             new_begin: actual,\n",
+    "file": "crates/faster-core/src/compaction/begin_address.rs",
+    "function": {
+      "function_name": "BeginAddressAdvancer<'a>::advance",
+      "return_type": "-> TruncationResult",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 126
+        },
+        "start": {
+          "column": 5,
+          "line": 79
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/compaction/begin_address.rs:113:30: replace << with >> in BeginAddressAdvancer<'a>::advance",
+    "package": "faster-core",
+    "replacement": ">>",
+    "span": {
+      "end": {
+        "column": 32,
+        "line": 113
+      },
+      "start": {
+        "column": 30,
+        "line": 113
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/compaction/begin_address.rs\n+++ replace + with - in BeginAddressAdvancer<'a>::advance\n@@ -106,17 +106,17 @@\n             };\n         }\n \n         crash_point!(\"compaction_begin_address_advanced\");\n \n         // Compute the device offset for the new begin-address.\n         // Device offsets are linear: page * page_size + offset.\n         let page_size = 1u64 << OFFSET_BITS;\n-        let device_offset = actual.page().0 as u64 * page_size + actual.offset().0 as u64;\n+        let device_offset = actual.page().0 as u64 * page_size - /* ~ changed by cargo-mutants ~ */ actual.offset().0 as u64;\n \n         // Truncate device segments below the new begin.\n         self.device.truncate_until(device_offset);\n \n         TruncationResult {\n             old_begin,\n             new_begin: actual,\n             advanced: true,\n",
+    "file": "crates/faster-core/src/compaction/begin_address.rs",
+    "function": {
+      "function_name": "BeginAddressAdvancer<'a>::advance",
+      "return_type": "-> TruncationResult",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 126
+        },
+        "start": {
+          "column": 5,
+          "line": 79
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/compaction/begin_address.rs:114:64: replace + with - in BeginAddressAdvancer<'a>::advance",
+    "package": "faster-core",
+    "replacement": "-",
+    "span": {
+      "end": {
+        "column": 65,
+        "line": 114
+      },
+      "start": {
+        "column": 64,
+        "line": 114
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/compaction/begin_address.rs\n+++ replace + with * in BeginAddressAdvancer<'a>::advance\n@@ -106,17 +106,17 @@\n             };\n         }\n \n         crash_point!(\"compaction_begin_address_advanced\");\n \n         // Compute the device offset for the new begin-address.\n         // Device offsets are linear: page * page_size + offset.\n         let page_size = 1u64 << OFFSET_BITS;\n-        let device_offset = actual.page().0 as u64 * page_size + actual.offset().0 as u64;\n+        let device_offset = actual.page().0 as u64 * page_size * /* ~ changed by cargo-mutants ~ */ actual.offset().0 as u64;\n \n         // Truncate device segments below the new begin.\n         self.device.truncate_until(device_offset);\n \n         TruncationResult {\n             old_begin,\n             new_begin: actual,\n             advanced: true,\n",
+    "file": "crates/faster-core/src/compaction/begin_address.rs",
+    "function": {
+      "function_name": "BeginAddressAdvancer<'a>::advance",
+      "return_type": "-> TruncationResult",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 126
+        },
+        "start": {
+          "column": 5,
+          "line": 79
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/compaction/begin_address.rs:114:64: replace + with * in BeginAddressAdvancer<'a>::advance",
+    "package": "faster-core",
+    "replacement": "*",
+    "span": {
+      "end": {
+        "column": 65,
+        "line": 114
+      },
+      "start": {
+        "column": 64,
+        "line": 114
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/compaction/begin_address.rs\n+++ replace * with + in BeginAddressAdvancer<'a>::advance\n@@ -106,17 +106,17 @@\n             };\n         }\n \n         crash_point!(\"compaction_begin_address_advanced\");\n \n         // Compute the device offset for the new begin-address.\n         // Device offsets are linear: page * page_size + offset.\n         let page_size = 1u64 << OFFSET_BITS;\n-        let device_offset = actual.page().0 as u64 * page_size + actual.offset().0 as u64;\n+        let device_offset = actual.page().0 as u64 + /* ~ changed by cargo-mutants ~ */ page_size + actual.offset().0 as u64;\n \n         // Truncate device segments below the new begin.\n         self.device.truncate_until(device_offset);\n \n         TruncationResult {\n             old_begin,\n             new_begin: actual,\n             advanced: true,\n",
+    "file": "crates/faster-core/src/compaction/begin_address.rs",
+    "function": {
+      "function_name": "BeginAddressAdvancer<'a>::advance",
+      "return_type": "-> TruncationResult",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 126
+        },
+        "start": {
+          "column": 5,
+          "line": 79
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/compaction/begin_address.rs:114:52: replace * with + in BeginAddressAdvancer<'a>::advance",
+    "package": "faster-core",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 53,
+        "line": 114
+      },
+      "start": {
+        "column": 52,
+        "line": 114
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/compaction/begin_address.rs\n+++ replace * with / in BeginAddressAdvancer<'a>::advance\n@@ -106,17 +106,17 @@\n             };\n         }\n \n         crash_point!(\"compaction_begin_address_advanced\");\n \n         // Compute the device offset for the new begin-address.\n         // Device offsets are linear: page * page_size + offset.\n         let page_size = 1u64 << OFFSET_BITS;\n-        let device_offset = actual.page().0 as u64 * page_size + actual.offset().0 as u64;\n+        let device_offset = actual.page().0 as u64 / /* ~ changed by cargo-mutants ~ */ page_size + actual.offset().0 as u64;\n \n         // Truncate device segments below the new begin.\n         self.device.truncate_until(device_offset);\n \n         TruncationResult {\n             old_begin,\n             new_begin: actual,\n             advanced: true,\n",
+    "file": "crates/faster-core/src/compaction/begin_address.rs",
+    "function": {
+      "function_name": "BeginAddressAdvancer<'a>::advance",
+      "return_type": "-> TruncationResult",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 126
+        },
+        "start": {
+          "column": 5,
+          "line": 79
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/faster-core/src/compaction/begin_address.rs:114:52: replace * with / in BeginAddressAdvancer<'a>::advance",
+    "package": "faster-core",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 53,
+        "line": 114
+      },
+      "start": {
+        "column": 52,
+        "line": 114
+      }
+    }
+  },
+  {
+    "diff": "--- crates/faster-core/src/grow/splitter.rs\n+++ delete field chunks_processed from struct SplitResult expression in BucketSplitter<'a, R>::split_chunk\n@@ -214,17 +214,17 @@\n             \"new_size_bits must be old_size_bits + 1\"\n         );\n \n         let old_size = 1u64 << old_size_bits;\n         let chunk_start = chunk_index as u64 * CHUNK_SIZE as u64;\n         let chunk_end = (chunk_start + CHUNK_SIZE as u64).min(old_size);\n \n         let mut result = SplitResult {\n-            chunks_processed: 1,\n+             /* ~ changed by cargo-mutants ~ */\n             ..SplitResult::default()\n         };\n \n         for bucket_idx in chunk_start..chunk_end {\n             let (kept, moved) = self.split_bucket(bucket_idx, old_size_bits, new_size_bits);\n             result.entries_kept += kept as u64;\n             result.entries_moved += moved as u64;\n             result.buckets_processed += 1;\n",
+    "file": "crates/faster-core/src/grow/splitter.rs",
+    "function": {
+      "function_name": "BucketSplitter<'a, R>::split_chunk",
+      "return_type": "-> SplitResult",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 234
+        },
+        "start": {
+          "column": 5,
+          "line": 190
+        }
+      }
+    },
+    "genre": "StructField",
+    "name": "crates/faster-core/src/grow/splitter.rs:222:13: delete field chunks_processed from struct SplitResult expression in BucketSplitter<'a, R>::split_chunk",
+    "package": "faster-core",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 33,
+        "line": 222
+      },
+      "start": {
+        "column": 13,
+        "line": 222
+      }
+    }
+  }
+]

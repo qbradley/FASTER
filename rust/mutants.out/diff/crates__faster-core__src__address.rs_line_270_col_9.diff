@@ -1,0 +1,21 @@
+--- crates/faster-core/src/address.rs
++++ replace LogicalAddress::page -> Page with Default::default()
+@@ -262,17 +262,17 @@
+     /// ```
+     /// use faster_core::address::{LogicalAddress, Page, Offset};
+     ///
+     /// let addr = LogicalAddress::new(Page(42), Offset(100));
+     /// assert_eq!(addr.page(), Page(42));
+     /// ```
+     #[inline(always)]
+     pub const fn page(self) -> Page {
+-        Page((self.0 >> OFFSET_BITS) as u32)
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Extracts the offset within the page from this address.
+     ///
+     /// # Examples
+     ///
+     /// ```
+     /// use faster_core::address::{LogicalAddress, Page, Offset};

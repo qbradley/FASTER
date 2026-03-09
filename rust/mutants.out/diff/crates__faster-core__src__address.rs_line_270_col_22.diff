@@ -1,0 +1,21 @@
+--- crates/faster-core/src/address.rs
++++ replace >> with << in LogicalAddress::page
+@@ -262,17 +262,17 @@
+     /// ```
+     /// use faster_core::address::{LogicalAddress, Page, Offset};
+     ///
+     /// let addr = LogicalAddress::new(Page(42), Offset(100));
+     /// assert_eq!(addr.page(), Page(42));
+     /// ```
+     #[inline(always)]
+     pub const fn page(self) -> Page {
+-        Page((self.0 >> OFFSET_BITS) as u32)
++        Page((self.0 << /* ~ changed by cargo-mutants ~ */ OFFSET_BITS) as u32)
+     }
+ 
+     /// Extracts the offset within the page from this address.
+     ///
+     /// # Examples
+     ///
+     /// ```
+     /// use faster_core::address::{LogicalAddress, Page, Offset};

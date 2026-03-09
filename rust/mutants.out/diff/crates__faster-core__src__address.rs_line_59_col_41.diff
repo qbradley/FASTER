@@ -1,0 +1,21 @@
+--- crates/faster-core/src/address.rs
++++ replace - with +
+@@ -51,17 +51,17 @@
+ /// The upper 16 bits of the `u64` are reserved for the hash table.
+ pub const ADDRESS_BITS: u32 = 48;
+ 
+ /// Number of bits used for the offset within a page.
+ /// Default 25 → page size of 2^25 = 32 MB.
+ pub const OFFSET_BITS: u32 = 25;
+ 
+ /// Number of bits used for the page index: `ADDRESS_BITS - OFFSET_BITS`.
+-pub const PAGE_BITS: u32 = ADDRESS_BITS - OFFSET_BITS; // 23
++pub const PAGE_BITS: u32 = ADDRESS_BITS + /* ~ changed by cargo-mutants ~ */ OFFSET_BITS; // 23
+ 
+ /// Maximum valid offset value: `(1 << OFFSET_BITS) - 1`.
+ pub const MAX_OFFSET: u32 = (1u32 << OFFSET_BITS) - 1;
+ 
+ /// Maximum valid page number: `(1 << PAGE_BITS) - 1`.
+ pub const MAX_PAGE: u32 = (1u32 << PAGE_BITS) - 1;
+ 
+ /// Maximum raw address value (48 bits set): `(1 << ADDRESS_BITS) - 1`.

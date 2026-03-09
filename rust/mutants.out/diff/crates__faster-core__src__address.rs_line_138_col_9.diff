@@ -1,0 +1,21 @@
+--- crates/faster-core/src/address.rs
++++ replace <impl fmt::Display for Offset>::fmt -> fmt::Result with Ok(Default::default())
+@@ -130,17 +130,17 @@
+ impl fmt::Debug for Offset {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+         write!(f, "Offset({})", self.0)
+     }
+ }
+ 
+ impl fmt::Display for Offset {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+-        write!(f, "Offset({})", self.0)
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ // ---------------------------------------------------------------------------
+ // LogicalAddress
+ // ---------------------------------------------------------------------------
+ 
+ /// A logical address in the FASTER hybrid log.

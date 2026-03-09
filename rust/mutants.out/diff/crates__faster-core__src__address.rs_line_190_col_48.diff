@@ -1,0 +1,21 @@
+--- crates/faster-core/src/address.rs
++++ replace - with +
+@@ -182,17 +182,17 @@
+ #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+ #[repr(transparent)]
+ pub struct LogicalAddress(u64);
+ 
+ /// Mask for the lower 48 address bits.
+ const ADDRESS_MASK: u64 = MAX_ADDRESS;
+ 
+ /// Mask for the lower 25 offset bits.
+-const OFFSET_MASK: u64 = (1u64 << OFFSET_BITS) - 1;
++const OFFSET_MASK: u64 = (1u64 << OFFSET_BITS) + /* ~ changed by cargo-mutants ~ */ 1;
+ 
+ impl LogicalAddress {
+     /// An invalid address sentinel.
+     ///
+     /// Set to `1` (not `0`) to distinguish a hash bucket entry that points to an
+     /// invalid address from an all-zeros empty entry. Matches C++
+     /// `Address::kInvalidAddress`.
+     pub const INVALID: Self = Self(1);

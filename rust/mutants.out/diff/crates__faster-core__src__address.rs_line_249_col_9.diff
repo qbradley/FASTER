@@ -1,0 +1,21 @@
+--- crates/faster-core/src/address.rs
++++ replace LogicalAddress::from_raw -> Self with Default::default()
+@@ -241,17 +241,17 @@
+     /// ```
+     /// use faster_core::address::LogicalAddress;
+     ///
+     /// let addr = LogicalAddress::from_raw(0x0000_DEAD_BEEF_1234);
+     /// assert_eq!(addr.raw(), 0x0000_DEAD_BEEF_1234);
+     /// ```
+     #[inline(always)]
+     pub const fn from_raw(raw: u64) -> Self {
+-        Self(raw & ADDRESS_MASK)
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Returns the raw `u64` representation of this address.
+     #[inline(always)]
+     pub const fn raw(self) -> u64 {
+         self.0
+     }
+ 

@@ -1,0 +1,21 @@
+--- crates/faster-core/src/address.rs
++++ replace <impl fmt::Display for Page>::fmt -> fmt::Result with Ok(Default::default())
+@@ -96,17 +96,17 @@
+ impl fmt::Debug for Page {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+         write!(f, "Page({})", self.0)
+     }
+ }
+ 
+ impl fmt::Display for Page {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+-        write!(f, "Page({})", self.0)
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ // ---------------------------------------------------------------------------
+ // Offset newtype
+ // ---------------------------------------------------------------------------
+ 
+ /// An offset within a page.
