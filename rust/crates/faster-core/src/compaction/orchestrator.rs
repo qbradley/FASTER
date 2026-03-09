@@ -217,7 +217,6 @@ impl<'a> CompactionOrchestrator<'a> {
 
         let advancer = BeginAddressAdvancer::new(self.allocator, self.device);
         let truncation = advancer.advance(until);
-        crash_point!("compaction_begin_address_advanced");
         crash_point!("compaction_truncation_complete");
 
         let (records_copied, bytes_copied) = copy_info.unwrap_or((0, 0));

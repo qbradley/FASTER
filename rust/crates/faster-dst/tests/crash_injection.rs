@@ -326,10 +326,23 @@ fn crash_at_each_compaction_phase_recovers() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 6. Checkpoint crash × 100 seeds = 600 scenarios (SC-003)
+// 6. Checkpoint crash scenarios (SC-003)
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Fast smoke test: 6 phases × 3 seeds = 18 scenarios. Runs in precheckin.
 #[test]
+fn checkpoint_crash_18_scenarios() {
+    for (phase_idx, point) in CrashPoint::ALL_CHECKPOINT.iter().enumerate() {
+        for seed_offset in 0..3u64 {
+            let seed = (phase_idx as u64) * 1000 + seed_offset;
+            checkpoint_crash_and_recover(seed, 30, *point);
+        }
+    }
+}
+
+/// Full SC-003: 6 phases × 100 seeds = 600 scenarios. CI Tier 3 only.
+#[test]
+#[ignore]
 fn checkpoint_crash_600_scenarios() {
     for (phase_idx, point) in CrashPoint::ALL_CHECKPOINT.iter().enumerate() {
         for seed_offset in 0..100u64 {
