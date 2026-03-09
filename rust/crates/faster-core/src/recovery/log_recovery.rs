@@ -165,6 +165,7 @@ impl LogRecoveryEngine {
 
         // Step 3: Validate the on-disk log file.
         let records_scanned = validate_log_file(base_dir, log_info)?;
+        crash_point!("recovery_log_validated");
 
         // Step 4: Compute restored address boundaries.
         let begin_address = log_info.begin_address;

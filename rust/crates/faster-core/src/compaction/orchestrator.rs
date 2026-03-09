@@ -175,6 +175,7 @@ impl<'a> CompactionOrchestrator<'a> {
             let plan = scanner
                 .scan::<K, V>(begin, until)
                 .map_err(CompactionError::ScanCorruption)?;
+            crash_point!("compaction_scan_complete");
 
             if plan.live_records.is_empty() {
                 // No live records — skip copy and swing.
@@ -185,6 +186,7 @@ impl<'a> CompactionOrchestrator<'a> {
                 let copy_result = copier
                     .copy_records(&plan.live_records)
                     .map_err(CompactionError::CopyFailed)?;
+                crash_point!("compaction_copy_complete");
 
                 let records_copied = copy_result.records_copied();
                 let bytes_copied = copy_result.bytes_copied;
@@ -192,6 +194,7 @@ impl<'a> CompactionOrchestrator<'a> {
                 // Phase 3: Pointer swing.
                 let updater = AddressUpdater::new(self.hash_index, self.allocator);
                 let stats = updater.swing::<K, V>(&copy_result, &plan);
+                crash_point!("compaction_pointer_swing_complete");
 
                 (plan, Some((records_copied, bytes_copied)), Some(stats))
             }
@@ -208,11 +211,14 @@ impl<'a> CompactionOrchestrator<'a> {
         epoch_thread.unregister();
 
         self.drain_epoch()?;
+        crash_point!("compaction_epoch_drained");
 
         // ── Phase 4: Begin-address advance ──────────────────────────
 
         let advancer = BeginAddressAdvancer::new(self.allocator, self.device);
         let truncation = advancer.advance(until);
+        crash_point!("compaction_begin_address_advanced");
+        crash_point!("compaction_truncation_complete");
 
         let (records_copied, bytes_copied) = copy_info.unwrap_or((0, 0));
         let (swung, cas_failed, tombstones_removed) = match swing_stats {

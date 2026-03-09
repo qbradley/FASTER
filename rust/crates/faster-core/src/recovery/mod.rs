@@ -256,6 +256,7 @@ impl RecoveryManager {
                 Err(_) => continue,
             }
         }
+        crash_point!("recovery_discovery_complete");
         Ok(infos)
     }
 
@@ -281,6 +282,7 @@ impl RecoveryManager {
             .store
             .read_checkpoint_metadata(&selected)
             .map_err(|e| map_checkpoint_error(e, Some(selected.as_u128())))?;
+        crash_point!("recovery_plan_selected");
 
         Ok(build_recovery_plan(&self.base_dir, &meta))
     }
@@ -343,6 +345,7 @@ impl RecoveryManager {
         };
 
         let is_valid = issues.is_empty();
+        crash_point!("recovery_validation_complete");
         Ok(ValidationResult {
             is_valid,
             index_file_exists,

@@ -1,19 +1,140 @@
 //! Fault injection configuration for deterministic simulation testing.
 
+/// Checkpoint phase for crash-point targeting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CheckpointPhase {
+    /// After Prepare → InProgress transition.
+    PrepareToInProgress,
+    /// After index checkpoint written to disk.
+    IndexWritten,
+    /// After InProgress → WaitFlush transition.
+    InProgressToWaitFlush,
+    /// After WaitFlush → WaitCompletion transition.
+    WaitFlushToWaitCompletion,
+    /// After combined metadata persisted to disk.
+    MetadataPersisted,
+    /// After WaitCompletion → Completed transition.
+    Completed,
+}
+
+/// Compaction phase for crash-point targeting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompactionPhase {
+    /// After K1 scan completes.
+    ScanComplete,
+    /// After K2 record copy completes.
+    CopyComplete,
+    /// After K3 pointer swing completes.
+    PointerSwingComplete,
+    /// After epoch drain completes (between K3 and K4).
+    EpochDrained,
+    /// After begin-address advanced (K4a).
+    BeginAddressAdvanced,
+    /// After device truncation (K4b).
+    TruncationComplete,
+}
+
+/// Recovery phase for crash-point targeting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RecoveryPhase {
+    /// After checkpoint discovery enumeration.
+    DiscoveryComplete,
+    /// After checkpoint selected and metadata read.
+    PlanSelected,
+    /// After on-disk artifact validation.
+    ValidationComplete,
+    /// After index CRC32 verified.
+    IndexCrcVerified,
+    /// After index buckets loaded into memory.
+    IndexBucketsLoaded,
+    /// After log file validated.
+    LogValidated,
+}
+
 /// Locations in the system where crashes can be injected.
 ///
-/// Today these serve as documentation markers; full integration requires
-/// hooks inside `faster-core` (see crate-level docs).
+/// Each variant maps to a `crash_point!()` label inside `faster-core`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CrashPoint {
-    /// Crash during page flush to the device.
-    DuringFlush,
-    /// Crash while writing checkpoint metadata.
-    DuringCheckpoint,
-    /// Crash during log compaction.
-    DuringCompaction,
-    /// Crash during recovery.
-    DuringRecovery,
+    /// Crash during a checkpoint phase transition.
+    Checkpoint(CheckpointPhase),
+    /// Crash during a compaction phase.
+    Compaction(CompactionPhase),
+    /// Crash during a recovery phase.
+    Recovery(RecoveryPhase),
+}
+
+impl CrashPoint {
+    /// Returns the `crash_point!()` label string that this variant targets.
+    pub fn label(&self) -> &'static str {
+        match self {
+            CrashPoint::Checkpoint(p) => match p {
+                CheckpointPhase::PrepareToInProgress => "checkpoint_prepare_to_in_progress",
+                CheckpointPhase::IndexWritten => "checkpoint_index_written",
+                CheckpointPhase::InProgressToWaitFlush => "checkpoint_in_progress_to_wait_flush",
+                CheckpointPhase::WaitFlushToWaitCompletion => {
+                    "checkpoint_wait_flush_to_wait_completion"
+                }
+                CheckpointPhase::MetadataPersisted => "checkpoint_metadata_persisted",
+                CheckpointPhase::Completed => "checkpoint_completed",
+            },
+            CrashPoint::Compaction(p) => match p {
+                CompactionPhase::ScanComplete => "compaction_scan_complete",
+                CompactionPhase::CopyComplete => "compaction_copy_complete",
+                CompactionPhase::PointerSwingComplete => "compaction_pointer_swing_complete",
+                CompactionPhase::EpochDrained => "compaction_epoch_drained",
+                CompactionPhase::BeginAddressAdvanced => "compaction_begin_address_advanced",
+                CompactionPhase::TruncationComplete => "compaction_truncation_complete",
+            },
+            CrashPoint::Recovery(p) => match p {
+                RecoveryPhase::DiscoveryComplete => "recovery_discovery_complete",
+                RecoveryPhase::PlanSelected => "recovery_plan_selected",
+                RecoveryPhase::ValidationComplete => "recovery_validation_complete",
+                RecoveryPhase::IndexCrcVerified => "recovery_index_crc_verified",
+                RecoveryPhase::IndexBucketsLoaded => "recovery_index_buckets_loaded",
+                RecoveryPhase::LogValidated => "recovery_log_validated",
+            },
+        }
+    }
+
+    /// All 6 checkpoint crash points.
+    pub const ALL_CHECKPOINT: [CrashPoint; 6] = [
+        CrashPoint::Checkpoint(CheckpointPhase::PrepareToInProgress),
+        CrashPoint::Checkpoint(CheckpointPhase::IndexWritten),
+        CrashPoint::Checkpoint(CheckpointPhase::InProgressToWaitFlush),
+        CrashPoint::Checkpoint(CheckpointPhase::WaitFlushToWaitCompletion),
+        CrashPoint::Checkpoint(CheckpointPhase::MetadataPersisted),
+        CrashPoint::Checkpoint(CheckpointPhase::Completed),
+    ];
+
+    /// All 6 compaction crash points.
+    pub const ALL_COMPACTION: [CrashPoint; 6] = [
+        CrashPoint::Compaction(CompactionPhase::ScanComplete),
+        CrashPoint::Compaction(CompactionPhase::CopyComplete),
+        CrashPoint::Compaction(CompactionPhase::PointerSwingComplete),
+        CrashPoint::Compaction(CompactionPhase::EpochDrained),
+        CrashPoint::Compaction(CompactionPhase::BeginAddressAdvanced),
+        CrashPoint::Compaction(CompactionPhase::TruncationComplete),
+    ];
+
+    /// All 6 recovery crash points.
+    pub const ALL_RECOVERY: [CrashPoint; 6] = [
+        CrashPoint::Recovery(RecoveryPhase::DiscoveryComplete),
+        CrashPoint::Recovery(RecoveryPhase::PlanSelected),
+        CrashPoint::Recovery(RecoveryPhase::ValidationComplete),
+        CrashPoint::Recovery(RecoveryPhase::IndexCrcVerified),
+        CrashPoint::Recovery(RecoveryPhase::IndexBucketsLoaded),
+        CrashPoint::Recovery(RecoveryPhase::LogValidated),
+    ];
+
+    /// All 18 crash points.
+    pub fn all() -> Vec<CrashPoint> {
+        let mut v = Vec::with_capacity(18);
+        v.extend_from_slice(&Self::ALL_CHECKPOINT);
+        v.extend_from_slice(&Self::ALL_COMPACTION);
+        v.extend_from_slice(&Self::ALL_RECOVERY);
+        v
+    }
 }
 
 /// Configuration for fault injection in [`SimulatedDevice`](crate::SimulatedDevice).
@@ -120,16 +241,21 @@ mod tests {
 
     #[test]
     fn crash_point_variants() {
-        let points = [
-            CrashPoint::DuringFlush,
-            CrashPoint::DuringCheckpoint,
-            CrashPoint::DuringCompaction,
-            CrashPoint::DuringRecovery,
-        ];
-        // Verify Debug and Clone
-        for p in &points {
+        // Verify all 18 crash points have labels and implement Debug + Clone
+        let all = CrashPoint::all();
+        assert_eq!(all.len(), 18);
+        for p in &all {
+            let label = p.label();
+            assert!(!label.is_empty());
             let _ = format!("{p:?}");
             let _ = *p;
         }
+    }
+
+    #[test]
+    fn crash_point_label_uniqueness() {
+        let all = CrashPoint::all();
+        let labels: std::collections::HashSet<&str> = all.iter().map(|p| p.label()).collect();
+        assert_eq!(labels.len(), 18, "all crash point labels must be unique");
     }
 }

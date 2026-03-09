@@ -58,19 +58,13 @@
 //!   epoch system so that thread interleavings are controlled by the seed.
 //!   Today, multi-threaded tests are non-deterministic; `loom` covers some of
 //!   this but at a different abstraction level.
-//! - **Crash points inside the checkpoint state machine** — allow the
-//!   [`CheckpointOrchestrator`](faster_core::checkpoint::CheckpointOrchestrator)
-//!   to accept an injectable callback between phases (Prepare → InProgress →
-//!   WaitFlush → …) so DST can simulate crashes mid-checkpoint.
-//! - **Recovery crash injection** — similar hooks inside
-//!   [`RecoveryManager`](faster_core::recovery::RecoveryManager) to crash
-//!   mid-recovery and verify re-recovery succeeds.
 //! - **Page-level CRC validation** — add checksums to hybrid log pages so the
 //!   recovery path can detect torn pages written by [`SimulatedDevice`]'s
 //!   partial-write fault injection.
 
 pub mod channel;
 pub mod clock;
+pub mod crash;
 pub mod device;
 pub mod fault;
 pub mod harness;
@@ -84,10 +78,14 @@ pub mod workload;
 
 pub use channel::SimChannel;
 pub use clock::SimulatedClock;
+pub use crash::{
+    CrashRecoveryResult, CrashRecoveryRunner, CrashScenario, CrashSchedule, CrashScheduleRef,
+    CrashTrigger,
+};
 pub use device::{SimulatedDevice, SimulatedStorage};
-pub use fault::{CrashPoint, FaultConfig};
+pub use fault::{CheckpointPhase, CompactionPhase, CrashPoint, FaultConfig, RecoveryPhase};
 pub use harness::SimulationHarness;
-pub use invariant::{AllCommittedRecoverable, Invariant};
+pub use invariant::{AllCommittedRecoverable, Invariant, NoPhantomReads};
 pub use runtime::SimulationRuntime;
 pub use scheduler::DeterministicScheduler;
 pub use sim_store::{CrudOp, CrudResult, SimulatedFasterKv, spawn_crud_worker};
