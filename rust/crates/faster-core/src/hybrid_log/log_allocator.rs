@@ -129,7 +129,13 @@ impl HybridLogAllocator {
                 if current.page().0 >= MAX_PAGE {
                     return None;
                 }
-                LogicalAddress::new(Page(current.page().0 + 1), Offset(0))
+                // SF-10: Prevent tail from lapping head by buffer_size.
+                let next_page = current.page().0 + 1;
+                let head_page = self.head_address().page().0;
+                if (next_page.wrapping_sub(head_page) as usize) >= self.page_table.buffer_size() {
+                    return None;
+                }
+                LogicalAddress::new(Page(next_page), Offset(0))
             } else {
                 LogicalAddress::new(current.page(), Offset(new_offset))
             };
