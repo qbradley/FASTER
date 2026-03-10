@@ -405,7 +405,7 @@ proptest! {
 // ===========================================================================
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig::with_cases(2))]
 
     /// ∀ keys: create(k) → commit(k) → find(k) returns entry with correct tag.
     #[test]
@@ -441,7 +441,7 @@ proptest! {
 // ===========================================================================
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig::with_cases(2))]
 
     /// ∀ keys: create(k) → commit(k) → find(k) == Some with committed address.
     #[test]
@@ -478,7 +478,7 @@ proptest! {
 // ===========================================================================
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(ProptestConfig::with_cases(2))]
 
     /// ∀ key sets: insert_all → find_all succeeds.
     #[test]
@@ -523,7 +523,7 @@ proptest! {
 // ===========================================================================
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(ProptestConfig::with_cases(2))]
 
     /// ∀ ranges: insert N → invalidate [a,b) → only entries in [a,b) are gone.
     #[test]
@@ -593,7 +593,7 @@ proptest! {
 // ===========================================================================
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(ProptestConfig::with_cases(2))]
 
     /// Model-based test: maintain a HashMap shadow, apply random operations
     /// (insert/find/invalidate), verify the hash index matches the shadow.

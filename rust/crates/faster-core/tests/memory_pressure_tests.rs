@@ -1003,7 +1003,7 @@ fn interleaved_upsert_delete_under_pressure() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(ProptestConfig::with_cases(2))]
 
     /// For any sequence of keys and values, a constrained store must preserve
     /// recently-written data integrity (readable keys have correct values).

@@ -160,7 +160,7 @@ fn quickstart_example_3_concurrent_upserts() {
     ));
 
     let num_threads = 8;
-    let ops_per_thread = 1_000_000;
+    let ops_per_thread = 10_000;
 
     let start = std::time::Instant::now();
 

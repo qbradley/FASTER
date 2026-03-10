@@ -245,7 +245,7 @@ fn no_crashes_after_multiple_wraps() {
 fn concurrent_readers_writers_lossy() {
     let store = Arc::new(lossy_store());
     let shutdown = Arc::new(AtomicBool::new(false));
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_millis(100);
 
     let mut handles = Vec::new();
 

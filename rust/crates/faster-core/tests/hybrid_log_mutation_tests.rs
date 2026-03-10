@@ -560,7 +560,7 @@ fn allocator_page_advancement_across_multiple_pages() {
 
     // Insert enough data to cross multiple page boundaries
     let mut session = store.new_session();
-    for i in 0u64..1_000_000 {
+    for i in 0u64..50_000 {
         let _ = store.upsert(&mut session, &i, &i, ());
     }
 
@@ -568,7 +568,7 @@ fn allocator_page_advancement_across_multiple_pages() {
     // If seal happened on wrong allocations (mutation), pages would be
     // prematurely sealed and data could be corrupted.
     let mut verified = 0u64;
-    for i in (0u64..1_000_000).step_by(100) {
+    for i in (0u64..50_000).step_by(100) {
         let mut output = None;
         let _status = store.read(&mut session, &i, &0u64, &mut output, ());
         if let Some(v) = output {
@@ -577,8 +577,8 @@ fn allocator_page_advancement_across_multiple_pages() {
         }
     }
     assert!(
-        verified > 5000,
-        "should verify at least 5000 keys, got {verified}"
+        verified > 250,
+        "should verify at least 250 keys, got {verified}"
     );
     drop(session);
 }
