@@ -18,6 +18,7 @@ use faster_core::store::{
     FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo,
 };
 use faster_core::SyncFileDevice;
+use faster_uring::{BatchPolicy, UringConfig, UringDevice, UringDeviceConfig};
 use rand::Rng;
 
 const FASTER_PAGE_SIZE: usize = 1 << 25; // 32 MiB per FASTER page frame
@@ -32,6 +33,14 @@ enum KeyDistribution {
     Linear,
     /// Zipfian distribution — some keys are updated more frequently.
     Zipf,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+enum DeviceBackend {
+    /// Blocking I/O via thread pool.
+    Sync,
+    /// Linux io_uring kernel-async I/O.
+    Uring,
 }
 
 #[derive(Parser, Debug)]
@@ -84,6 +93,14 @@ struct Args {
     /// How often to print stats (seconds).
     #[arg(long, default_value_t = 5)]
     report_interval: u64,
+
+    /// I/O device backend.
+    #[arg(long, value_enum, default_value_t = DeviceBackend::Sync)]
+    device: DeviceBackend,
+
+    /// io_uring queue depth (only with --device uring).
+    #[arg(long, default_value_t = 256)]
+    uring_queue_depth: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -431,12 +448,16 @@ fn main() {
         auto_compact: false,
     };
 
+    let device_name = match args.device {
+        DeviceBackend::Sync => "sync",
+        DeviceBackend::Uring => "uring",
+    };
     let dist_name = match args.distribution {
         KeyDistribution::Linear => "linear",
         KeyDistribution::Zipf => "zipf",
     };
     println!(
-        "page-cache: {dist_name} distribution, {} writer(s), {} reader(s)",
+        "page-cache: {dist_name} distribution, {} writer(s), {} reader(s), {device_name} device",
         args.writers, args.readers,
     );
     println!(
@@ -447,10 +468,30 @@ fn main() {
         "  Config:  {buffer_size_pages} buffer pages, {hash_index_log2} hash index log2",
     );
 
-    let device = SyncFileDevice::new(&args.storage_dir, "log.", 512, segment_size, 4)
-        .expect("failed to create storage device");
-
-    let store = Arc::new(FasterKv::new(config, PageFunctions, device));
+    let store: Arc<FasterKv<PageFunctions>> = match args.device {
+        DeviceBackend::Sync => {
+            let device =
+                SyncFileDevice::new(&args.storage_dir, "log.", 512, segment_size, 4)
+                    .expect("failed to create sync storage device");
+            Arc::new(FasterKv::new(config, PageFunctions, device))
+        }
+        DeviceBackend::Uring => {
+            let device = UringDevice::new(UringDeviceConfig {
+                base_path: args.storage_dir.clone(),
+                prefix: "log.".to_string(),
+                sector_size: 512,
+                segment_size,
+                ring_config: UringConfig {
+                    queue_depth: args.uring_queue_depth,
+                    sq_poll: false,
+                    direct_io: false,
+                },
+                batch_policy: BatchPolicy::default(),
+            })
+            .expect("failed to create uring storage device");
+            Arc::new(FasterKv::new(config, PageFunctions, device))
+        }
+    };
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let stats = Arc::new(Stats::default());
