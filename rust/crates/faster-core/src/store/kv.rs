@@ -881,6 +881,7 @@ impl<F: Functions> FasterKv<F> {
         let ctx = InternalContext {
             hash_index: &self.hash_index,
             allocator: &self.allocator,
+            on_alloc_failure: None,
         };
         let status = internal_read(
             &ctx,
@@ -925,6 +926,7 @@ impl<F: Functions> FasterKv<F> {
         let ctx = InternalContext {
             hash_index: &self.hash_index,
             allocator: &self.allocator,
+            on_alloc_failure: Some(&|| self.maintenance()),
         };
         let status = internal_upsert(
             &ctx,
@@ -970,6 +972,7 @@ impl<F: Functions> FasterKv<F> {
         let ctx = InternalContext {
             hash_index: &self.hash_index,
             allocator: &self.allocator,
+            on_alloc_failure: Some(&|| self.maintenance()),
         };
         let status = internal_rmw(
             &ctx,
@@ -1011,6 +1014,7 @@ impl<F: Functions> FasterKv<F> {
         let ctx = InternalContext {
             hash_index: &self.hash_index,
             allocator: &self.allocator,
+            on_alloc_failure: Some(&|| self.maintenance()),
         };
         let status = internal_delete(&ctx, guard.session_mut(), &self.functions, key, context);
         drop(guard);
@@ -1403,12 +1407,12 @@ impl<F: Functions> FasterKv<F> {
         key: &K,
         value: &V,
     ) -> Option<(LogicalAddress, crate::hybrid_log::MutableRecordAccessor)> {
-        if let Some(pair) = allocate_at_tail(&self.allocator, key, value) {
+        if let Some(pair) = allocate_at_tail(&self.allocator, key, value, None) {
             return Some(pair);
         }
         // Flush sealed pages to free space, then retry.
         let _ = self.flush();
-        allocate_at_tail(&self.allocator, key, value)
+        allocate_at_tail(&self.allocator, key, value, None)
     }
 
     // ── Maintenance ─────────────────────────────────────────────────

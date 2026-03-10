@@ -229,6 +229,7 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         let ctx = InternalContext {
             hash_index: &store.hash_index,
             allocator: &store.allocator,
+            on_alloc_failure: Some(&|| store.maintenance()),
         };
         let mut result = BatchResult::filled(n, OperationStatus::NotFound);
         for i in 0..n {
@@ -279,6 +280,7 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         let ctx = InternalContext {
             hash_index: &store.hash_index,
             allocator: &store.allocator,
+            on_alloc_failure: Some(&|| store.maintenance()),
         };
         let mut result = BatchResult::filled(n, OperationStatus::NotFound);
         for i in 0..n {
@@ -334,6 +336,7 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         let ctx = InternalContext {
             hash_index: &store.hash_index,
             allocator: &store.allocator,
+            on_alloc_failure: Some(&|| store.maintenance()),
         };
         let mut result = BatchResult::filled(n, OperationStatus::NotFound);
         for i in 0..n {
@@ -373,6 +376,7 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         let ctx = InternalContext {
             hash_index: &store.hash_index,
             allocator: &store.allocator,
+            on_alloc_failure: Some(&|| store.maintenance()),
         };
         let mut result = BatchResult::filled(n, OperationStatus::NotFound);
         for i in 0..n {
@@ -421,6 +425,7 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         let ctx = InternalContext {
             hash_index: &store.hash_index,
             allocator: &store.allocator,
+            on_alloc_failure: Some(&|| store.maintenance()),
         };
         let mut result = BatchResult::filled(n, OperationStatus::NotFound);
         for i in 0..n {

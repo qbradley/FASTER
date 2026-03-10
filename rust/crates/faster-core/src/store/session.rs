@@ -706,6 +706,7 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         let ctx = InternalContext {
             hash_index: &store.hash_index,
             allocator: &store.allocator,
+            on_alloc_failure: Some(&|| store.maintenance()),
         };
         let status = internal_read(
             &ctx,
@@ -744,6 +745,7 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         let ctx = InternalContext {
             hash_index: &store.hash_index,
             allocator: &store.allocator,
+            on_alloc_failure: Some(&|| store.maintenance()),
         };
         let status = internal_upsert(&ctx, self.session, &store.functions, key, input, context);
         if status == crate::status::OperationStatus::Pending {
@@ -775,6 +777,7 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         let ctx = InternalContext {
             hash_index: &store.hash_index,
             allocator: &store.allocator,
+            on_alloc_failure: Some(&|| store.maintenance()),
         };
         let status = internal_rmw(
             &ctx,
@@ -811,6 +814,7 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         let ctx = InternalContext {
             hash_index: &store.hash_index,
             allocator: &store.allocator,
+            on_alloc_failure: Some(&|| store.maintenance()),
         };
         let status = internal_delete(&ctx, self.session, &store.functions, key, context);
         if status == crate::status::OperationStatus::Pending {
