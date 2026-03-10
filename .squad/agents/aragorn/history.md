@@ -60,3 +60,19 @@
 
 **Fix:** Drop `--all-targets` from nextest. Clippy handles bench code compilation.
 **Commit:** `74ce041f` — 35 files, ~1150 insertions / ~470 deletions.
+
+---
+
+### Wave 4 — Mutation Testing on Critical Modules (2026-03-09)
+**Files:** `tests/mutation_tests.rs` (16 tests), `compaction/address_update.rs` (+1 test)
+
+**Modules tested:** allocator.rs (82 mutants), hash/ (251 mutants), compaction/ (partial)
+
+**Results:**
+- **Allocator:** 52 caught / 14 missed / 5 timeout / 11 unviable → 79% kill rate
+- **Hash module:** 201 caught / 16 missed / 11 timeout / 23 unviable → 93% kill rate
+- **New tests killed:** 3 hash shift-direction mutations, overflow pool free→noop
+
+**Key finding:** Most surviving mutants are equivalent mutations (|→^ when bits don't overlap, >0 vs >=0 on unsigned), performance-only (prefetch noop, eager allocation), or Debug formatting. True test gaps were addressed.
+
+**Tests added:** 17 targeted tests in `mutation_tests.rs` and `address_update.rs`.
