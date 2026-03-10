@@ -136,9 +136,10 @@ fn safe_read_record_size(addr: LogicalAddress, min_size: u32) -> u32 {
 /// `None` if no match is found in the in-memory portion of the chain.
 ///
 /// Uses the caller's [`AddressInfo`] snapshot to classify addresses,
-/// avoiding redundant atomic loads on the hot path. The snapshot is
-/// safe because epoch protection guarantees pages won't be evicted
-/// during an operation.
+/// avoiding redundant atomic loads on the hot path. In lossy mode,
+/// concurrent maintenance may evict pages after this snapshot was taken;
+/// callers must handle `get_record` returning `None` on the matched
+/// address instead of panicking.
 ///
 /// `read_header_and_match_key` is used to merge the `RecordInfo` read
 /// and key comparison into a single physical-address lookup per hop.
@@ -270,11 +271,19 @@ pub(crate) fn internal_read<F: Functions>(
                     }
 
                     // Read the value and invoke the user callback.
+                    //
+                    // In lossy mode, the maintenance thread may evict pages
+                    // between find_record_for_key and this get_record call.
+                    // If the page was recycled, get_record returns None and
+                    // we gracefully report NotFound instead of panicking.
                     let safe_size = safe_read_record_size(_found_addr, layout.total_size() as u32);
-                    let value: F::Value = reader
+                    let value: F::Value = match reader
                         .get_record(_found_addr, safe_size)
                         .map(|acc| acc.value::<F::Value>(&layout))
-                        .expect("value must be readable for in-memory record");
+                    {
+                        Some(v) => v,
+                        None => return OperationStatus::NotFound,
+                    };
                     functions.read(
                         key,
                         &value,
@@ -894,11 +903,15 @@ pub(crate) fn internal_rmw<F: Functions>(
                         );
                     }
 
+                    // Page may be evicted between find and read (lossy mode race).
                     let safe_size = safe_read_record_size(found_addr, layout.total_size() as u32);
-                    let old_value: F::Value = reader
+                    let old_value: F::Value = match reader
                         .get_record(found_addr, safe_size)
                         .map(|acc| acc.value::<F::Value>(&layout))
-                        .expect("readable in-memory record");
+                    {
+                        Some(v) => v,
+                        None => return OperationStatus::Aborted,
+                    };
 
                     if !functions.rmw_need_copy_update(
                         key,
@@ -1133,11 +1146,15 @@ pub(crate) fn internal_delete<F: Functions>(
                     }
 
                     // Allocate a tombstone record at tail.
+                    // Page may be evicted between find and read (lossy mode race).
                     let safe_size = safe_read_record_size(_found_addr, layout.total_size() as u32);
-                    let dummy_value: F::Value = reader
+                    let dummy_value: F::Value = match reader
                         .get_record(_found_addr, safe_size)
                         .map(|acc| acc.value::<F::Value>(&layout))
-                        .expect("readable in-memory record");
+                    {
+                        Some(v) => v,
+                        None => return OperationStatus::NotFound,
+                    };
                     let (new_addr, mut accessor) =
                         match allocate_at_tail(ctx.allocator, key, &dummy_value) {
                             Some(pair) => pair,
