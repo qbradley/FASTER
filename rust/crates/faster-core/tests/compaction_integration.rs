@@ -29,7 +29,6 @@ fn test_store() -> SimpleStore {
         eviction_policy: EvictionPolicy::default(),
         grow_config: GrowConfig::default(),
         auto_compact: false,
-        lossy: false,
     };
     FasterKv::new(config, SimpleFunctions::default(), NullDevice::new())
 }
@@ -236,7 +235,6 @@ fn maybe_compact_with_policy() {
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
             auto_compact: true,
-            lossy: false,
         },
         SimpleFunctions::default(),
         NullDevice::new(),
@@ -436,7 +434,6 @@ fn varlen_store() -> FasterKv<VarLenFunctions> {
         eviction_policy: EvictionPolicy::default(),
         grow_config: GrowConfig::default(),
         auto_compact: false,
-        lossy: false,
     };
     FasterKv::new(config, VarLenFunctions, InMemoryDevice::new())
 }
@@ -450,7 +447,6 @@ fn mixed_key_store() -> FasterKv<MixedKeyFunctions> {
         eviction_policy: EvictionPolicy::default(),
         grow_config: GrowConfig::default(),
         auto_compact: false,
-        lossy: false,
     };
     FasterKv::new(config, MixedKeyFunctions, InMemoryDevice::new())
 }
@@ -741,7 +737,6 @@ fn inmemory_u64_store() -> FasterKv<SimpleFunctions<u64, u64>> {
         eviction_policy: EvictionPolicy::default(),
         grow_config: GrowConfig::default(),
         auto_compact: false,
-        lossy: false,
     };
     FasterKv::new(config, SimpleFunctions::default(), InMemoryDevice::new())
 }
@@ -1006,7 +1001,6 @@ fn maybe_compact_with_always_policy() {
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
             auto_compact: true,
-            lossy: false,
         },
         SimpleFunctions::<u64, u64>::default(),
         InMemoryDevice::new(),
