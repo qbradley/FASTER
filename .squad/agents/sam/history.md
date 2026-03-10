@@ -20,6 +20,10 @@
 ## Learnings
 <!-- Append new learnings -->
 - Multiple concurrent agents sharing working tree creates constant conflicts — stage immediately.
+- EvictionPolicy::default() has max_in_memory_pages=256; never triggers eviction for small buffers. Must set explicitly for disk-heavy workloads.
+- FASTER's flush pipeline is async (Sealed→Flushing→Flushed). Buffer needs 4x target_pages headroom so the tail doesn't lap the head while waiting for I/O callbacks.
+- A dedicated maintenance thread (5ms interval) is essential for sustained writes beyond the buffer — writer retry loops alone can't pump the flush/evict pipeline fast enough.
+- SimpleFunctions requires V: Copy; Vec<u8> needs a custom Functions impl (clone-based upsert/read/rmw like BlockFunctions in read-cache-sim).
 - Sub-agent destructively reverted critical files — always verify sub-agent changes.
 - Bash heredocs are reliable for recreating deleted files.
 - Two-phase intermediate CAS protocol prevents ABA in EPVS state transitions.
@@ -62,3 +66,13 @@ CAS-based unsealing: `try_revivify(expected)` atomically clears sealed bit. AcqR
 
 **Key pattern:** Small `FasterKvConfig` with `hash_index_size_log2: 1..10`, `buffer_size_pages: 4`, `mutable_fraction: 0.5`, `max_in_memory_pages: 3`, `grow_config.enabled: false`.
 **Branch:** `sam/memory-pressure-tests`, **Commit:** `737ab04c`
+
+---
+
+### page-cache and page-store Sample Crates (2026-03-09)
+Two disk-I/O-heavy samples: `page-cache` (lossy cache with linear/Zipf key distributions) and `page-store` (durable store with delete-based retention via `--max-live-pages` and `--retention-ratio`). Both use PageFunctions (custom Functions for u64 → Vec<u8>), dedicated maintenance thread for flush pipeline, retry-on-Aborted for allocation pressure, and SyncFileDevice with `"log."` prefix.
+
+**Key insight:** Buffer needs 4× target pages for async flush headroom. EvictionPolicy::default() never triggers for small buffers.
+**Files:** `crates/samples/page-cache/{Cargo.toml,src/main.rs}`, `crates/samples/page-store/{Cargo.toml,src/main.rs}`, workspace `Cargo.toml`.
+**Results:** Both compile, clippy clean, and sustain >180K writes/sec on default config.
+**Branch:** `sam/page-cache-store`, **Commit:** `b6c8fd88`
