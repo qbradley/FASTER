@@ -91,30 +91,30 @@ impl PageEvictor {
         let page_table = allocator.page_table();
 
         let head_page = info.head_address.page().0;
+        let ro_page = info.read_only_address.page().0;
 
         let mut evicted = 0u32;
 
         for i in 0..self.policy.eviction_batch_size {
             let page_num = head_page + i;
-            let page = Page(page_num);
-            let page_start = LogicalAddress::new(page, Offset(0));
 
-            // Don't evict past read_only boundary.
-            if page_start.raw() >= info.read_only_address.raw() {
+            // Don't evict past read_only boundary (page granularity).
+            if page_num >= ro_page {
                 break;
             }
 
-            if self.try_evict_page(page, page_table) {
+            if self.try_evict_page(Page(page_num), page_table) {
                 evicted += 1;
             } else {
-                break;
+                // Skip non-evictable pages (Flushing, Open, etc.)
+                continue;
             }
         }
 
-        // Advance head to cover all contiguously evicted pages.
-        if evicted > 0 {
-            self.advance_head(allocator);
-        }
+        // Always try to advance head — even with 0 evictions, pages that
+        // transitioned to Flushed/Evicted since the last call can now be
+        // advanced past.
+        self.advance_head(allocator);
 
         evicted
     }
@@ -141,11 +141,15 @@ impl PageEvictor {
         }
     }
 
-    /// Advance `head_address` to reflect evicted pages.
+    /// Advance `head_address` to reflect evicted pages, evicting Flushed
+    /// frames inline to prevent stale frame state when pages wrap around.
     ///
-    /// Scans forward from the current head until finding a page that is
-    /// neither `Flushed` nor `Evicted` (and whose frame is not null).
-    /// The head only advances contiguously — no gaps.
+    /// Scans forward from the current head. For each page:
+    /// - `Flushed`: evict the frame (Flushed→Evicted, null slot, free memory)
+    ///   then advance. If eviction fails, stop.
+    /// - `Evicted` or null: already cleaned up, advance past it.
+    /// - Any other state (Open, Sealed, Flushing): stop — cannot advance
+    ///   past in-flight or active pages.
     fn advance_head(&self, allocator: &HybridLogAllocator) -> LogicalAddress {
         let current_head = allocator.head_address();
         let read_only = allocator.read_only_address();
@@ -155,20 +159,42 @@ impl PageEvictor {
 
         loop {
             let page = Page(new_head_page);
-            let page_start = LogicalAddress::new(page, Offset(0));
 
-            // Don't advance past read_only.
-            if page_start.raw() >= read_only.raw() {
+            // Don't advance past read_only (page granularity).
+            if new_head_page >= read_only.page().0 {
                 break;
             }
 
             match page_table.get_frame(page) {
                 Some(frame) => {
                     let state = frame.state().load(Ordering::Acquire);
-                    if state == PageState::Flushed || state == PageState::Evicted {
-                        new_head_page += 1;
-                    } else {
-                        break;
+                    match state {
+                        PageState::Flushed => {
+                            // Evict inline: Flushed→Evicted, null slot, free.
+                            if page_table.try_evict_frame(page).is_some() {
+                                new_head_page += 1;
+                            } else {
+                                break; // Eviction failed (concurrent modification)
+                            }
+                        }
+                        PageState::Evicted => {
+                            new_head_page += 1;
+                        }
+                        PageState::Open => {
+                            // Page is behind read_only but still Open — the
+                            // seal transition was missed (race between tail
+                            // advance and frame eviction/recycling). Force
+                            // seal so flush_sealed_pages can pick it up on
+                            // the next maintenance cycle.
+                            frame
+                                .state()
+                                .try_transition(PageState::Open, PageState::Sealed);
+                            break;
+                        }
+                        _ => {
+                            // Sealed, Flushing — cannot advance past.
+                            break;
+                        }
                     }
                 }
                 None => {

@@ -83,6 +83,7 @@ fn read_complete_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> 
     Ok(())
 }
 
+
 /// Write all of `buf`, retrying on partial writes and interrupts.
 fn write_complete_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
     let mut pos = 0usize;
@@ -94,7 +95,9 @@ fn write_complete_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
                     "failed to write whole buffer",
                 ));
             }
-            Ok(n) => pos += n,
+            Ok(n) => {
+                pos += n;
+            }
             Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(e),
         }
@@ -149,12 +152,12 @@ impl SegmentRegistry {
             return Ok(Arc::clone(f));
         }
 
-        let file = OpenOptions::new()
-            .read(true)
+        let mut opts = OpenOptions::new();
+        opts.read(true)
             .write(true)
             .create(true)
-            .truncate(false)
-            .open(self.segment_path(segment_index))?;
+            .truncate(false);
+        let file = opts.open(self.segment_path(segment_index))?;
 
         let file = Arc::new(file);
         guard.insert(segment_index, Arc::clone(&file));

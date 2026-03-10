@@ -1609,6 +1609,18 @@ impl<F: Functions> FasterKv<F> {
             self.allocator.shift_read_only_to_tail();
         }
 
+        // Buffer-pressure: force read-only shift and eviction when the buffer
+        // is nearly full. With mutable_fraction ~0.9, the normal threshold may
+        // never trigger because mutable_pages() == mutable_fraction_pages().
+        let head_page = info.head_address.page().0 as u64;
+        let tail_page = info.tail_address.page().0 as u64;
+        let in_memory_pages = tail_page.saturating_sub(head_page);
+        let buffer_size = self.allocator.page_table().buffer_size() as u64;
+        if in_memory_pages + 2 >= buffer_size {
+            self.allocator.shift_read_only_to_tail();
+            self.evictor.evict_and_truncate(&self.allocator, self.device.as_ref());
+        }
+
         // 2. Flush sealed pages to the device.
         let _ = self
             .flusher
@@ -1616,7 +1628,7 @@ impl<F: Functions> FasterKv<F> {
 
         // 3. Evict if the in-memory footprint exceeds the policy threshold.
         if self.evictor.needs_eviction(&self.allocator.snapshot()) {
-            self.evictor.evict_pages(&self.allocator);
+            self.evictor.evict_and_truncate(&self.allocator, self.device.as_ref());
         }
     }
 
@@ -1696,6 +1708,12 @@ impl<F: Functions> FasterKv<F> {
     #[inline]
     pub fn head_address(&self) -> LogicalAddress {
         self.allocator.head_address()
+    }
+
+    /// Get the current read-only address (diagnostic use).
+    #[inline]
+    pub fn read_only_address(&self) -> LogicalAddress {
+        self.allocator.read_only_address()
     }
 
     /// Get the current begin address (start of valid log data).

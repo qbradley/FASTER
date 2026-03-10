@@ -163,7 +163,7 @@ unsafe fn flush_completion_callback(context: *mut u8, status: IoStatus, bytes_tr
             frame
                 .flushed_until()
                 .fetch_max(bytes_transferred, Ordering::Release);
-            let _ = frame
+            frame
                 .state()
                 .try_transition(PageState::Flushing, PageState::Flushed);
         }
@@ -376,7 +376,7 @@ impl PageFlusher {
                     match self.flush_page(page, page_table, device, self.page_size) {
                         Ok(true) => flushed_count += 1,
                         Ok(false) => {} // Already flushing/flushed.
-                        Err(FlushError::QueueFull(_)) => break, // Back-pressure.
+                        Err(FlushError::QueueFull(_)) => continue, // Skip, retry next maintenance cycle.
                         Err(e) => return Err(e),
                     }
                 }
