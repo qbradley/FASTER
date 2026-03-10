@@ -1633,7 +1633,11 @@ impl<F: Functions> FasterKv<F> {
         // Force a read-only shift and eviction in this case to unblock them.
         let buffer_pressure = info.in_memory_pages() + 2 >= buffer_size;
 
-        if buffer_pressure || info.needs_read_only_shift(self.allocator.mutable_fraction_pages()) {
+        // Eager flush watermark: start flushing at 75% capacity to prevent
+        // the cliff where all writers stall simultaneously at 100%.
+        let eager_flush = info.in_memory_pages() * 4 >= buffer_size * 3;
+
+        if buffer_pressure || eager_flush || info.needs_read_only_shift(self.allocator.mutable_fraction_pages()) {
             self.allocator.shift_read_only_to_tail();
         }
 
@@ -1659,9 +1663,9 @@ impl<F: Functions> FasterKv<F> {
             .flusher
             .flush_sealed_pages(&self.allocator, self.device.as_ref());
 
-        // 3. Evict if the in-memory footprint exceeds the policy threshold
-        //    or the buffer is under pressure.
-        if buffer_pressure || self.evictor.needs_eviction(&self.allocator.snapshot()) {
+        // 3. Evict if the in-memory footprint exceeds the policy threshold,
+        //    the buffer is under pressure, or we've hit the eager flush watermark.
+        if buffer_pressure || eager_flush || self.evictor.needs_eviction(&self.allocator.snapshot()) {
             if self.config.lossy {
                 // Lossy mode: evict, advance begin_address, truncate device,
                 // and invalidate stale hash entries in a single step.
