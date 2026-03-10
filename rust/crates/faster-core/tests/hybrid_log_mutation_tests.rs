@@ -819,3 +819,85 @@ fn page_trailer_round_trip() {
     let recovered = PageTrailer::from_bytes(bytes);
     assert_eq!(recovered, trailer, "trailer should survive round-trip serialization");
 }
+
+// ===========================================================================
+// regions.rs — AddressRegion::is_in_memory and AddressInfo::needs_flush
+// ===========================================================================
+
+/// Kill mutant: `is_in_memory` return value → true.
+///
+/// OnDisk and Truncated should NOT be considered "in memory".
+#[test]
+fn is_in_memory_returns_false_for_disk_regions() {
+    use faster_core::hybrid_log::AddressRegion;
+
+    // In-memory regions should return true
+    assert!(AddressRegion::Mutable.is_in_memory());
+    assert!(AddressRegion::FuzzyRegion.is_in_memory());
+    assert!(AddressRegion::ReadOnly.is_in_memory());
+
+    // Non-in-memory regions MUST return false
+    assert!(
+        !AddressRegion::OnDisk.is_in_memory(),
+        "OnDisk should NOT be in memory"
+    );
+    assert!(
+        !AddressRegion::Truncated.is_in_memory(),
+        "Truncated should NOT be in memory"
+    );
+    assert!(
+        !AddressRegion::Invalid.is_in_memory(),
+        "Invalid should NOT be in memory"
+    );
+}
+
+/// Kill mutant: `needs_flush` — `<` → `>` in read_only/safe_read_only compare.
+///
+/// `needs_flush` returns true when read_only < safe_read_only (fuzzy region
+/// exists) OR head < read_only (read-only pages exist). With `>`, the
+/// condition would be inverted — flush is needed when there are NO unflushed
+/// pages (wrong).
+#[test]
+fn needs_flush_detects_unflushed_pages() {
+    use faster_core::hybrid_log::AddressInfo;
+    use faster_core::address::{LogicalAddress, Offset};
+
+    // Scenario 1: fuzzy region exists (read_only < safe_read_only)
+    let info = AddressInfo {
+        begin_address: LogicalAddress::new(Page(0), Offset(0)),
+        head_address: LogicalAddress::new(Page(0), Offset(0)),
+        read_only_address: LogicalAddress::new(Page(2), Offset(0)),
+        safe_read_only_address: LogicalAddress::new(Page(3), Offset(0)),
+        tail_address: LogicalAddress::new(Page(5), Offset(0)),
+    };
+    assert!(
+        info.needs_flush(),
+        "should need flush when read_only < safe_read_only (fuzzy region)"
+    );
+
+    // Scenario 2: read-only pages exist (head < read_only)
+    let info = AddressInfo {
+        begin_address: LogicalAddress::new(Page(0), Offset(0)),
+        head_address: LogicalAddress::new(Page(1), Offset(0)),
+        read_only_address: LogicalAddress::new(Page(3), Offset(0)),
+        safe_read_only_address: LogicalAddress::new(Page(3), Offset(0)),
+        tail_address: LogicalAddress::new(Page(5), Offset(0)),
+    };
+    assert!(
+        info.needs_flush(),
+        "should need flush when head < read_only (unflushed RO pages)"
+    );
+
+    // Scenario 3: everything flushed (head == read_only == safe_read_only)
+    let info = AddressInfo {
+        begin_address: LogicalAddress::new(Page(0), Offset(0)),
+        head_address: LogicalAddress::new(Page(3), Offset(0)),
+        read_only_address: LogicalAddress::new(Page(3), Offset(0)),
+        safe_read_only_address: LogicalAddress::new(Page(3), Offset(0)),
+        tail_address: LogicalAddress::new(Page(5), Offset(0)),
+    };
+    assert!(
+        !info.needs_flush(),
+        "should NOT need flush when all RO pages are flushed"
+    );
+}
