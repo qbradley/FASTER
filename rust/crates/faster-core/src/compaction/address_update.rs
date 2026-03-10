@@ -777,4 +777,56 @@ mod tests {
 
         store.dispose_session(session);
     }
+
+    // ── 7. Stale mapping produces cas_failed count ──────────────────
+
+    /// After a successful swing, repeating the swing with the same (now stale)
+    /// mappings must produce `cas_failed` for every mapping.
+    /// Kills: address_update.rs:197 (+= → *=) on stats.cas_failed
+    #[test]
+    fn swing_stale_mappings_counts_cas_failed() {
+        let store = test_store();
+        let mut session = store.new_session();
+
+        for i in 0u64..10 {
+            let _ = store.upsert(&mut session, &i, &(i * 10), ());
+        }
+
+        let (plan, copy_result) = {
+            let _guard = session.begin_unsafe();
+            let scanner = CompactionScanner::new(&store.allocator, &store.hash_index);
+            let plan = scanner
+                .scan::<u64, u64>(store.first_data_address(), store.allocator.tail_address())
+                .expect("scan should succeed");
+            let copier = RecordCopier::new(&store.allocator);
+            let copy_result = copier.copy_records(&plan.live_records).unwrap();
+            (plan, copy_result)
+        };
+
+        // First swing succeeds.
+        {
+            let _guard = session.begin_unsafe();
+            let updater = AddressUpdater::new(&store.hash_index, &store.allocator);
+            let stats = updater.swing::<u64, u64>(&copy_result, &plan);
+            assert_eq!(stats.swung, 10);
+            assert_eq!(stats.cas_failed, 0);
+        }
+
+        // Second swing: all mappings are now stale (hash index points to new addresses).
+        {
+            let _guard = session.begin_unsafe();
+            let updater = AddressUpdater::new(&store.hash_index, &store.allocator);
+            let stats = updater.swing::<u64, u64>(&copy_result, &plan);
+            assert_eq!(
+                stats.swung, 0,
+                "no mapping should succeed on a second swing"
+            );
+            assert_eq!(
+                stats.cas_failed, 10,
+                "all 10 mappings should fail CAS (stale old_address)"
+            );
+        }
+
+        store.dispose_session(session);
+    }
 }
