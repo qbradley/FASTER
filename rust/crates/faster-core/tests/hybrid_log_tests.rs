@@ -23,6 +23,7 @@ fn hl_store() -> SimpleStore {
         eviction_policy: EvictionPolicy::default(),
         grow_config: GrowConfig::default(),
         auto_compact: false,
+        lossy: false,
     };
     FasterKv::new(config, SimpleFunctions::default(), InMemoryDevice::new())
 }
@@ -40,6 +41,7 @@ fn tiny_eviction_store() -> SimpleStore {
         },
         grow_config: GrowConfig::default(),
         auto_compact: false,
+        lossy: false,
     };
     FasterKv::new(config, SimpleFunctions::default(), InMemoryDevice::new())
 }
@@ -630,6 +632,7 @@ fn small_buffer_store_works() {
         },
         grow_config: GrowConfig::default(),
         auto_compact: false,
+        lossy: false,
     };
     let store = FasterKv::new(config, SimpleFunctions::default(), InMemoryDevice::new());
     let mut session = store.new_session();
@@ -656,6 +659,7 @@ fn large_hash_index_works() {
         eviction_policy: EvictionPolicy::default(),
         grow_config: GrowConfig::default(),
         auto_compact: false,
+        lossy: false,
     };
     let store = FasterKv::new(config, SimpleFunctions::default(), InMemoryDevice::new());
     let mut session = store.new_session();

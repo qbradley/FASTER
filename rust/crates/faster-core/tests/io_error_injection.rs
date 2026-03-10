@@ -361,6 +361,7 @@ fn small_config() -> FasterKvConfig {
         eviction_policy: EvictionPolicy::default(),
         grow_config: GrowConfig::default(),
         auto_compact: false,
+        lossy: false,
     }
 }
 
@@ -377,6 +378,7 @@ fn tiny_config() -> FasterKvConfig {
         },
         grow_config: GrowConfig::default(),
         auto_compact: false,
+        lossy: false,
     }
 }
 
@@ -1280,6 +1282,7 @@ fn large_batch_with_intermittent_faults() {
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
             auto_compact: false,
+            lossy: false,
         },
         device,
     );

@@ -707,6 +707,7 @@ fn concurrent_test_store() -> Arc<FasterKv<SimpleFunctions<u64, u64>>> {
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         auto_compact: false,
+        lossy: false,
     };
     Arc::new(FasterKv::new(
         config,
@@ -729,6 +730,7 @@ fn growable_test_store() -> Arc<FasterKv<SimpleFunctions<u64, u64>>> {
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         auto_compact: false,
+        lossy: false,
     };
     Arc::new(FasterKv::new(
         config,
@@ -748,6 +750,7 @@ fn concurrent_counter_store() -> Arc<FasterKv<CounterFunctions<u64>>> {
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         auto_compact: false,
+        lossy: false,
     };
     Arc::new(FasterKv::new(
         config,
@@ -1140,6 +1143,7 @@ fn stress_operations_with_checkpoints(
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         auto_compact: false,
+        lossy: false,
     };
     let store = Arc::new(FasterKv::<SimpleFunctions<u64, u64>>::new(
         config,

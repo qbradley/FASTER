@@ -76,3 +76,30 @@
 **Key finding:** Most surviving mutants are equivalent mutations (|→^ when bits don't overlap, >0 vs >=0 on unsigned), performance-only (prefetch noop, eager allocation), or Debug formatting. True test gaps were addressed.
 
 **Tests added:** 17 targeted tests in `mutation_tests.rs` and `address_update.rs`.
+
+### Wave 5 — Lossy LRU Cache Wrap-Around Mode (Session 6)
+
+**Task:** Implement lossy cache semantics so the hybrid log wraps gracefully.
+
+**Investigation findings:**
+- No circular address wrap-around — FASTER uses monotonic 48-bit addresses (23-bit page + 25-bit offset). The "circular" aspect is only the in-memory page frame buffer.
+- `AddressInfo::classify()` maps addresses to regions: Truncated < head < OnDisk < ReadOnly < Mutable < InMutable.
+- Read/delete paths already handle Truncated correctly (return NotFound).
+- **Bug:** internal_upsert and internal_rmw returned `Aborted` for Truncated addresses, causing infinite retry loops.
+- `evict_and_truncate()` and `invalidate_entries_in_range()` existed but were never called from `maintenance()`.
+
+**Implementation:**
+- Added `lossy: bool` to FasterKvConfig (default false).
+- Fixed internal_upsert: Truncated → `upsert_copy_to_tail()` (fresh record, old_value=None).
+- Fixed internal_rmw: Truncated → `rmw_create_at_tail()` (calls rmw_initial).
+- Lossy maintenance: `evict_and_truncate()` + `invalidate_entries_in_range()`.
+- Updated page-cache sample to `lossy: true`.
+- 9 integration tests (eviction, re-upsert, RMW, delete, concurrent, begin_address advancement).
+
+**Key learnings:**
+- Page size = 2^25 = 32 MiB. Each u64/u64 record = 24 bytes → ~1.4M records/page. Need 6M+ records to force eviction in a 4-page buffer.
+- InMemoryDevice `truncate_until` is a no-op; hash invalidation does the actual cleanup.
+- Git stash across branches is dangerous in shared workspaces — stash pop can fail on Cargo.lock conflicts, losing all uncommitted changes.
+- Test parallelism (>2 threads) with lossy tests (~300MB each) causes resource contention failures in unrelated tests.
+
+**Results:** 1608 existing tests pass, 9 new lossy tests pass, page-cache sample runs 60s stable with readers+writers.

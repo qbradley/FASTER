@@ -80,6 +80,7 @@ impl SimulationHarness {
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
             auto_compact: false,
+            lossy: false,
         }
     }
 

@@ -34,6 +34,7 @@ fn make_store(n: usize) -> Store {
         eviction_policy: EvictionPolicy::default(),
         grow_config: faster_core::grow::GrowConfig::default(),
         auto_compact: false,
+        lossy: false,
     };
     FasterKv::new(config, SimpleFunctions::default(), NullDevice::new())
 }

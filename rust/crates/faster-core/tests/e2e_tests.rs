@@ -26,6 +26,7 @@ fn small_store() -> FasterKv<SimpleFunctions<u64, u64>> {
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         auto_compact: false,
+        lossy: false,
     };
     FasterKv::new(config, SimpleFunctions::default(), InMemoryDevice::new())
 }
@@ -40,6 +41,7 @@ fn counter_store() -> FasterKv<CounterFunctions<u64>> {
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         auto_compact: false,
+        lossy: false,
     };
     FasterKv::new(config, CounterFunctions::new(), InMemoryDevice::new())
 }
@@ -57,6 +59,7 @@ fn tiny_buffer_store(device: impl faster_core::Device) -> FasterKv<SimpleFunctio
             eviction_batch_size: 2,
         },
         auto_compact: false,
+        lossy: false,
     };
     FasterKv::new(config, SimpleFunctions::default(), device)
 }
@@ -114,6 +117,7 @@ fn large_scale_insert_and_read() {
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         auto_compact: false,
+        lossy: false,
     };
     let store = FasterKv::new(config, SimpleFunctions::default(), InMemoryDevice::new());
     let mut s = store.new_session();
@@ -149,6 +153,7 @@ fn concurrent_upsert_and_read() {
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         auto_compact: false,
+        lossy: false,
     };
     let store = Arc::new(FasterKv::<SimpleFunctions<u64, u64>>::new(
         config,
@@ -268,6 +273,7 @@ fn disk_eviction_and_readback() {
             eviction_batch_size: 2,
         },
         auto_compact: false,
+        lossy: false,
     };
     let store = FasterKv::new(config, SimpleFunctions::default(), device);
     let mut s = store.new_session();
@@ -389,6 +395,7 @@ fn mixed_workload_multithreaded() {
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         auto_compact: false,
+        lossy: false,
     };
     let store = Arc::new(FasterKv::<SimpleFunctions<u64, u64>>::new(
         config,
@@ -476,6 +483,7 @@ fn config_small_hash_table() {
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         auto_compact: false,
+        lossy: false,
     };
     let store = FasterKv::new(config, SimpleFunctions::default(), NullDevice::new());
     let mut s = store.new_session();
@@ -507,6 +515,7 @@ fn config_large_buffer() {
             eviction_batch_size: 8,
         },
         auto_compact: false,
+        lossy: false,
     };
     let store = FasterKv::new(config, SimpleFunctions::default(), InMemoryDevice::new());
     let mut s = store.new_session();
@@ -534,6 +543,7 @@ fn config_low_mutable_fraction() {
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         auto_compact: false,
+        lossy: false,
     };
     let store = FasterKv::new(config, SimpleFunctions::default(), InMemoryDevice::new());
     let mut s = store.new_session();
@@ -656,6 +666,7 @@ fn maintenance_under_concurrent_load() {
             eviction_batch_size: 2,
         },
         auto_compact: false,
+        lossy: false,
     };
     let store = Arc::new(FasterKv::<SimpleFunctions<u64, u64>>::new(
         config,
@@ -792,6 +803,7 @@ fn sync_file_device_basic_roundtrip() {
             sector_size: 512,
             eviction_policy: EvictionPolicy::default(),
             auto_compact: false,
+            lossy: false,
         },
         SimpleFunctions::default(),
         device,
