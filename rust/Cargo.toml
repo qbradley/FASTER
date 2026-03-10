@@ -16,6 +16,7 @@ members = [
     "crates/samples/event-counter-tokio",
     "crates/samples/page-cache",
     "crates/samples/page-store",
+    "crates/samples/torture-stress",
 ]
 exclude = ["fuzz"]
 resolver = "3"
