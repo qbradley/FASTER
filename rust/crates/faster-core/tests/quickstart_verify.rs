@@ -117,7 +117,7 @@ fn quickstart_example_2_persistent_storage() {
         // Reads for on-disk records would return Pending — handle both:
         let mut out2: Option<u64> = None;
         let status = store.read(&mut session, &999, &0u64, &mut out2, ());
-        match status {
+        match status.status() {
             OperationStatus::Ok => {
                 assert_eq!(out2, Some(999 * 999));
             }
@@ -126,7 +126,7 @@ fn quickstart_example_2_persistent_storage() {
                 store.complete_pending_sync(&mut session);
                 let mut retry: Option<u64> = None;
                 let s = store.read(&mut session, &999, &0u64, &mut retry, ());
-                assert_eq!(s, OperationStatus::Ok);
+                assert_eq!(s.status(), OperationStatus::Ok);
                 assert_eq!(retry, Some(999 * 999));
             }
             other => panic!("unexpected: {other:?}"),

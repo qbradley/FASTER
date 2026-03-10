@@ -13,7 +13,10 @@ use faster_core::device::{Device, InMemoryDevice};
 #[test]
 fn aligned_buffer_as_ptr_is_not_null() {
     let buf = AlignedBuffer::new(512, 512);
-    assert!(!buf.as_ptr().is_null(), "as_ptr must return a valid pointer");
+    assert!(
+        !buf.as_ptr().is_null(),
+        "as_ptr must return a valid pointer"
+    );
 }
 
 /// Kill mutant: `AlignedBuffer::is_empty -> false`.
@@ -35,7 +38,11 @@ fn aligned_buffer_is_empty_for_zero_len() {
 #[test]
 fn buffer_pool_sector_size_reflects_construction() {
     let pool = BufferPool::new(512, 4);
-    assert_eq!(pool.sector_size(), 512, "sector_size must match constructor argument");
+    assert_eq!(
+        pool.sector_size(),
+        512,
+        "sector_size must match constructor argument"
+    );
 
     let pool2 = BufferPool::new(4096, 4);
     assert_eq!(pool2.sector_size(), 4096);
@@ -104,7 +111,11 @@ fn buffer_pool_respects_max_capacity() {
 fn in_memory_device_with_sizes_uses_custom_values() {
     let dev = InMemoryDevice::with_sizes(1024, 1 << 20);
     assert_eq!(dev.sector_size(), 1024, "custom sector size must be used");
-    assert_eq!(dev.segment_size(), 1 << 20, "custom segment size must be used");
+    assert_eq!(
+        dev.segment_size(),
+        1 << 20,
+        "custom segment size must be used"
+    );
 }
 
 /// Kill mutant: `sector_size -> 0` and `-> 1`.
@@ -118,7 +129,11 @@ fn in_memory_device_default_sector_size() {
 #[test]
 fn in_memory_device_default_segment_size() {
     let dev = InMemoryDevice::new();
-    assert_eq!(dev.segment_size(), 1 << 30, "default segment size should be 1GB");
+    assert_eq!(
+        dev.segment_size(),
+        1 << 30,
+        "default segment size should be 1GB"
+    );
 }
 
 /// Kill mutant: `max_outstanding_io -> 0` and `-> 1`.
@@ -145,7 +160,8 @@ fn in_memory_device_write_read_exact_boundary() {
 
     // Read back exactly 512 bytes
     let mut readback = vec![0u8; 512];
-    dev.read_sync(0, &mut readback).expect("read should succeed");
+    dev.read_sync(0, &mut readback)
+        .expect("read should succeed");
     assert_eq!(readback, data, "read-back data must match written data");
 }
 
@@ -156,11 +172,13 @@ fn in_memory_device_write_at_offset() {
     let data = vec![0xCDu8; 1024];
 
     // Write at offset 4096
-    dev.write_sync(4096, &data).expect("write at offset should succeed");
+    dev.write_sync(4096, &data)
+        .expect("write at offset should succeed");
 
     // Read back
     let mut readback = vec![0u8; 1024];
-    dev.read_sync(4096, &mut readback).expect("read at offset should succeed");
+    dev.read_sync(4096, &mut readback)
+        .expect("read at offset should succeed");
     assert_eq!(readback, data);
 }
 
@@ -176,6 +194,7 @@ fn in_memory_device_read_unwritten_returns_zeros() {
     // Read from a region that was zero-filled (beyond the written area)
     dev.write_sync(2048, &[0u8; 512]).expect("extend buffer");
     let mut readback = vec![0xEEu8; 512];
-    dev.read_sync(512, &mut readback).expect("read should succeed");
+    dev.read_sync(512, &mut readback)
+        .expect("read should succeed");
     assert_eq!(readback, vec![0u8; 512], "unwritten region should be zeros");
 }

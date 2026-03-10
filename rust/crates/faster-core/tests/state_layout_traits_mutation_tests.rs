@@ -4,10 +4,7 @@
 //! Each test targets a specific surviving mutant identified during the
 //! cargo-mutants campaign on these modules.
 
-use faster_core::record::{
-    Key, Value, LENGTH_PREFIX_SIZE, RecordLayout,
-    record_size_from_bytes,
-};
+use faster_core::record::{Key, LENGTH_PREFIX_SIZE, RecordLayout, Value, record_size_from_bytes};
 use faster_core::state::{Phase, SystemState};
 
 // ===========================================================================

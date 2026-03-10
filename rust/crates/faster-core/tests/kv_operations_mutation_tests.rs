@@ -2,15 +2,17 @@
 //!
 //! Targets accessor methods, maintenance logic, and record traversal mutants.
 
-use faster_core::address::LogicalAddress;
+use faster_core::InMemoryDevice;
 use faster_core::grow::GrowConfig;
 use faster_core::hybrid_log::EvictionPolicy;
-use faster_core::InMemoryDevice;
 use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
 
 fn test_store() -> FasterKv<SimpleFunctions<u64, u64>> {
     let config = FasterKvConfig {
-        grow_config: GrowConfig { enabled: false, ..Default::default() },
+        grow_config: GrowConfig {
+            enabled: false,
+            ..Default::default()
+        },
         hash_index_size_log2: 10,
         buffer_size_pages: 8,
         mutable_fraction: 0.9,
@@ -30,14 +32,21 @@ fn test_store() -> FasterKv<SimpleFunctions<u64, u64>> {
 #[test]
 fn entry_count_is_zero_for_empty_store() {
     let store = test_store();
-    assert_eq!(store.entry_count(), 0, "empty store should have entry_count 0");
+    assert_eq!(
+        store.entry_count(),
+        0,
+        "empty store should have entry_count 0"
+    );
 }
 
 /// Kill mutant: `config -> Box::leak(Default)`.
 #[test]
 fn config_returns_actual_config() {
     let config = FasterKvConfig {
-        grow_config: GrowConfig { enabled: false, ..Default::default() },
+        grow_config: GrowConfig {
+            enabled: false,
+            ..Default::default()
+        },
         hash_index_size_log2: 12, // non-default
         buffer_size_pages: 16,    // non-default
         mutable_fraction: 0.8,    // non-default
@@ -46,7 +55,11 @@ fn config_returns_actual_config() {
         auto_compact: false,
         lossy: false,
     };
-    let store: FasterKv<SimpleFunctions<u64, u64>> = FasterKv::new(config.clone(), SimpleFunctions::default(), InMemoryDevice::new());
+    let store: FasterKv<SimpleFunctions<u64, u64>> = FasterKv::new(
+        config.clone(),
+        SimpleFunctions::default(),
+        InMemoryDevice::new(),
+    );
     let returned = store.config();
     assert_eq!(
         returned.hash_index_size_log2, 12,
@@ -66,7 +79,7 @@ fn head_address_is_valid_after_write() {
 
     // Write some data
     for i in 0..100u64 {
-        store.upsert(&mut session, &i, &(i * 10), ());
+        let _ = store.upsert(&mut session, &i, &(i * 10), ());
     }
 
     // Head address should still be valid (may or may not have changed)
@@ -97,10 +110,7 @@ fn read_only_address_is_valid() {
 #[test]
 fn is_growing_false_initially() {
     let store = test_store();
-    assert!(
-        !store.is_growing(),
-        "store should not be growing initially"
-    );
+    assert!(!store.is_growing(), "store should not be growing initially");
 }
 
 /// Kill mutant: `metrics -> None/Some`.
@@ -123,10 +133,7 @@ fn pipeline_snapshot_reflects_state() {
     let (begin, head, ro, tail) = store.pipeline_snapshot();
 
     // In a fresh store, these should form a valid pipeline
-    assert!(
-        begin.raw() <= head.raw(),
-        "begin <= head"
-    );
+    assert!(begin.raw() <= head.raw(), "begin <= head");
     assert!(
         head.raw() <= ro.raw() || ro.raw() <= tail.raw(),
         "pipeline addresses should be ordered"
@@ -139,13 +146,10 @@ fn pipeline_snapshot_reflects_state() {
     // After writes, tail should advance
     let mut session = store.new_session();
     for i in 0..50u64 {
-        store.upsert(&mut session, &i, &i, ());
+        let _ = store.upsert(&mut session, &i, &i, ());
     }
     let (_, _, _, tail2) = store.pipeline_snapshot();
-    assert!(
-        tail2.raw() > tail.raw(),
-        "tail should advance after writes"
-    );
+    assert!(tail2.raw() > tail.raw(), "tail should advance after writes");
     store.dispose_session(session);
 }
 
@@ -163,15 +167,19 @@ fn version_chain_returns_latest_value() {
     let mut session = store.new_session();
 
     // Insert initial value
-    store.upsert(&mut session, &42u64, &100u64, ());
+    let _ = store.upsert(&mut session, &42u64, &100u64, ());
 
     // Overwrite with new value (creates version chain)
-    store.upsert(&mut session, &42u64, &200u64, ());
+    let _ = store.upsert(&mut session, &42u64, &200u64, ());
 
     // Read must return the latest
     let mut output: Option<u64> = None;
-    store.read(&mut session, &42u64, &0u64, &mut output, ());
-    assert_eq!(output, Some(200), "must read the latest value, not the superseded one");
+    let _ = store.read(&mut session, &42u64, &0u64, &mut output, ());
+    assert_eq!(
+        output,
+        Some(200),
+        "must read the latest value, not the superseded one"
+    );
 
     store.dispose_session(session);
 }
@@ -184,20 +192,24 @@ fn deleted_key_returns_not_found() {
     let store = test_store();
     let mut session = store.new_session();
 
-    store.upsert(&mut session, &42u64, &100u64, ());
+    let _ = store.upsert(&mut session, &42u64, &100u64, ());
 
     // Verify it exists
     let mut output: Option<u64> = None;
-    let status = store.read(&mut session, &42u64, &0u64, &mut output, ());
+    let status = store
+        .read(&mut session, &42u64, &0u64, &mut output, ())
+        .status();
     assert_eq!(status, OperationStatus::Ok);
     assert_eq!(output, Some(100));
 
     // Delete
-    store.delete(&mut session, &42u64, ());
+    let _ = store.delete(&mut session, &42u64, ());
 
     // Should not be found
     let mut output2: Option<u64> = None;
-    let status2 = store.read(&mut session, &42u64, &0u64, &mut output2, ());
+    let status2 = store
+        .read(&mut session, &42u64, &0u64, &mut output2, ())
+        .status();
     assert_eq!(
         status2,
         OperationStatus::NotFound,
@@ -215,12 +227,12 @@ fn multi_version_chain_integrity() {
 
     // Write many versions of the same key
     for v in 0..50u64 {
-        store.upsert(&mut session, &1u64, &v, ());
+        let _ = store.upsert(&mut session, &1u64, &v, ());
     }
 
     // Must return the last written value
     let mut output: Option<u64> = None;
-    store.read(&mut session, &1u64, &0u64, &mut output, ());
+    let _ = store.read(&mut session, &1u64, &0u64, &mut output, ());
     assert_eq!(output, Some(49), "must read the latest of 50 versions");
 
     store.dispose_session(session);
@@ -233,12 +245,12 @@ fn distinct_keys_no_crosstalk() {
     let mut session = store.new_session();
 
     for k in 0..200u64 {
-        store.upsert(&mut session, &k, &(k * 3), ());
+        let _ = store.upsert(&mut session, &k, &(k * 3), ());
     }
 
     for k in 0..200u64 {
         let mut output: Option<u64> = None;
-        store.read(&mut session, &k, &0u64, &mut output, ());
+        let _ = store.read(&mut session, &k, &0u64, &mut output, ());
         assert_eq!(output, Some(k * 3), "key {k} value mismatch");
     }
 

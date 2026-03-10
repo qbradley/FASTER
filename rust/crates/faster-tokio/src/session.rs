@@ -32,7 +32,7 @@
 
 use std::marker::PhantomData;
 
-use faster_core::status::OperationStatus;
+use faster_core::status::{OperationOutcome, OperationStatus};
 use faster_core::store::{CompletePendingResult, FasterKv, FasterSession, Functions};
 
 /// Async wrapper around [`FasterSession`] for use with Tokio or any async runtime.
@@ -92,7 +92,7 @@ impl<'a, F: Functions> AsyncSession<'a, F> {
         input: &F::Input,
         output: &mut F::Output,
         context: F::Context,
-    ) -> OperationStatus {
+    ) -> OperationOutcome<F::Context> {
         self.store
             .read(&mut self.session, key, input, output, context)
     }
@@ -108,7 +108,7 @@ impl<'a, F: Functions> AsyncSession<'a, F> {
         key: &F::Key,
         input: &F::Input,
         context: F::Context,
-    ) -> OperationStatus {
+    ) -> OperationOutcome<F::Context> {
         self.store.upsert(&mut self.session, key, input, context)
     }
 
@@ -124,7 +124,7 @@ impl<'a, F: Functions> AsyncSession<'a, F> {
         input: &F::Input,
         output: &mut F::Output,
         context: F::Context,
-    ) -> OperationStatus {
+    ) -> OperationOutcome<F::Context> {
         self.store
             .rmw(&mut self.session, key, input, output, context)
     }
@@ -134,7 +134,7 @@ impl<'a, F: Functions> AsyncSession<'a, F> {
     /// Marks the record as a tombstone. Returns [`OperationStatus::NotFound`]
     /// if the key does not exist.
     #[inline]
-    pub fn delete(&mut self, key: &F::Key, context: F::Context) -> OperationStatus {
+    pub fn delete(&mut self, key: &F::Key, context: F::Context) -> OperationOutcome<F::Context> {
         self.store.delete(&mut self.session, key, context)
     }
 
@@ -146,7 +146,7 @@ impl<'a, F: Functions> AsyncSession<'a, F> {
     where
         F::Context: Default,
     {
-        self.upsert(key, input, F::Context::default())
+        self.upsert(key, input, F::Context::default()).status()
     }
 
     /// Simplified read returning the output directly.
@@ -165,7 +165,7 @@ impl<'a, F: Functions> AsyncSession<'a, F> {
     where
         F::Context: Default,
     {
-        self.delete(key, F::Context::default())
+        self.delete(key, F::Context::default()).status()
     }
 
     // ── Pending I/O Completion ──────────────────────────────────────

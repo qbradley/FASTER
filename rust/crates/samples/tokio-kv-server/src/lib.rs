@@ -214,7 +214,7 @@ fn execute_on_store(store: &FasterKv<KvFunctions>, cmd: Command) -> String {
 
     let result = match cmd {
         Command::Set(key, value) => {
-            let status = store.upsert(&mut session, &key, &value, ());
+            let status = store.upsert(&mut session, &key, &value, ()).status();
             if status.is_success() {
                 "+OK\r\n".to_string()
             } else {
@@ -229,7 +229,7 @@ fn execute_on_store(store: &FasterKv<KvFunctions>, cmd: Command) -> String {
             }
         }
         Command::Del(key) => {
-            let status = store.delete(&mut session, &key, ());
+            let status = store.delete(&mut session, &key, ()).status();
             match status {
                 OperationStatus::Deleted => "+OK\r\n".to_string(),
                 OperationStatus::NotFound => "$-1\r\n".to_string(),

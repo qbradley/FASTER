@@ -744,7 +744,15 @@ fn heavy_writer_fn(
 ) {
     let key = random_key(rng, state.args.key_space);
     let size = random_value_size(rng, 1024, state.args.max_value_size.max(1024));
-    let bytes = do_upsert(&state.store, session, &state.oracle, key, size, rng, &state.stats);
+    let bytes = do_upsert(
+        &state.store,
+        session,
+        &state.oracle,
+        key,
+        size,
+        rng,
+        &state.stats,
+    );
     state.stats.upserts.fetch_add(1, Ordering::Relaxed);
     state
         .stats
@@ -760,7 +768,15 @@ fn light_writer_fn(
 ) {
     let key = random_key(rng, state.args.key_space);
     let size = random_value_size(rng, state.args.min_value_size, 256);
-    let bytes = do_upsert(&state.store, session, &state.oracle, key, size, rng, &state.stats);
+    let bytes = do_upsert(
+        &state.store,
+        session,
+        &state.oracle,
+        key,
+        size,
+        rng,
+        &state.stats,
+    );
     state.stats.upserts.fetch_add(1, Ordering::Relaxed);
     state
         .stats
@@ -808,7 +824,15 @@ fn mixed_worker_fn(
     if roll < 0.4 {
         // upsert
         let size = random_value_size(rng, state.args.min_value_size, state.args.max_value_size);
-        let bytes = do_upsert(&state.store, session, &state.oracle, key, size, rng, &state.stats);
+        let bytes = do_upsert(
+            &state.store,
+            session,
+            &state.oracle,
+            key,
+            size,
+            rng,
+            &state.stats,
+        );
         state.stats.upserts.fetch_add(1, Ordering::Relaxed);
         state
             .stats
@@ -825,7 +849,15 @@ fn mixed_worker_fn(
     } else if roll < 0.9 {
         // rmw
         let size = random_value_size(rng, state.args.min_value_size, state.args.max_value_size);
-        let bytes = do_rmw(&state.store, session, &state.oracle, key, size, rng, &state.stats);
+        let bytes = do_rmw(
+            &state.store,
+            session,
+            &state.oracle,
+            key,
+            size,
+            rng,
+            &state.stats,
+        );
         state.stats.rmws.fetch_add(1, Ordering::Relaxed);
         state
             .stats
@@ -849,7 +881,15 @@ fn rmw_hammer_fn(
 
     if roll < 0.8 {
         let size = random_value_size(rng, state.args.min_value_size, state.args.max_value_size);
-        let bytes = do_rmw(&state.store, session, &state.oracle, key, size, rng, &state.stats);
+        let bytes = do_rmw(
+            &state.store,
+            session,
+            &state.oracle,
+            key,
+            size,
+            rng,
+            &state.stats,
+        );
         state.stats.rmws.fetch_add(1, Ordering::Relaxed);
         state
             .stats
@@ -879,7 +919,15 @@ fn deleter_fn(
         state.stats.deletes.fetch_add(1, Ordering::Relaxed);
     } else {
         let size = random_value_size(rng, state.args.min_value_size, state.args.max_value_size);
-        let bytes = do_upsert(&state.store, session, &state.oracle, key, size, rng, &state.stats);
+        let bytes = do_upsert(
+            &state.store,
+            session,
+            &state.oracle,
+            key,
+            size,
+            rng,
+            &state.stats,
+        );
         state.stats.upserts.fetch_add(1, Ordering::Relaxed);
         state
             .stats

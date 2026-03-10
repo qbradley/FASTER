@@ -20,14 +20,20 @@ fn with_invalid_is_idempotent() {
     let info = RecordInfo::new(LogicalAddress::ZERO, 0, true, false, false);
     assert!(info.is_invalid(), "precondition: invalid bit should be set");
     let again = info.with_invalid();
-    assert!(again.is_invalid(), "with_invalid must be idempotent (| not ^)");
+    assert!(
+        again.is_invalid(),
+        "with_invalid must be idempotent (| not ^)"
+    );
 }
 
 /// Kill mutant: `with_tombstone` — `|` → `^`.
 #[test]
 fn with_tombstone_is_idempotent() {
     let info = RecordInfo::new(LogicalAddress::ZERO, 0, false, true, false);
-    assert!(info.is_tombstone(), "precondition: tombstone bit should be set");
+    assert!(
+        info.is_tombstone(),
+        "precondition: tombstone bit should be set"
+    );
     let again = info.with_tombstone();
     assert!(
         again.is_tombstone(),
@@ -78,8 +84,7 @@ fn with_previous_address_replaces_correctly() {
 
     let addr1 = LogicalAddress::new(Page(1), Offset(64));
     let addr2 = LogicalAddress::new(Page(99), Offset(512));
-    let info = RecordInfo::new(addr1, 7, true, false, false)
-        .with_previous_address(addr2);
+    let info = RecordInfo::new(addr1, 7, true, false, false).with_previous_address(addr2);
 
     assert_eq!(info.previous_address(), addr2);
     assert_eq!(info.checkpoint_version(), 7);
@@ -112,8 +117,7 @@ fn with_checkpoint_version_preserves_flags_and_address() {
     use faster_core::address::{Offset, Page};
 
     let addr = LogicalAddress::new(Page(3), Offset(256));
-    let info = RecordInfo::new(addr, 50, true, true, false)
-        .with_checkpoint_version(999);
+    let info = RecordInfo::new(addr, 50, true, true, false).with_checkpoint_version(999);
 
     assert_eq!(info.checkpoint_version(), 999);
     assert_eq!(info.previous_address(), addr);
@@ -144,7 +148,10 @@ fn atomic_is_sealed_returns_true_after_seal() {
     let info = RecordInfo::new(LogicalAddress::ZERO, 0, false, false, false);
     let atomic = AtomicRecordInfo::new(info);
     atomic.seal();
-    assert!(atomic.is_sealed(), "sealed record must report is_sealed == true");
+    assert!(
+        atomic.is_sealed(),
+        "sealed record must report is_sealed == true"
+    );
 }
 
 // ===========================================================================
@@ -166,21 +173,17 @@ fn compare_exchange_weak_fails_on_mismatch() {
     let wrong_expected = info; // original, without sealed bit
     let desired = RecordInfo::new(LogicalAddress::ZERO, 99, false, false, false);
 
-    let result = atomic.compare_exchange_weak(
-        wrong_expected,
-        desired,
-        Ordering::AcqRel,
-        Ordering::Acquire,
-    );
+    let result =
+        atomic.compare_exchange_weak(wrong_expected, desired, Ordering::AcqRel, Ordering::Acquire);
 
-    assert!(
-        result.is_err(),
-        "CAS with wrong expected value must fail"
-    );
+    assert!(result.is_err(), "CAS with wrong expected value must fail");
 
     // The error should contain the actual (sealed) value
     let actual = result.unwrap_err();
-    assert!(actual.is_sealed(), "error should contain actual sealed value");
+    assert!(
+        actual.is_sealed(),
+        "error should contain actual sealed value"
+    );
 }
 
 /// CAS weak succeeds when expected matches actual.

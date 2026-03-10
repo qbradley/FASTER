@@ -470,7 +470,9 @@ fn reader_thread(
         };
 
         let mut output: Option<Vec<u8>> = None;
-        let status = store.read(&mut session, &key, &empty_input, &mut output, ());
+        let status = store
+            .read(&mut session, &key, &empty_input, &mut output, ())
+            .status();
 
         stats.reads.fetch_add(1, Ordering::Relaxed);
         match status {

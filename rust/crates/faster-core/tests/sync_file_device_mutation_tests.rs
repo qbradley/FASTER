@@ -23,14 +23,14 @@ fn temp_dir(name: &str) -> PathBuf {
 #[test]
 fn sync_file_device_write_read_roundtrip() {
     let dir = temp_dir("roundtrip");
-    let dev = SyncFileDevice::new(&dir, "log.", 512, 1 << 20, 1)
-        .expect("create device");
+    let dev = SyncFileDevice::new(&dir, "log.", 512, 1 << 20, 1).expect("create device");
 
     let data: Vec<u8> = (0..512).map(|i| (i % 256) as u8).collect();
     dev.write_sync(0, &data).expect("write should succeed");
 
     let mut readback = vec![0u8; 512];
-    dev.read_sync(0, &mut readback).expect("read should succeed");
+    dev.read_sync(0, &mut readback)
+        .expect("read should succeed");
     assert_eq!(readback, data, "roundtrip data must match");
 
     dev.close();
@@ -41,8 +41,7 @@ fn sync_file_device_write_read_roundtrip() {
 #[test]
 fn sync_file_device_write_read_at_offset() {
     let dir = temp_dir("offset");
-    let dev = SyncFileDevice::new(&dir, "log.", 512, 1 << 20, 1)
-        .expect("create device");
+    let dev = SyncFileDevice::new(&dir, "log.", 512, 1 << 20, 1).expect("create device");
 
     let data = vec![0xABu8; 1024];
     dev.write_sync(4096, &data).expect("write at offset");
@@ -59,8 +58,7 @@ fn sync_file_device_write_read_at_offset() {
 #[test]
 fn sync_file_device_multiple_writes() {
     let dir = temp_dir("multi_write");
-    let dev = SyncFileDevice::new(&dir, "log.", 512, 1 << 20, 1)
-        .expect("create device");
+    let dev = SyncFileDevice::new(&dir, "log.", 512, 1 << 20, 1).expect("create device");
 
     let data1 = vec![0x11u8; 512];
     let data2 = vec![0x22u8; 512];
@@ -92,8 +90,7 @@ fn sync_file_device_multiple_writes() {
 fn sync_file_device_cross_segment_write() {
     let dir = temp_dir("cross_seg");
     let segment_size: u64 = 4096; // tiny segments
-    let dev = SyncFileDevice::new(&dir, "log.", 512, segment_size, 1)
-        .expect("create device");
+    let dev = SyncFileDevice::new(&dir, "log.", 512, segment_size, 1).expect("create device");
 
     // Write 1024 bytes starting 512 bytes before the segment boundary
     let offset = segment_size - 512;
@@ -101,7 +98,8 @@ fn sync_file_device_cross_segment_write() {
     dev.write_sync(offset, &data).expect("cross-segment write");
 
     let mut readback = vec![0u8; 1024];
-    dev.read_sync(offset, &mut readback).expect("cross-segment read");
+    dev.read_sync(offset, &mut readback)
+        .expect("cross-segment read");
     assert_eq!(readback, data, "cross-segment data must match");
 
     dev.close();
@@ -113,8 +111,7 @@ fn sync_file_device_cross_segment_write() {
 fn sync_file_device_multi_segment_write() {
     let dir = temp_dir("multi_seg");
     let segment_size: u64 = 2048;
-    let dev = SyncFileDevice::new(&dir, "log.", 512, segment_size, 1)
-        .expect("create device");
+    let dev = SyncFileDevice::new(&dir, "log.", 512, segment_size, 1).expect("create device");
 
     // Write 4096 bytes at offset 0 — spans segments 0, 1 (and partially 2 if the segment_size allows)
     let data: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
@@ -136,8 +133,7 @@ fn sync_file_device_multi_segment_write() {
 #[test]
 fn sync_file_device_size_tracks_writes() {
     let dir = temp_dir("size_track");
-    let dev = SyncFileDevice::new(&dir, "log.", 512, 1 << 20, 1)
-        .expect("create device");
+    let dev = SyncFileDevice::new(&dir, "log.", 512, 1 << 20, 1).expect("create device");
 
     assert_eq!(dev.size(), 0, "empty device should have size 0");
 
@@ -164,8 +160,7 @@ fn sync_file_device_size_tracks_writes() {
 #[test]
 fn sync_file_device_trait_constants() {
     let dir = temp_dir("constants");
-    let dev = SyncFileDevice::new(&dir, "log.", 1024, 1 << 22, 1)
-        .expect("create device");
+    let dev = SyncFileDevice::new(&dir, "log.", 1024, 1 << 22, 1).expect("create device");
 
     assert_eq!(dev.sector_size(), 1024);
     assert_eq!(dev.segment_size(), 1 << 22);

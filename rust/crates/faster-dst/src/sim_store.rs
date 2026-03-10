@@ -172,22 +172,22 @@ fn execute_op(
 ) -> CrudResult {
     match *op {
         CrudOp::Upsert { key, value } => {
-            let status = store.upsert(session, &key, &value, ());
-            CrudResult::Upsert(status)
+            let outcome = store.upsert(session, &key, &value, ());
+            CrudResult::Upsert(outcome.status())
         }
         CrudOp::Read { key } => {
             let mut output: Option<u64> = None;
-            let status = store.read(session, &key, &0u64, &mut output, ());
-            CrudResult::Read(status, output)
+            let outcome = store.read(session, &key, &0u64, &mut output, ());
+            CrudResult::Read(outcome.status(), output)
         }
         CrudOp::Rmw { key, value } => {
             let mut output: Option<u64> = None;
-            let status = store.rmw(session, &key, &value, &mut output, ());
-            CrudResult::Rmw(status, output)
+            let outcome = store.rmw(session, &key, &value, &mut output, ());
+            CrudResult::Rmw(outcome.status(), output)
         }
         CrudOp::Delete { key } => {
-            let status = store.delete(session, &key, ());
-            CrudResult::Delete(status)
+            let outcome = store.delete(session, &key, ());
+            CrudResult::Delete(outcome.status())
         }
     }
 }

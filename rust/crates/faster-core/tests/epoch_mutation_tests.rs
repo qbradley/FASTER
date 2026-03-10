@@ -77,7 +77,11 @@ fn entry_reset_clears_state_for_reuse() {
     assert_eq!(table.registered_count(), 1);
 
     // The new registration should start with clean state
-    assert_eq!(table.active_count(), 0, "new thread should not be active initially");
+    assert_eq!(
+        table.active_count(),
+        0,
+        "new thread should not be active initially"
+    );
     drop(t2);
 }
 
@@ -127,7 +131,11 @@ fn register_slot_zero_is_occupied() {
 
     // First registration always gets slot 0 (from free list)
     let thread = table.register().expect("registration should succeed");
-    assert_eq!(thread.entry_index(), 0, "first registration should be slot 0");
+    assert_eq!(
+        thread.entry_index(),
+        0,
+        "first registration should be slot 0"
+    );
 
     // Slot 0 must be occupied
     assert_eq!(
