@@ -708,3 +708,114 @@ fn recovery_loads_correct_pages_from_device() {
         store.dispose_session(session);
     }
 }
+
+// ===========================================================================
+// page.rs — get_or_allocate_frame: Evicted/Free recycling check
+// ===========================================================================
+
+/// Kill mutant: `get_or_allocate_frame` — `||` → `&&` in Evicted/Free check.
+///
+/// When a frame is Evicted (but not Free), it should be recycled to Open.
+/// With `&&`, the condition `Evicted && Free` can never be true for a single
+/// state, so evicted frames would never be recycled.
+#[test]
+fn get_or_allocate_frame_recycles_evicted_frame() {
+    let page_table = PageTable::new(4, 4096, 512);
+    let page = Page(0);
+
+    // First allocation creates an Open frame
+    let frame = page_table.get_or_allocate_frame(page);
+    assert_eq!(frame.state().load(Ordering::Acquire), PageState::Open);
+
+    // Walk through the lifecycle: Open → Sealed → Flushing → Flushed → Evicted
+    assert!(frame.state().try_transition(PageState::Open, PageState::Sealed));
+    assert!(frame.state().try_transition(PageState::Sealed, PageState::Flushing));
+    assert!(frame.state().try_transition(PageState::Flushing, PageState::Flushed));
+    assert!(frame.state().try_transition(PageState::Flushed, PageState::Evicted));
+    assert_eq!(frame.state().load(Ordering::Acquire), PageState::Evicted);
+
+    // Now get_or_allocate_frame should recycle the Evicted frame back to Open
+    let recycled = page_table.get_or_allocate_frame(page);
+    assert_eq!(
+        recycled.state().load(Ordering::Acquire),
+        PageState::Open,
+        "evicted frame should be recycled to Open state"
+    );
+}
+
+/// Also verify that Free frames are recycled (the other branch of the ||).
+#[test]
+fn get_or_allocate_frame_recycles_free_frame() {
+    let page_table = PageTable::new(4, 4096, 512);
+    let page = Page(0);
+
+    // Allocate then manually set to Free
+    let frame = page_table.get_or_allocate_frame(page);
+    // Frame is Open after allocation
+    assert_eq!(frame.state().load(Ordering::Acquire), PageState::Open);
+
+    // Force to Free state (unusual but possible during cleanup)
+    frame.state().store(PageState::Free, Ordering::Release);
+    assert_eq!(frame.state().load(Ordering::Acquire), PageState::Free);
+
+    // Re-accessing should recycle Free → Open
+    let recycled = page_table.get_or_allocate_frame(page);
+    assert_eq!(
+        recycled.state().load(Ordering::Acquire),
+        PageState::Open,
+        "free frame should be recycled to Open state"
+    );
+}
+
+// ===========================================================================
+// page.rs — PageTrailer::write_size: sector alignment arithmetic
+// ===========================================================================
+
+/// Kill mutant: `PageTrailer::write_size` — `- → +` and `- → /` in alignment.
+///
+/// The alignment formula is `(needed + sector_size - 1) & !(sector_size - 1)`.
+/// With `+`, it becomes `(needed + sector_size + 1)` — overshoots.
+/// With `/`, it becomes `(needed + sector_size / 1)` — also wrong.
+#[test]
+fn page_trailer_write_size_sector_alignment() {
+    use faster_core::hybrid_log::page::PageTrailer;
+
+    // PageTrailer::SIZE = 8 bytes
+    let sector_size = 512u32;
+    let page_size = 4096u32;
+
+    // Case 1: valid_bytes = 100. needed = 108. aligned = 512.
+    let ws = PageTrailer::write_size(100, sector_size, page_size);
+    assert_eq!(ws, 512, "100 bytes + 8 trailer should align to 512");
+
+    // Case 2: valid_bytes = 504. needed = 512. aligned = 512 (exact fit).
+    let ws = PageTrailer::write_size(504, sector_size, page_size);
+    assert_eq!(ws, 512, "504 bytes + 8 trailer = 512, exact sector alignment");
+
+    // Case 3: valid_bytes = 505. needed = 513. aligned = 1024 (next sector).
+    let ws = PageTrailer::write_size(505, sector_size, page_size);
+    assert_eq!(ws, 1024, "505 bytes + 8 trailer = 513, rounds up to 1024");
+
+    // Case 4: valid_bytes = 0. needed = 8. aligned = 512.
+    let ws = PageTrailer::write_size(0, sector_size, page_size);
+    assert_eq!(ws, 512, "0 bytes + 8 trailer should align to 512");
+
+    // Case 5: page_size cap — very large valid_bytes
+    let ws = PageTrailer::write_size(page_size - 1, sector_size, page_size);
+    assert!(ws <= page_size, "write_size should not exceed page_size");
+
+    // Case 6: different sector size
+    let ws = PageTrailer::write_size(100, 4096, 32768);
+    assert_eq!(ws, 4096, "100 bytes + 8 trailer should align to 4096 sector size");
+}
+
+/// Verify PageTrailer round-trip serialization.
+#[test]
+fn page_trailer_round_trip() {
+    use faster_core::hybrid_log::page::PageTrailer;
+
+    let trailer = PageTrailer::new(12345, 0xDEADBEEF);
+    let bytes = trailer.to_bytes();
+    let recovered = PageTrailer::from_bytes(bytes);
+    assert_eq!(recovered, trailer, "trailer should survive round-trip serialization");
+}
