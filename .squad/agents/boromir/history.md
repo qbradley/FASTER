@@ -145,3 +145,23 @@ Systematic cargo-mutants campaign across all 8 files in `hybrid_log/` module (5,
 **Results:** 314 caught, 55 missed → 28 tests written, 19 triaged as equivalent. Effective kill rate: 100% for non-equivalent mutants. No bugs found — all gaps were test coverage only.
 
 **Key files tested:** flush.rs, eviction.rs, log_allocator.rs, page.rs, regions.rs, scan.rs, record_ops.rs, mod.rs.
+
+### Campaign 3: Remaining Modules (2026-03-10)
+
+Completed mutation testing of ALL remaining untested modules in `faster-core/src/`.
+
+**Scope:** 18 module groups, 1,637 total mutants.
+
+**Artifacts:**
+- 8 new test files in `tests/` (76 tests total)
+- Decision: `boromir-mutation-remaining.md`
+
+**Results:** 1,100 caught, 214 unviable, 20 timeouts. 76 new tests written. Effective kill rate: 78.6%.
+
+**Learnings:**
+- `FasterKv::recover()` takes `&mut self` and `Option<CheckpointToken>` — API evolved from original C# FASTER
+- Recovery expects log segments co-located with checkpoint metadata (same directory)
+- `entry_count()` returns hardcoded 0 — mutation testing caught this as a real gap
+- `sim_hooks.rs` functions gated by `#[cfg(feature = "simulation")]` but feature not in Cargo.toml — mutations are effectively equivalent
+- Multi-agent branch hazards: always `git branch --show-current` before committing; cherry-pick to recover lost commits
+- For large modules (checkpoint: 314 mutants), most survivors cluster in date-formatting/CRC-validation helper functions that are difficult to test without corruption injection
