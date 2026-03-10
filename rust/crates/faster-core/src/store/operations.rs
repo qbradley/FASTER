@@ -68,6 +68,9 @@ const MAX_CHAIN_DEPTH: usize = 4096;
 pub(crate) struct InternalContext<'a> {
     pub hash_index: &'a HashIndex,
     pub allocator: &'a HybridLogAllocator,
+    /// Called when `allocate_at_tail` fails due to buffer pressure (SF-10).
+    /// Typically runs maintenance (flush + evict) so the retry can succeed.
+    pub on_alloc_failure: Option<&'a dyn Fn()>,
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -204,6 +207,7 @@ pub(crate) fn allocate_at_tail<K: Key, V: Value>(
     allocator: &HybridLogAllocator,
     key: &K,
     value: &V,
+    on_alloc_failure: Option<&dyn Fn()>,
 ) -> Option<(LogicalAddress, MutableRecordAccessor)> {
     let writer = LogRecordWriter::new(allocator);
 
@@ -213,8 +217,23 @@ pub(crate) fn allocate_at_tail<K: Key, V: Value>(
     }
 
     // Page-boundary crossing: advance to the next page and retry once.
-    allocator.advance_to_next_page()?;
-    writer.allocate_record(key, value)
+    if allocator.advance_to_next_page().is_some() {
+        if let Some(result) = writer.allocate_record(key, value) {
+            return Some(result);
+        }
+    }
+
+    // SF-10 blocked: buffer is full. Call maintenance to flush/evict and retry.
+    if let Some(maint_fn) = on_alloc_failure {
+        maint_fn();
+        if let Some(result) = writer.allocate_record(key, value) {
+            return Some(result);
+        }
+        allocator.advance_to_next_page()?;
+        writer.allocate_record(key, value)
+    } else {
+        None
+    }
 }
 
 // ── Read ────────────────────────────────────────────────────────────
@@ -359,16 +378,17 @@ pub(crate) fn internal_upsert<F: Functions>(
             &UpsertInfo::new(0, LogicalAddress::INVALID, RecordInfo::default()),
         );
 
-        let (new_addr, mut accessor) = match allocate_at_tail(ctx.allocator, key, &value) {
-            Some(pair) => pair,
-            None => {
-                // Abort: CAS the tentative entry back to EMPTY.
-                let _ = ctx
-                    .hash_index
-                    .update(result.slot, result.entry, HashBucketEntry::EMPTY);
-                return OperationStatus::Aborted;
-            }
-        };
+        let (new_addr, mut accessor) =
+            match allocate_at_tail(ctx.allocator, key, &value, ctx.on_alloc_failure) {
+                Some(pair) => pair,
+                None => {
+                    // Abort: CAS the tentative entry back to EMPTY.
+                    let _ =
+                        ctx.hash_index
+                            .update(result.slot, result.entry, HashBucketEntry::EMPTY);
+                    return OperationStatus::Aborted;
+                }
+            };
 
         // Write the full record.
         let ri = RecordInfo::new(LogicalAddress::ZERO, 0, false, false, false);
@@ -613,10 +633,11 @@ fn upsert_copy_to_tail<F: Functions>(
         &UpsertInfo::new(0, previous_addr, RecordInfo::default()),
     );
 
-    let (new_addr, mut accessor) = match allocate_at_tail(ctx.allocator, key, &new_val) {
-        Some(pair) => pair,
-        None => return OperationStatus::Aborted,
-    };
+    let (new_addr, mut accessor) =
+        match allocate_at_tail(ctx.allocator, key, &new_val, ctx.on_alloc_failure) {
+            Some(pair) => pair,
+            None => return OperationStatus::Aborted,
+        };
 
     // Write the record — link back to the previous address for chain.
     let ri = RecordInfo::new(previous_addr, 0, false, false, false);
@@ -687,15 +708,16 @@ pub(crate) fn internal_rmw<F: Functions>(
             &RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::default(), false),
         );
 
-        let (new_addr, mut accessor) = match allocate_at_tail(ctx.allocator, key, &value) {
-            Some(pair) => pair,
-            None => {
-                let _ = ctx
-                    .hash_index
-                    .update(result.slot, result.entry, HashBucketEntry::EMPTY);
-                return OperationStatus::Aborted;
-            }
-        };
+        let (new_addr, mut accessor) =
+            match allocate_at_tail(ctx.allocator, key, &value, ctx.on_alloc_failure) {
+                Some(pair) => pair,
+                None => {
+                    let _ =
+                        ctx.hash_index
+                            .update(result.slot, result.entry, HashBucketEntry::EMPTY);
+                    return OperationStatus::Aborted;
+                }
+            };
 
         let ri = RecordInfo::new(LogicalAddress::ZERO, 0, false, false, false);
         let write_layout = RecordLayout::for_kv(key, &value);
@@ -1002,10 +1024,11 @@ fn rmw_copy_to_tail<F: Functions>(
         &RmwInfo::new(0, previous_addr, RecordInfo::default(), true),
     );
 
-    let (new_addr, mut accessor) = match allocate_at_tail(ctx.allocator, key, &new_value) {
-        Some(pair) => pair,
-        None => return OperationStatus::Aborted,
-    };
+    let (new_addr, mut accessor) =
+        match allocate_at_tail(ctx.allocator, key, &new_value, ctx.on_alloc_failure) {
+            Some(pair) => pair,
+            None => return OperationStatus::Aborted,
+        };
 
     let ri = RecordInfo::new(previous_addr, 0, false, false, false);
     let write_layout = RecordLayout::for_kv(key, &new_value);
@@ -1048,10 +1071,11 @@ fn rmw_create_at_tail<F: Functions>(
         &RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::default(), false),
     );
 
-    let (new_addr, mut accessor) = match allocate_at_tail(ctx.allocator, key, &value) {
-        Some(pair) => pair,
-        None => return OperationStatus::Aborted,
-    };
+    let (new_addr, mut accessor) =
+        match allocate_at_tail(ctx.allocator, key, &value, ctx.on_alloc_failure) {
+            Some(pair) => pair,
+            None => return OperationStatus::Aborted,
+        };
 
     let ri = RecordInfo::new(previous_addr, 0, false, false, false);
     let write_layout = RecordLayout::for_kv(key, &value);
@@ -1155,11 +1179,15 @@ pub(crate) fn internal_delete<F: Functions>(
                         Some(v) => v,
                         None => return OperationStatus::NotFound,
                     };
-                    let (new_addr, mut accessor) =
-                        match allocate_at_tail(ctx.allocator, key, &dummy_value) {
-                            Some(pair) => pair,
-                            None => return OperationStatus::Aborted,
-                        };
+                    let (new_addr, mut accessor) = match allocate_at_tail(
+                        ctx.allocator,
+                        key,
+                        &dummy_value,
+                        ctx.on_alloc_failure,
+                    ) {
+                        Some(pair) => pair,
+                        None => return OperationStatus::Aborted,
+                    };
 
                     let tombstone_ri = RecordInfo::new(addr, 0, false, true, false);
                     let write_layout = RecordLayout::for_kv(key, &dummy_value);
@@ -1225,6 +1253,7 @@ mod tests {
         InternalContext {
             hash_index,
             allocator,
+            on_alloc_failure: None,
         }
     }
 
