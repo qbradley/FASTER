@@ -13,13 +13,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use clap::{Parser, ValueEnum};
+use faster_core::SyncFileDevice;
 use faster_core::grow::GrowConfig;
 use faster_core::hybrid_log::eviction::EvictionPolicy;
 use faster_core::status::OperationStatus;
 use faster_core::store::{
     FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo,
 };
-use faster_core::SyncFileDevice;
 use rand::Rng;
 
 const FASTER_PAGE_SIZE: usize = 1 << 25; // 32 MiB per FASTER page frame
@@ -226,7 +226,10 @@ fn print_interval(stats: &Stats, elapsed: Duration, has_readers: bool) {
         } else {
             0.0
         };
-        print!(" | R: {rt:>10} ({:>8.0}/s, {hit_pct:.1}% hit)", rt as f64 / s);
+        print!(
+            " | R: {rt:>10} ({:>8.0}/s, {hit_pct:.1}% hit)",
+            rt as f64 / s
+        );
     }
     println!();
 }
@@ -264,7 +267,10 @@ fn print_summary(stats: &Stats, elapsed: Duration, has_readers: bool) {
         } else {
             0.0
         };
-        println!("  Reads:           {rt} ({:.0}/s, {hit_pct:.1}% hit)", rt as f64 / s);
+        println!(
+            "  Reads:           {rt} ({:.0}/s, {hit_pct:.1}% hit)",
+            rt as f64 / s
+        );
     }
     println!("════════════════════════════════════════");
 }
@@ -372,12 +378,16 @@ fn writer_thread(
             let status = store.upsert(&mut session, &key, &page_data, ());
             if status == OperationStatus::CopyUpdated || status.is_pending() {
                 stats.writes.fetch_add(1, Ordering::Relaxed);
-                stats.write_bytes.fetch_add(page_size as u64, Ordering::Relaxed);
+                stats
+                    .write_bytes
+                    .fetch_add(page_size as u64, Ordering::Relaxed);
                 stats.write_cold.fetch_add(1, Ordering::Relaxed);
                 break;
             } else if status.is_success() {
                 stats.writes.fetch_add(1, Ordering::Relaxed);
-                stats.write_bytes.fetch_add(page_size as u64, Ordering::Relaxed);
+                stats
+                    .write_bytes
+                    .fetch_add(page_size as u64, Ordering::Relaxed);
                 break;
             } else {
                 store.maintenance();
@@ -544,9 +554,7 @@ fn main() {
         args.max_live_pages,
         args.retention_ratio * 100.0,
     );
-    println!(
-        "  Config:  {buffer_size_pages} buffer pages, {hash_index_log2} hash index log2",
-    );
+    println!("  Config:  {buffer_size_pages} buffer pages, {hash_index_log2} hash index log2",);
     if args.enable_checkpoints {
         println!(
             "  Checkpoints: enabled (every {} seconds)",
