@@ -691,6 +691,9 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
     ///
     /// # Returns
     ///
+    /// An [`OperationOutcome`](crate::status::OperationOutcome) whose status
+    /// is one of:
+    ///
     /// - [`OperationStatus::Ok`] — value read successfully.
     /// - [`OperationStatus::NotFound`] — key does not exist.
     /// - [`OperationStatus::Pending`] — record is on disk; queued for async I/O.
@@ -702,13 +705,13 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         input: &F::Input,
         output: &mut F::Output,
         context: F::Context,
-    ) -> crate::status::OperationStatus {
+    ) -> crate::status::OperationOutcome<F::Context> {
         let ctx = InternalContext {
             hash_index: &store.hash_index,
             allocator: &store.allocator,
             on_alloc_failure: Some(&|| store.maintenance()),
         };
-        let status = internal_read(
+        let (status, recovered_ctx) = internal_read(
             &ctx,
             self.session,
             &store.functions,
@@ -719,8 +722,13 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         );
         if status == crate::status::OperationStatus::Pending {
             store.dispatch_pending_io(self.session);
+            crate::status::OperationOutcome::pending()
+        } else {
+            crate::status::OperationOutcome::completed(
+                status,
+                recovered_ctx.expect("context must be returned on non-Pending path"),
+            )
         }
-        status
     }
 
     /// Upsert a key-value pair within epoch-amortized protection.
@@ -729,6 +737,9 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
     /// skips the per-operation epoch enter/exit.
     ///
     /// # Returns
+    ///
+    /// An [`OperationOutcome`](crate::status::OperationOutcome) whose status
+    /// is one of:
     ///
     /// - [`OperationStatus::Created`] — new record inserted.
     /// - [`OperationStatus::InPlaceUpdated`] — existing mutable record updated.
@@ -741,17 +752,23 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         key: &F::Key,
         input: &F::Input,
         context: F::Context,
-    ) -> crate::status::OperationStatus {
+    ) -> crate::status::OperationOutcome<F::Context> {
         let ctx = InternalContext {
             hash_index: &store.hash_index,
             allocator: &store.allocator,
             on_alloc_failure: Some(&|| store.maintenance()),
         };
-        let status = internal_upsert(&ctx, self.session, &store.functions, key, input, context);
+        let (status, recovered_ctx) =
+            internal_upsert(&ctx, self.session, &store.functions, key, input, context);
         if status == crate::status::OperationStatus::Pending {
             store.dispatch_pending_io(self.session);
+            crate::status::OperationOutcome::pending()
+        } else {
+            crate::status::OperationOutcome::completed(
+                status,
+                recovered_ctx.expect("context must be returned on non-Pending path"),
+            )
         }
-        status
     }
 
     /// Read-modify-write a key within epoch-amortized protection.
@@ -760,6 +777,9 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
     /// the per-operation epoch enter/exit.
     ///
     /// # Returns
+    ///
+    /// An [`OperationOutcome`](crate::status::OperationOutcome) whose status
+    /// is one of:
     ///
     /// - [`OperationStatus::Created`] — new record created via `rmw_initial`.
     /// - [`OperationStatus::InPlaceUpdated`] — updated in mutable region.
@@ -773,13 +793,13 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         input: &F::Input,
         output: &mut F::Output,
         context: F::Context,
-    ) -> crate::status::OperationStatus {
+    ) -> crate::status::OperationOutcome<F::Context> {
         let ctx = InternalContext {
             hash_index: &store.hash_index,
             allocator: &store.allocator,
             on_alloc_failure: Some(&|| store.maintenance()),
         };
-        let status = internal_rmw(
+        let (status, recovered_ctx) = internal_rmw(
             &ctx,
             self.session,
             &store.functions,
@@ -790,8 +810,13 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         );
         if status == crate::status::OperationStatus::Pending {
             store.dispatch_pending_io(self.session);
+            crate::status::OperationOutcome::pending()
+        } else {
+            crate::status::OperationOutcome::completed(
+                status,
+                recovered_ctx.expect("context must be returned on non-Pending path"),
+            )
         }
-        status
     }
 
     /// Delete a key within epoch-amortized protection.
@@ -800,6 +825,9 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
     /// skips the per-operation epoch enter/exit.
     ///
     /// # Returns
+    ///
+    /// An [`OperationOutcome`](crate::status::OperationOutcome) whose status
+    /// is one of:
     ///
     /// - [`OperationStatus::Deleted`] — key deleted successfully.
     /// - [`OperationStatus::NotFound`] — key does not exist.
@@ -810,17 +838,23 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         store: &FasterKv<F>,
         key: &F::Key,
         context: F::Context,
-    ) -> crate::status::OperationStatus {
+    ) -> crate::status::OperationOutcome<F::Context> {
         let ctx = InternalContext {
             hash_index: &store.hash_index,
             allocator: &store.allocator,
             on_alloc_failure: Some(&|| store.maintenance()),
         };
-        let status = internal_delete(&ctx, self.session, &store.functions, key, context);
+        let (status, recovered_ctx) =
+            internal_delete(&ctx, self.session, &store.functions, key, context);
         if status == crate::status::OperationStatus::Pending {
             store.dispatch_pending_io(self.session);
+            crate::status::OperationOutcome::pending()
+        } else {
+            crate::status::OperationOutcome::completed(
+                status,
+                recovered_ctx.expect("context must be returned on non-Pending path"),
+            )
         }
-        status
     }
 }
 

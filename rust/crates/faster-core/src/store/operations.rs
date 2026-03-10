@@ -250,7 +250,7 @@ pub(crate) fn internal_read<F: Functions>(
     input: &F::Input,
     output: &mut F::Output,
     context: F::Context,
-) -> OperationStatus {
+) -> (OperationStatus, Option<F::Context>) {
     let key_hash = key.hash();
 
     // Prefetch the hash bucket — the CPU begins fetching the cache line
@@ -260,12 +260,12 @@ pub(crate) fn internal_read<F: Functions>(
     // 1. Look up committed entry in the hash index.
     let (entry, _slot) = match ctx.hash_index.find(key_hash) {
         Some(pair) => pair,
-        None => return OperationStatus::NotFound,
+        None => return (OperationStatus::NotFound, Some(context)),
     };
 
     let addr = entry.address();
     if !addr.is_valid() {
-        return OperationStatus::NotFound;
+        return (OperationStatus::NotFound, Some(context));
     }
 
     // L2 prefetch: bring the record cache line into L1 while we
@@ -286,7 +286,7 @@ pub(crate) fn internal_read<F: Functions>(
             match find_record_for_key(&reader, addr, key, &layout, &info) {
                 Some((_found_addr, ri)) => {
                     if ri.is_tombstone() {
-                        return OperationStatus::NotFound;
+                        return (OperationStatus::NotFound, Some(context));
                     }
 
                     // Read the value and invoke the user callback.
@@ -301,7 +301,7 @@ pub(crate) fn internal_read<F: Functions>(
                         .map(|acc| acc.value::<F::Value>(&layout))
                     {
                         Some(v) => v,
-                        None => return OperationStatus::NotFound,
+                        None => return (OperationStatus::NotFound, Some(context)),
                     };
                     functions.read(
                         key,
@@ -310,9 +310,9 @@ pub(crate) fn internal_read<F: Functions>(
                         output,
                         &ReadInfo::new(0, _found_addr, ri),
                     );
-                    OperationStatus::Ok
+                    (OperationStatus::Ok, Some(context))
                 }
-                None => OperationStatus::NotFound,
+                None => (OperationStatus::NotFound, Some(context)),
             }
         }
         AddressRegion::OnDisk => {
@@ -326,9 +326,9 @@ pub(crate) fn internal_read<F: Functions>(
                 record_layout: layout,
                 key_hash,
             });
-            OperationStatus::Pending
+            (OperationStatus::Pending, None)
         }
-        _ => OperationStatus::NotFound,
+        _ => (OperationStatus::NotFound, Some(context)),
     }
 }
 
@@ -350,7 +350,7 @@ pub(crate) fn internal_upsert<F: Functions>(
     key: &F::Key,
     input: &F::Input,
     context: F::Context,
-) -> OperationStatus {
+) -> (OperationStatus, Option<F::Context>) {
     let key_hash = key.hash();
     let layout = layout_for_fixed::<F::Key, F::Value>(key);
 
@@ -386,7 +386,7 @@ pub(crate) fn internal_upsert<F: Functions>(
                     let _ =
                         ctx.hash_index
                             .update(result.slot, result.entry, HashBucketEntry::EMPTY);
-                    return OperationStatus::Aborted;
+                    return (OperationStatus::Aborted, Some(context));
                 }
             };
 
@@ -399,16 +399,16 @@ pub(crate) fn internal_upsert<F: Functions>(
         // pointing at the new record address.
         let committed = HashBucketEntry::new(result.entry.tag(), new_addr, false);
         if !ctx.hash_index.update(result.slot, result.entry, committed) {
-            return OperationStatus::Aborted;
+            return (OperationStatus::Aborted, Some(context));
         }
 
-        return OperationStatus::Created;
+        return (OperationStatus::Created, Some(context));
     }
 
     // ── Existing key — check which region the record is in ─────────
     let addr = result.entry.address();
     if !addr.is_valid() {
-        return OperationStatus::NotFound;
+        return (OperationStatus::NotFound, Some(context));
     }
 
     // L2 prefetch: bring the record into L1 in exclusive state for
@@ -426,15 +426,18 @@ pub(crate) fn internal_upsert<F: Functions>(
                 Some((found_addr, ri)) => {
                     if ri.is_tombstone() {
                         // Key was deleted — treat as new insert via RCU path.
-                        return upsert_copy_to_tail(
-                            ctx,
-                            functions,
-                            key,
-                            input,
-                            &layout,
-                            result.entry,
-                            result.slot,
-                            found_addr,
+                        return (
+                            upsert_copy_to_tail(
+                                ctx,
+                                functions,
+                                key,
+                                input,
+                                &layout,
+                                result.entry,
+                                result.slot,
+                                found_addr,
+                            ),
+                            Some(context),
                         );
                     }
 
@@ -454,19 +457,22 @@ pub(crate) fn internal_upsert<F: Functions>(
                                 true
                             } else {
                                 // CAS failed — concurrent modification.
-                                return upsert_copy_to_tail(
-                                    ctx,
-                                    functions,
-                                    key,
-                                    input,
-                                    &layout,
-                                    result.entry,
-                                    result.slot,
-                                    found_addr,
+                                return (
+                                    upsert_copy_to_tail(
+                                        ctx,
+                                        functions,
+                                        key,
+                                        input,
+                                        &layout,
+                                        result.entry,
+                                        result.slot,
+                                        found_addr,
+                                    ),
+                                    Some(context),
                                 );
                             }
                         } else {
-                            return OperationStatus::Aborted;
+                            return (OperationStatus::Aborted, Some(context));
                         }
                     } else {
                         false
@@ -519,15 +525,18 @@ pub(crate) fn internal_upsert<F: Functions>(
                             // For variable-length values, check if the new
                             // value fits in the existing record's allocation.
                             if new_val.serialized_size() > old_value.serialized_size() {
-                                return upsert_copy_to_tail(
-                                    ctx,
-                                    functions,
-                                    key,
-                                    input,
-                                    &layout,
-                                    result.entry,
-                                    result.slot,
-                                    found_addr,
+                                return (
+                                    upsert_copy_to_tail(
+                                        ctx,
+                                        functions,
+                                        key,
+                                        input,
+                                        &layout,
+                                        result.entry,
+                                        result.slot,
+                                        found_addr,
+                                    ),
+                                    Some(context),
                                 );
                             }
                             let write_layout = RecordLayout::for_kv(key, &new_val);
@@ -535,41 +544,47 @@ pub(crate) fn internal_upsert<F: Functions>(
                         }
 
                         if was_revivified {
-                            OperationStatus::Revivified
+                            (OperationStatus::Revivified, Some(context))
                         } else {
-                            OperationStatus::InPlaceUpdated
+                            (OperationStatus::InPlaceUpdated, Some(context))
                         }
                     } else {
-                        OperationStatus::Aborted
+                        (OperationStatus::Aborted, Some(context))
                     }
                 }
                 None => {
                     // Key didn't match any record in chain — this is a hash
                     // collision. We need to insert a new record.
-                    upsert_copy_to_tail(
-                        ctx,
-                        functions,
-                        key,
-                        input,
-                        &layout,
-                        result.entry,
-                        result.slot,
-                        addr,
+                    (
+                        upsert_copy_to_tail(
+                            ctx,
+                            functions,
+                            key,
+                            input,
+                            &layout,
+                            result.entry,
+                            result.slot,
+                            addr,
+                        ),
+                        Some(context),
                     )
                 }
             }
         }
         AddressRegion::FuzzyRegion | AddressRegion::ReadOnly => {
             // Copy to tail (RCU update).
-            upsert_copy_to_tail(
-                ctx,
-                functions,
-                key,
-                input,
-                &layout,
-                result.entry,
-                result.slot,
-                addr,
+            (
+                upsert_copy_to_tail(
+                    ctx,
+                    functions,
+                    key,
+                    input,
+                    &layout,
+                    result.entry,
+                    result.slot,
+                    addr,
+                ),
+                Some(context),
             )
         }
         AddressRegion::OnDisk => {
@@ -582,24 +597,27 @@ pub(crate) fn internal_upsert<F: Functions>(
                 record_layout: layout,
                 key_hash,
             });
-            OperationStatus::Pending
+            (OperationStatus::Pending, None)
         }
         AddressRegion::Truncated => {
             // The record has been truncated (evicted past begin_address).
             // Treat as a fresh insert via copy-to-tail: allocate a new
             // record and CAS the stale hash entry to the new address.
-            upsert_copy_to_tail(
-                ctx,
-                functions,
-                key,
-                input,
-                &layout,
-                result.entry,
-                result.slot,
-                addr,
+            (
+                upsert_copy_to_tail(
+                    ctx,
+                    functions,
+                    key,
+                    input,
+                    &layout,
+                    result.entry,
+                    result.slot,
+                    addr,
+                ),
+                Some(context),
             )
         }
-        _ => OperationStatus::Aborted,
+        _ => (OperationStatus::Aborted, Some(context)),
     }
 }
 
@@ -673,7 +691,7 @@ pub(crate) fn internal_rmw<F: Functions>(
     input: &F::Input,
     output: &mut F::Output,
     context: F::Context,
-) -> OperationStatus {
+) -> (OperationStatus, Option<F::Context>) {
     let key_hash = key.hash();
     let layout = layout_for_fixed::<F::Key, F::Value>(key);
 
@@ -695,7 +713,7 @@ pub(crate) fn internal_rmw<F: Functions>(
             let _ = ctx
                 .hash_index
                 .update(result.slot, result.entry, HashBucketEntry::EMPTY);
-            return OperationStatus::NotFound;
+            return (OperationStatus::NotFound, Some(context));
         }
 
         // Create a default value and let the callback initialise it.
@@ -715,7 +733,7 @@ pub(crate) fn internal_rmw<F: Functions>(
                     let _ =
                         ctx.hash_index
                             .update(result.slot, result.entry, HashBucketEntry::EMPTY);
-                    return OperationStatus::Aborted;
+                    return (OperationStatus::Aborted, Some(context));
                 }
             };
 
@@ -725,16 +743,16 @@ pub(crate) fn internal_rmw<F: Functions>(
 
         let committed = HashBucketEntry::new(result.entry.tag(), new_addr, false);
         if !ctx.hash_index.update(result.slot, result.entry, committed) {
-            return OperationStatus::Aborted;
+            return (OperationStatus::Aborted, Some(context));
         }
 
-        return OperationStatus::Created;
+        return (OperationStatus::Created, Some(context));
     }
 
     // ── Key exists — dispatch by region ────────────────────────────
     let addr = result.entry.address();
     if !addr.is_valid() {
-        return OperationStatus::NotFound;
+        return (OperationStatus::NotFound, Some(context));
     }
 
     // L2 prefetch: bring the record into L1 in exclusive state
@@ -751,16 +769,19 @@ pub(crate) fn internal_rmw<F: Functions>(
                 Some((found_addr, ri)) => {
                     if ri.is_tombstone() {
                         // Deleted key — treat as initial.
-                        return rmw_create_at_tail(
-                            ctx,
-                            functions,
-                            key,
-                            input,
-                            output,
-                            &layout,
-                            result.entry,
-                            result.slot,
-                            found_addr,
+                        return (
+                            rmw_create_at_tail(
+                                ctx,
+                                functions,
+                                key,
+                                input,
+                                output,
+                                &layout,
+                                result.entry,
+                                result.slot,
+                                found_addr,
+                            ),
+                            Some(context),
                         );
                     }
 
@@ -782,23 +803,26 @@ pub(crate) fn internal_rmw<F: Functions>(
                                 let reader = LogRecordReader::new(ctx.allocator);
                                 let value: F::Value = match reader.read_value(found_addr, &layout) {
                                     Some(v) => v,
-                                    None => return OperationStatus::Aborted,
+                                    None => return (OperationStatus::Aborted, Some(context)),
                                 };
-                                return rmw_copy_to_tail(
-                                    ctx,
-                                    functions,
-                                    key,
-                                    input,
-                                    &value,
-                                    output,
-                                    &layout,
-                                    result.entry,
-                                    result.slot,
-                                    found_addr,
+                                return (
+                                    rmw_copy_to_tail(
+                                        ctx,
+                                        functions,
+                                        key,
+                                        input,
+                                        &value,
+                                        output,
+                                        &layout,
+                                        result.entry,
+                                        result.slot,
+                                        found_addr,
+                                    ),
+                                    Some(context),
                                 );
                             }
                         } else {
-                            return OperationStatus::Aborted;
+                            return (OperationStatus::Aborted, Some(context));
                         }
                     } else {
                         false
@@ -807,7 +831,7 @@ pub(crate) fn internal_rmw<F: Functions>(
                     // Try in-place update.
                     let ptr = match ctx.allocator.get_physical_address(found_addr) {
                         Some(p) => p,
-                        None => return OperationStatus::Aborted,
+                        None => return (OperationStatus::Aborted, Some(context)),
                     };
 
                     // SF-15: Verify the address is still in memory.
@@ -836,24 +860,27 @@ pub(crate) fn internal_rmw<F: Functions>(
                         match rmw_result {
                             RmwInPlaceResult::InPlaceOk => {
                                 if was_revivified {
-                                    OperationStatus::Revivified
+                                    (OperationStatus::Revivified, Some(context))
                                 } else {
-                                    OperationStatus::InPlaceUpdated
+                                    (OperationStatus::InPlaceUpdated, Some(context))
                                 }
                             }
                             RmwInPlaceResult::NeedsNewRecord => {
                                 let value: F::Value = accessor.value(&layout);
-                                rmw_copy_to_tail(
-                                    ctx,
-                                    functions,
-                                    key,
-                                    input,
-                                    &value,
-                                    output,
-                                    &layout,
-                                    result.entry,
-                                    result.slot,
-                                    found_addr,
+                                (
+                                    rmw_copy_to_tail(
+                                        ctx,
+                                        functions,
+                                        key,
+                                        input,
+                                        &value,
+                                        output,
+                                        &layout,
+                                        result.entry,
+                                        result.slot,
+                                        found_addr,
+                                    ),
+                                    Some(context),
                                 )
                             }
                         }
@@ -871,38 +898,44 @@ pub(crate) fn internal_rmw<F: Functions>(
                                 let write_layout = RecordLayout::for_kv(key, &value);
                                 accessor.write_value(&value, &write_layout);
                                 if was_revivified {
-                                    OperationStatus::Revivified
+                                    (OperationStatus::Revivified, Some(context))
                                 } else {
-                                    OperationStatus::InPlaceUpdated
+                                    (OperationStatus::InPlaceUpdated, Some(context))
                                 }
                             }
-                            RmwInPlaceResult::NeedsNewRecord => rmw_copy_to_tail(
-                                ctx,
-                                functions,
-                                key,
-                                input,
-                                &value,
-                                output,
-                                &layout,
-                                result.entry,
-                                result.slot,
-                                found_addr,
+                            RmwInPlaceResult::NeedsNewRecord => (
+                                rmw_copy_to_tail(
+                                    ctx,
+                                    functions,
+                                    key,
+                                    input,
+                                    &value,
+                                    output,
+                                    &layout,
+                                    result.entry,
+                                    result.slot,
+                                    found_addr,
+                                ),
+                                Some(context),
                             ),
                         }
                     }
                 }
                 None => {
                     // Hash collision — key not in chain. Create initial.
-                    rmw_create_at_tail(
-                        ctx,
-                        functions,
-                        key,
-                        input,
-                        output,
-                        &layout,
-                        result.entry,
-                        result.slot,
-                        addr,
+                    (
+                        rmw_create_at_tail(
+                            ctx,
+                            functions,
+                            key,
+                            input,
+                            output,
+                            &layout,
+                            result.entry,
+                            result.slot,
+                            addr,
+                        ),
+                        Some(context),
                     )
                 }
             }
@@ -912,16 +945,19 @@ pub(crate) fn internal_rmw<F: Functions>(
             match find_record_for_key(&reader, addr, key, &layout, &snap) {
                 Some((found_addr, ri)) => {
                     if ri.is_tombstone() {
-                        return rmw_create_at_tail(
-                            ctx,
-                            functions,
-                            key,
-                            input,
-                            output,
-                            &layout,
-                            result.entry,
-                            result.slot,
-                            found_addr,
+                        return (
+                            rmw_create_at_tail(
+                                ctx,
+                                functions,
+                                key,
+                                input,
+                                output,
+                                &layout,
+                                result.entry,
+                                result.slot,
+                                found_addr,
+                            ),
+                            Some(context),
                         );
                     }
 
@@ -932,7 +968,7 @@ pub(crate) fn internal_rmw<F: Functions>(
                         .map(|acc| acc.value::<F::Value>(&layout))
                     {
                         Some(v) => v,
-                        None => return OperationStatus::Aborted,
+                        None => return (OperationStatus::Aborted, Some(context)),
                     };
 
                     if !functions.rmw_need_copy_update(
@@ -941,32 +977,38 @@ pub(crate) fn internal_rmw<F: Functions>(
                         &old_value,
                         &RmwInfo::new(0, found_addr, ri, true),
                     ) {
-                        return OperationStatus::Ok;
+                        return (OperationStatus::Ok, Some(context));
                     }
 
-                    rmw_copy_to_tail(
+                    (
+                        rmw_copy_to_tail(
+                            ctx,
+                            functions,
+                            key,
+                            input,
+                            &old_value,
+                            output,
+                            &layout,
+                            result.entry,
+                            result.slot,
+                            found_addr,
+                        ),
+                        Some(context),
+                    )
+                }
+                None => (
+                    rmw_create_at_tail(
                         ctx,
                         functions,
                         key,
                         input,
-                        &old_value,
                         output,
                         &layout,
                         result.entry,
                         result.slot,
-                        found_addr,
-                    )
-                }
-                None => rmw_create_at_tail(
-                    ctx,
-                    functions,
-                    key,
-                    input,
-                    output,
-                    &layout,
-                    result.entry,
-                    result.slot,
-                    addr,
+                        addr,
+                    ),
+                    Some(context),
                 ),
             }
         }
@@ -980,24 +1022,27 @@ pub(crate) fn internal_rmw<F: Functions>(
                 record_layout: layout,
                 key_hash,
             });
-            OperationStatus::Pending
+            (OperationStatus::Pending, None)
         }
         AddressRegion::Truncated => {
             // The record has been truncated (evicted past begin_address).
             // Treat as a fresh initial insert: the old value is gone.
-            rmw_create_at_tail(
-                ctx,
-                functions,
-                key,
-                input,
-                output,
-                &layout,
-                result.entry,
-                result.slot,
-                addr,
+            (
+                rmw_create_at_tail(
+                    ctx,
+                    functions,
+                    key,
+                    input,
+                    output,
+                    &layout,
+                    result.entry,
+                    result.slot,
+                    addr,
+                ),
+                Some(context),
             )
         }
-        _ => OperationStatus::Aborted,
+        _ => (OperationStatus::Aborted, Some(context)),
     }
 }
 
@@ -1103,7 +1148,7 @@ pub(crate) fn internal_delete<F: Functions>(
     functions: &F,
     key: &F::Key,
     context: F::Context,
-) -> OperationStatus {
+) -> (OperationStatus, Option<F::Context>) {
     let key_hash = key.hash();
     let layout = layout_for_fixed::<F::Key, F::Value>(key);
 
@@ -1113,12 +1158,12 @@ pub(crate) fn internal_delete<F: Functions>(
     // Look up an existing entry — delete does not create new entries.
     let (entry, slot) = match ctx.hash_index.find(key_hash) {
         Some(pair) => pair,
-        None => return OperationStatus::NotFound,
+        None => return (OperationStatus::NotFound, Some(context)),
     };
 
     let addr = entry.address();
     if !addr.is_valid() {
-        return OperationStatus::NotFound;
+        return (OperationStatus::NotFound, Some(context));
     }
 
     // L2 prefetch: bring the record into L1 in exclusive state
@@ -1134,13 +1179,13 @@ pub(crate) fn internal_delete<F: Functions>(
             match find_record_for_key(&reader, addr, key, &layout, &snap) {
                 Some((found_addr, ri)) => {
                     if ri.is_tombstone() {
-                        return OperationStatus::NotFound;
+                        return (OperationStatus::NotFound, Some(context));
                     }
 
                     // Set tombstone in-place via atomic CAS on the RecordInfo.
                     let ptr = match ctx.allocator.get_physical_address(found_addr) {
                         Some(p) => p,
-                        None => return OperationStatus::Aborted,
+                        None => return (OperationStatus::Aborted, Some(context)),
                     };
 
                     let record_size = safe_read_record_size(found_addr, layout.total_size() as u32);
@@ -1155,9 +1200,9 @@ pub(crate) fn internal_delete<F: Functions>(
                     let new_ri = ri.with_tombstone();
                     accessor.write_record_info(&new_ri);
 
-                    OperationStatus::Deleted
+                    (OperationStatus::Deleted, Some(context))
                 }
-                None => OperationStatus::NotFound,
+                None => (OperationStatus::NotFound, Some(context)),
             }
         }
         AddressRegion::FuzzyRegion | AddressRegion::ReadOnly => {
@@ -1166,7 +1211,7 @@ pub(crate) fn internal_delete<F: Functions>(
             match find_record_for_key(&reader, addr, key, &layout, &snap) {
                 Some((_found_addr, ri)) => {
                     if ri.is_tombstone() {
-                        return OperationStatus::NotFound;
+                        return (OperationStatus::NotFound, Some(context));
                     }
 
                     // Allocate a tombstone record at tail.
@@ -1177,7 +1222,7 @@ pub(crate) fn internal_delete<F: Functions>(
                         .map(|acc| acc.value::<F::Value>(&layout))
                     {
                         Some(v) => v,
-                        None => return OperationStatus::NotFound,
+                        None => return (OperationStatus::NotFound, Some(context)),
                     };
                     let (new_addr, mut accessor) = match allocate_at_tail(
                         ctx.allocator,
@@ -1186,7 +1231,7 @@ pub(crate) fn internal_delete<F: Functions>(
                         ctx.on_alloc_failure,
                     ) {
                         Some(pair) => pair,
-                        None => return OperationStatus::Aborted,
+                        None => return (OperationStatus::Aborted, Some(context)),
                     };
 
                     let tombstone_ri = RecordInfo::new(addr, 0, false, true, false);
@@ -1196,12 +1241,12 @@ pub(crate) fn internal_delete<F: Functions>(
                     // CAS the hash entry to point to the tombstone.
                     let committed = HashBucketEntry::new(entry.tag(), new_addr, false);
                     if ctx.hash_index.update(slot, entry, committed) {
-                        OperationStatus::Deleted
+                        (OperationStatus::Deleted, Some(context))
                     } else {
-                        OperationStatus::Aborted
+                        (OperationStatus::Aborted, Some(context))
                     }
                 }
-                None => OperationStatus::NotFound,
+                None => (OperationStatus::NotFound, Some(context)),
             }
         }
         AddressRegion::OnDisk => {
@@ -1214,9 +1259,9 @@ pub(crate) fn internal_delete<F: Functions>(
                 record_layout: layout,
                 key_hash,
             });
-            OperationStatus::Pending
+            (OperationStatus::Pending, None)
         }
-        _ => OperationStatus::NotFound,
+        _ => (OperationStatus::NotFound, Some(context)),
     }
 }
 
@@ -1275,7 +1320,7 @@ mod tests {
         let mut guard = session.begin_unsafe();
 
         let ic = ctx(&hi, &alloc);
-        let status = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &100u64, ());
+        let (status, _) = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &100u64, ());
         assert_eq!(status, OperationStatus::Created);
 
         // Verify the hash entry now exists.
@@ -1297,11 +1342,11 @@ mod tests {
         let ic = ctx(&hi, &alloc);
 
         // First upsert: create.
-        let s1 = internal_upsert(&ic, guard.session_mut(), &funcs, &1u64, &10u64, ());
+        let (s1, _) = internal_upsert(&ic, guard.session_mut(), &funcs, &1u64, &10u64, ());
         assert_eq!(s1, OperationStatus::Created);
 
         // Second upsert: in-place update.
-        let s2 = internal_upsert(&ic, guard.session_mut(), &funcs, &1u64, &20u64, ());
+        let (s2, _) = internal_upsert(&ic, guard.session_mut(), &funcs, &1u64, &20u64, ());
         assert_eq!(s2, OperationStatus::InPlaceUpdated);
     }
 
@@ -1319,7 +1364,7 @@ mod tests {
         let _ = internal_upsert(&ic, guard.session_mut(), &funcs, &7u64, &777u64, ());
 
         let mut output: Option<u64> = None;
-        let status = internal_read(
+        let (status, _) = internal_read(
             &ic,
             guard.session_mut(),
             &funcs,
@@ -1344,7 +1389,7 @@ mod tests {
 
         let ic = ctx(&hi, &alloc);
         let mut output: Option<u64> = None;
-        let status = internal_read(
+        let (status, _) = internal_read(
             &ic,
             guard.session_mut(),
             &funcs,
@@ -1370,7 +1415,7 @@ mod tests {
         let ic = ctx(&hi, &alloc);
         let _ = internal_upsert(&ic, guard.session_mut(), &funcs, &5u64, &50u64, ());
 
-        let status = internal_delete(&ic, guard.session_mut(), &funcs, &5u64, ());
+        let (status, _) = internal_delete(&ic, guard.session_mut(), &funcs, &5u64, ());
         assert_eq!(status, OperationStatus::Deleted);
     }
 
@@ -1389,7 +1434,7 @@ mod tests {
         let _ = internal_delete(&ic, guard.session_mut(), &funcs, &8u64, ());
 
         let mut output: Option<u64> = None;
-        let status = internal_read(
+        let (status, _) = internal_read(
             &ic,
             guard.session_mut(),
             &funcs,
@@ -1414,7 +1459,7 @@ mod tests {
 
         let ic = ctx(&hi, &alloc);
         let mut output: Option<u64> = None;
-        let status = internal_rmw(
+        let (status, _) = internal_rmw(
             &ic,
             guard.session_mut(),
             &funcs,
@@ -1427,7 +1472,7 @@ mod tests {
 
         // Verify via read.
         let mut read_output: Option<u64> = None;
-        let read_status = internal_read(
+        let (read_status, _) = internal_read(
             &ic,
             guard.session_mut(),
             &funcs,
@@ -1457,7 +1502,7 @@ mod tests {
 
         // RMW should update in-place (SimpleFunctions replaces the value).
         let mut output: Option<u64> = None;
-        let status = internal_rmw(
+        let (status, _) = internal_rmw(
             &ic,
             guard.session_mut(),
             &funcs,
@@ -1496,7 +1541,7 @@ mod tests {
 
         // Insert 100 keys.
         for i in 0u64..100 {
-            let status = internal_upsert(&ic, guard.session_mut(), &funcs, &i, &(i * 10), ());
+            let (status, _) = internal_upsert(&ic, guard.session_mut(), &funcs, &i, &(i * 10), ());
             assert!(
                 status == OperationStatus::Created || status == OperationStatus::CopyUpdated,
                 "key {i}: unexpected status {status}"
@@ -1506,7 +1551,7 @@ mod tests {
         // Read them all back.
         for i in 0u64..100 {
             let mut output: Option<u64> = None;
-            let status =
+            let (status, _) =
                 internal_read(&ic, guard.session_mut(), &funcs, &i, &0u64, &mut output, ());
             assert_eq!(status, OperationStatus::Ok, "read key {i} failed");
             assert_eq!(output, Some(i * 10), "value mismatch for key {i}");
@@ -1574,13 +1619,13 @@ mod tests {
         let mut guard = session.begin_unsafe();
         let ic = ctx(&hi, &alloc);
 
-        let status = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &100u64, ());
+        let (status, _) = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &100u64, ());
         assert_eq!(status, OperationStatus::Created);
 
         let addr = find_key_addr(&hi, 42u64);
         seal_record_at(&alloc, addr);
 
-        let status = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &200u64, ());
+        let (status, _) = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &200u64, ());
         assert_eq!(status, OperationStatus::Revivified);
 
         let mut output: Option<u64> = None;
@@ -1608,7 +1653,7 @@ mod tests {
         let ic = ctx(&hi, &alloc);
 
         let mut output: Option<u64> = None;
-        let status = internal_rmw(
+        let (status, _) = internal_rmw(
             &ic,
             guard.session_mut(),
             &funcs,
@@ -1623,7 +1668,7 @@ mod tests {
         seal_record_at(&alloc, addr);
 
         let mut output2: Option<u64> = None;
-        let status = internal_rmw(
+        let (status, _) = internal_rmw(
             &ic,
             guard.session_mut(),
             &funcs,
@@ -1659,7 +1704,7 @@ mod tests {
         let ic = ctx(&hi, &alloc);
 
         let _ = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &100u64, ());
-        let status = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &200u64, ());
+        let (status, _) = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &200u64, ());
         assert_eq!(status, OperationStatus::InPlaceUpdated);
     }
 
@@ -1678,11 +1723,11 @@ mod tests {
         let addr = find_key_addr(&hi, 42u64);
         seal_record_at(&alloc, addr);
 
-        let status = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &200u64, ());
+        let (status, _) = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &200u64, ());
         assert_eq!(status, OperationStatus::Revivified);
 
         // Subsequent upsert should be InPlaceUpdated (sealed bit cleared).
-        let status2 = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &300u64, ());
+        let (status2, _) = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &300u64, ());
         assert_eq!(status2, OperationStatus::InPlaceUpdated);
 
         let mut output: Option<u64> = None;
@@ -1713,11 +1758,11 @@ mod tests {
         let addr = find_key_addr(&hi, 42u64);
 
         seal_record_at(&alloc, addr);
-        let s1 = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &200u64, ());
+        let (s1, _) = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &200u64, ());
         assert_eq!(s1, OperationStatus::Revivified);
 
         seal_record_at(&alloc, addr);
-        let s2 = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &300u64, ());
+        let (s2, _) = internal_upsert(&ic, guard.session_mut(), &funcs, &42u64, &300u64, ());
         assert_eq!(s2, OperationStatus::Revivified);
 
         let mut output: Option<u64> = None;

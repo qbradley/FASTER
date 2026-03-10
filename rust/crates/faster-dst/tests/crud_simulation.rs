@@ -297,13 +297,16 @@ fn spawn_from_closure_pattern() {
             step += 1;
             match step {
                 1 => {
-                    let st = store_ref.store().upsert(s, &100u64, &200u64, ());
+                    let st = store_ref.store().upsert(s, &100u64, &200u64, ()).status();
                     manual_results.borrow_mut().push(CrudResult::Upsert(st));
                     TaskAction::Yield
                 }
                 2 => {
                     let mut out: Option<u64> = None;
-                    let st = store_ref.store().read(s, &100u64, &0u64, &mut out, ());
+                    let st = store_ref
+                        .store()
+                        .read(s, &100u64, &0u64, &mut out, ())
+                        .status();
                     manual_results.borrow_mut().push(CrudResult::Read(st, out));
                     TaskAction::Yield
                 }

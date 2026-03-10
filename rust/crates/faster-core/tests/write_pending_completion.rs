@@ -161,7 +161,7 @@ fn test_upsert_on_disk_record() {
     // Read back — the upserted value must be visible.
     let mut out: Option<BigVal> = None;
     let status = store.read(&mut s, &target_key, &BigVal::default(), &mut out, ());
-    match status {
+    match status.status() {
         OperationStatus::Ok => {
             assert_eq!(
                 out.map(|v| v.payload),
@@ -173,7 +173,7 @@ fn test_upsert_on_disk_record() {
             let _ = store.try_complete_pending(&mut s, true);
             let mut out2: Option<BigVal> = None;
             let status2 = store.read(&mut s, &target_key, &BigVal::default(), &mut out2, ());
-            assert_eq!(status2, OperationStatus::Ok);
+            assert_eq!(status2.status(), OperationStatus::Ok);
             assert_eq!(
                 out2.map(|v| v.payload),
                 Some(999_999),
@@ -207,7 +207,7 @@ fn test_rmw_on_disk_record() {
     let mut rmw_out: Option<BigVal> = None;
     let status = store.rmw(&mut s, &target_key, &new_value, &mut rmw_out, ());
     assert_eq!(
-        status,
+        status.status(),
         OperationStatus::Pending,
         "RMW on evicted key should return Pending, got {status:?}"
     );
@@ -219,7 +219,7 @@ fn test_rmw_on_disk_record() {
     // Read back — the RMW should have replaced the value.
     let mut read_out: Option<BigVal> = None;
     let status = store.read(&mut s, &target_key, &BigVal::default(), &mut read_out, ());
-    match status {
+    match status.status() {
         OperationStatus::Ok => {
             assert_eq!(
                 read_out.map(|v| v.payload),
@@ -231,7 +231,7 @@ fn test_rmw_on_disk_record() {
             let _ = store.try_complete_pending(&mut s, true);
             let mut read_out2: Option<BigVal> = None;
             let status2 = store.read(&mut s, &target_key, &BigVal::default(), &mut read_out2, ());
-            assert_eq!(status2, OperationStatus::Ok);
+            assert_eq!(status2.status(), OperationStatus::Ok);
             assert_eq!(
                 read_out2.map(|v| v.payload),
                 Some(42_42_42),
@@ -263,7 +263,7 @@ fn test_delete_on_disk_record() {
     // Delete the evicted key.
     let status = store.delete(&mut s, &target_key, ());
     assert_eq!(
-        status,
+        status.status(),
         OperationStatus::Pending,
         "delete on evicted key should return Pending, got {status:?}"
     );
@@ -276,7 +276,7 @@ fn test_delete_on_disk_record() {
     // should be visible after completing pending reads.
     let mut out: Option<BigVal> = None;
     let status = store.read(&mut s, &target_key, &BigVal::default(), &mut out, ());
-    match status {
+    match status.status() {
         OperationStatus::NotFound => { /* correct */ }
         OperationStatus::Ok => {
             panic!(
@@ -289,7 +289,7 @@ fn test_delete_on_disk_record() {
             let mut out2: Option<BigVal> = None;
             let status2 = store.read(&mut s, &target_key, &BigVal::default(), &mut out2, ());
             assert_eq!(
-                status2,
+                status2.status(),
                 OperationStatus::NotFound,
                 "deleted key should be NotFound after completion, got {status2:?} val={:?}",
                 out2.map(|v| v.payload)

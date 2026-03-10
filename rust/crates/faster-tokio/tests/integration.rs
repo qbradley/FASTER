@@ -203,7 +203,7 @@ async fn checkpoint_recovery_with_tokio_file_device() {
         for i in 0..num_keys {
             let mut out: Option<u64> = None;
             let status = store.read(&mut session, &i, &0u64, &mut out, ());
-            match status {
+            match status.status() {
                 OperationStatus::Ok => {
                     assert_eq!(out, Some(i * i), "value mismatch at key {i}");
                 }
@@ -212,7 +212,11 @@ async fn checkpoint_recovery_with_tokio_file_device() {
                     store.complete_pending_sync(&mut session);
                     let mut retry: Option<u64> = None;
                     let s = store.read(&mut session, &i, &0u64, &mut retry, ());
-                    assert_eq!(s, OperationStatus::Ok, "retry read for key {i}: {s}");
+                    assert_eq!(
+                        s.status(),
+                        OperationStatus::Ok,
+                        "retry read for key {i}: {s}"
+                    );
                     assert_eq!(retry, Some(i * i), "retry value mismatch at key {i}");
                 }
                 other => panic!("unexpected status for key {i}: {other:?}"),

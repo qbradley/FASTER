@@ -67,7 +67,7 @@ fn upsert_with_retry(
             let _ = store.complete_pending(session);
             continue;
         }
-        return status;
+        return status.status();
     }
 }
 
@@ -79,7 +79,7 @@ fn read_key(
 ) -> (OperationStatus, Option<u64>) {
     let mut output: Option<u64> = None;
     let status = store.read(session, key, &0u64, &mut output, ());
-    (status, output)
+    (status.status(), output)
 }
 
 /// Number of records needed to fill one 32 MiB page with 24-byte records.

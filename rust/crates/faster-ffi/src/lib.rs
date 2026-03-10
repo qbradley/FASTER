@@ -378,7 +378,7 @@ pub unsafe extern "C" fn faster_upsert(
     // catch_unwind prevents panics from crossing the FFI boundary.
     panic::catch_unwind(AssertUnwindSafe(|| {
         match with_store_session(store, session, |kv, sess| kv.upsert(sess, &key, &val, ())) {
-            Ok(status) => to_ffi_status(status),
+            Ok(outcome) => to_ffi_status(outcome.status()),
             Err(e) => e,
         }
     }))
@@ -541,7 +541,7 @@ pub unsafe extern "C" fn faster_delete(
     // catch_unwind prevents panics from crossing the FFI boundary.
     panic::catch_unwind(AssertUnwindSafe(|| {
         match with_store_session(store, session, |kv, sess| kv.delete(sess, &key, ())) {
-            Ok(status) => to_ffi_status(status),
+            Ok(outcome) => to_ffi_status(outcome.status()),
             Err(e) => e,
         }
     }))
@@ -605,7 +605,7 @@ pub unsafe extern "C" fn faster_rmw(
             let mut output: Option<Vec<u8>> = None;
             kv.rmw(sess, &key, &input, &mut output, ())
         }) {
-            Ok(status) => to_ffi_status(status),
+            Ok(outcome) => to_ffi_status(outcome.status()),
             Err(e) => e,
         }
     }))
@@ -967,7 +967,7 @@ pub unsafe extern "C" fn faster_rmw_ex(
             let mut output: Option<Vec<u8>> = None;
             kv.rmw(sess, &key, &input, &mut output, ())
         }) {
-            Ok(status) => to_ffi_status(status),
+            Ok(outcome) => to_ffi_status(outcome.status()),
             Err(e) => e,
         }
     }))
@@ -1022,7 +1022,7 @@ pub unsafe extern "C" fn faster_upsert_ex(
             });
 
         match with_store_session(store, session, |kv, sess| kv.upsert(sess, &key, &input, ())) {
-            Ok(status) => to_ffi_status(status),
+            Ok(outcome) => to_ffi_status(outcome.status()),
             Err(e) => e,
         }
     }))
@@ -1079,8 +1079,8 @@ pub unsafe extern "C" fn faster_read_ex(
         match with_store_session(store, session, |kv, sess| {
             let input = Vec::new();
             let mut output: Option<Vec<u8>> = None;
-            let status = kv.read(sess, &key, &input, &mut output, ());
-            (status, output)
+            let outcome = kv.read(sess, &key, &input, &mut output, ());
+            (outcome.status(), output)
         }) {
             Ok((status, output_opt)) => {
                 let ffi_status = to_ffi_status(status);

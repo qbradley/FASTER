@@ -160,7 +160,7 @@ fn random_read_workload(
         let key = rng.next_u64() % NUM_KEYS;
         output = None;
 
-        let status = store.read(session, &key, &0u64, &mut output, ());
+        let status = store.read(session, &key, &0u64, &mut output, ()).status();
         match status {
             OperationStatus::Ok => {
                 let val = output.expect("output should be Some on Ok");
@@ -228,7 +228,7 @@ fn interactive_read_workload(
 
         let mut output: Option<u64> = None;
         let op_start = Instant::now();
-        let status = store.read(session, &key, &0u64, &mut output, ());
+        let status = store.read(session, &key, &0u64, &mut output, ()).status();
 
         match status {
             OperationStatus::Ok => {

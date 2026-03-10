@@ -20,13 +20,13 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 /// Create a store whose device writes log files into `dir`.
 /// Recovery expects log.{n} files co-located with checkpoint metadata,
 /// so use the same directory for both device and checkpoint.
-fn disk_store(
-    dir: &std::path::Path,
-) -> FasterKv<SimpleFunctions<u64, u64>> {
-    let dev = SyncFileDevice::new(dir, "log.", 512, 1 << 20, 1)
-        .expect("create device");
+fn disk_store(dir: &std::path::Path) -> FasterKv<SimpleFunctions<u64, u64>> {
+    let dev = SyncFileDevice::new(dir, "log.", 512, 1 << 20, 1).expect("create device");
     let config = FasterKvConfig {
-        grow_config: GrowConfig { enabled: false, ..Default::default() },
+        grow_config: GrowConfig {
+            enabled: false,
+            ..Default::default()
+        },
         hash_index_size_log2: 10,
         buffer_size_pages: 8,
         mutable_fraction: 0.5,
@@ -54,7 +54,8 @@ fn checkpoint_recover_roundtrip_preserves_data() {
             let _ = store.upsert(&mut session, &i, &(i * 7), ());
         }
 
-        store.checkpoint(&dir, CheckpointType::FoldOver)
+        store
+            .checkpoint(&dir, CheckpointType::FoldOver)
             .expect("checkpoint should succeed");
 
         store.dispose_session(session);
@@ -91,7 +92,8 @@ fn checkpoint_recover_minimal() {
         let mut session = store.new_session();
         let _ = store.upsert(&mut session, &1u64, &42u64, ());
 
-        store.checkpoint(&dir, CheckpointType::FoldOver)
+        store
+            .checkpoint(&dir, CheckpointType::FoldOver)
             .expect("checkpoint");
         store.dispose_session(session);
     }
@@ -123,7 +125,8 @@ fn checkpoint_recover_many_keys() {
             let _ = store.upsert(&mut session, &i, &(i + 1000), ());
         }
 
-        store.checkpoint(&dir, CheckpointType::FoldOver)
+        store
+            .checkpoint(&dir, CheckpointType::FoldOver)
             .expect("checkpoint");
         store.dispose_session(session);
     }
@@ -137,11 +140,7 @@ fn checkpoint_recover_many_keys() {
         for &i in &[0u64, 1, 50, 500, 999] {
             let mut output: Option<u64> = None;
             let _ = store.read(&mut session, &i, &0u64, &mut output, ());
-            assert_eq!(
-                output,
-                Some(i + 1000),
-                "key {i} should survive recovery"
-            );
+            assert_eq!(output, Some(i + 1000), "key {i} should survive recovery");
         }
         store.dispose_session(session);
     }

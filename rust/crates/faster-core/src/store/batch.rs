@@ -200,7 +200,8 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
                 &F::Input::default(),
                 &mut outputs[i],
                 F::Context::default(),
-            );
+            )
+            .0;
             if result.statuses[i] == OperationStatus::Pending {
                 store.dispatch_pending_io(self.session);
             }
@@ -252,7 +253,8 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
                 &keys[i],
                 &inputs[i],
                 F::Context::default(),
-            );
+            )
+            .0;
             if result.statuses[i] == OperationStatus::Pending {
                 store.dispatch_pending_io(self.session);
             }
@@ -311,7 +313,8 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
                 &inputs[i],
                 &mut outputs[i],
                 F::Context::default(),
-            );
+            )
+            .0;
             if result.statuses[i] == OperationStatus::Pending {
                 store.dispatch_pending_io(self.session);
             }
@@ -349,7 +352,8 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
                 &store.functions,
                 &keys[i],
                 F::Context::default(),
-            );
+            )
+            .0;
             if result.statuses[i] == OperationStatus::Pending {
                 store.dispatch_pending_io(self.session);
             }
@@ -396,39 +400,51 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         let mut result = BatchResult::filled(n, OperationStatus::NotFound);
         for i in 0..n {
             result.statuses[i] = match &ops[i] {
-                BatchOp::Read { key, input } => internal_read(
-                    &ctx,
-                    self.session,
-                    &store.functions,
-                    key,
-                    input,
-                    &mut outputs[i],
-                    F::Context::default(),
-                ),
-                BatchOp::Upsert { key, input } => internal_upsert(
-                    &ctx,
-                    self.session,
-                    &store.functions,
-                    key,
-                    input,
-                    F::Context::default(),
-                ),
-                BatchOp::Rmw { key, input } => internal_rmw(
-                    &ctx,
-                    self.session,
-                    &store.functions,
-                    key,
-                    input,
-                    &mut outputs[i],
-                    F::Context::default(),
-                ),
-                BatchOp::Delete { key } => internal_delete(
-                    &ctx,
-                    self.session,
-                    &store.functions,
-                    key,
-                    F::Context::default(),
-                ),
+                BatchOp::Read { key, input } => {
+                    internal_read(
+                        &ctx,
+                        self.session,
+                        &store.functions,
+                        key,
+                        input,
+                        &mut outputs[i],
+                        F::Context::default(),
+                    )
+                    .0
+                }
+                BatchOp::Upsert { key, input } => {
+                    internal_upsert(
+                        &ctx,
+                        self.session,
+                        &store.functions,
+                        key,
+                        input,
+                        F::Context::default(),
+                    )
+                    .0
+                }
+                BatchOp::Rmw { key, input } => {
+                    internal_rmw(
+                        &ctx,
+                        self.session,
+                        &store.functions,
+                        key,
+                        input,
+                        &mut outputs[i],
+                        F::Context::default(),
+                    )
+                    .0
+                }
+                BatchOp::Delete { key } => {
+                    internal_delete(
+                        &ctx,
+                        self.session,
+                        &store.functions,
+                        key,
+                        F::Context::default(),
+                    )
+                    .0
+                }
             };
             if result.statuses[i] == OperationStatus::Pending {
                 store.dispatch_pending_io(self.session);

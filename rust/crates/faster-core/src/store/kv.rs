@@ -56,7 +56,7 @@ use crate::record::{RecordInfo, read_record_info, read_value};
 use crate::recovery::index_recovery::IndexRecoveryEngine;
 use crate::recovery::log_recovery::LogRecoveryEngine;
 use crate::recovery::{RecoveryError, RecoveryManager};
-use crate::status::OperationStatus;
+use crate::status::{OperationOutcome, OperationStatus};
 use crate::store::functions::{Functions, ReadInfo, RmwInfo, UpsertInfo};
 use crate::store::operations::{
     InternalContext, allocate_at_tail, internal_delete, internal_read, internal_rmw,
@@ -648,6 +648,7 @@ impl<F: Functions> FasterKv<F> {
         F::Context: Default,
     {
         self.upsert(session, key, input, F::Context::default())
+            .status()
     }
 
     /// Simplified read that returns the value directly.
@@ -706,7 +707,7 @@ impl<F: Functions> FasterKv<F> {
     where
         F::Context: Default,
     {
-        self.delete(session, key, F::Context::default())
+        self.delete(session, key, F::Context::default()).status()
     }
 
     // ── Checkpoint / Recovery ───────────────────────────────────────
@@ -859,15 +860,20 @@ impl<F: Functions> FasterKv<F> {
 
     /// Read a key's value.
     ///
-    /// Enters epoch protection, performs the read, and returns the status.
+    /// Enters epoch protection, performs the read, and returns the outcome.
     /// On success (`OperationStatus::Ok`), the result is written to `output`
     /// via the [`Functions::read`] callback.
     ///
     /// # Returns
     ///
+    /// An [`OperationOutcome`] whose status is one of:
+    ///
     /// - [`OperationStatus::Ok`] — value read successfully.
     /// - [`OperationStatus::NotFound`] — key does not exist.
     /// - [`OperationStatus::Pending`] — record is on disk; queued for async I/O.
+    ///
+    /// On non-Pending paths the context is returned inside the outcome so
+    /// the caller can reuse it (e.g., retry on Aborted).
     pub fn read(
         &self,
         session: &mut FasterSession<F>,
@@ -875,7 +881,7 @@ impl<F: Functions> FasterKv<F> {
         input: &F::Input,
         output: &mut F::Output,
         context: F::Context,
-    ) -> OperationStatus {
+    ) -> OperationOutcome<F::Context> {
         let mut guard = session.begin_unsafe();
         sim_yield!("read::after_epoch_protect");
         let ctx = InternalContext {
@@ -883,7 +889,7 @@ impl<F: Functions> FasterKv<F> {
             allocator: &self.allocator,
             on_alloc_failure: None,
         };
-        let status = internal_read(
+        let (status, recovered_ctx) = internal_read(
             &ctx,
             guard.session_mut(),
             &self.functions,
@@ -896,31 +902,41 @@ impl<F: Functions> FasterKv<F> {
         metrics_inc!(self.metrics, total_operations);
         if status == OperationStatus::Pending {
             self.dispatch_pending_io(session);
+            OperationOutcome::pending()
+        } else {
+            OperationOutcome::completed(
+                status,
+                recovered_ctx.expect("context must be returned on non-Pending path"),
+            )
         }
-        status
     }
 
     /// Insert or update a key-value pair.
     ///
-    /// Enters epoch protection, performs the upsert, and returns the status.
+    /// Enters epoch protection, performs the upsert, and returns the outcome.
     /// The `input` is passed to the [`Functions::upsert`] callback which writes
     /// the desired value into the record. For [`SimpleFunctions`](super::SimpleFunctions),
     /// `Input = Value`, so `input` is the value to store.
     ///
     /// # Returns
     ///
+    /// An [`OperationOutcome`] whose status is one of:
+    ///
     /// - [`OperationStatus::Created`] — new record inserted.
     /// - [`OperationStatus::InPlaceUpdated`] — existing mutable record updated.
     /// - [`OperationStatus::CopyUpdated`] — read-only record copied to tail.
     /// - [`OperationStatus::Revivified`] — sealed record revivified in-place.
     /// - [`OperationStatus::Pending`] — record is on disk; queued for async I/O.
+    ///
+    /// On non-Pending paths the context is returned inside the outcome so
+    /// the caller can reuse it (e.g., retry on Aborted).
     pub fn upsert(
         &self,
         session: &mut FasterSession<F>,
         key: &F::Key,
         input: &F::Input,
         context: F::Context,
-    ) -> OperationStatus {
+    ) -> OperationOutcome<F::Context> {
         let mut guard = session.begin_unsafe();
         sim_yield!("upsert::after_epoch_protect");
         let ctx = InternalContext {
@@ -928,7 +944,7 @@ impl<F: Functions> FasterKv<F> {
             allocator: &self.allocator,
             on_alloc_failure: Some(&|| self.maintenance()),
         };
-        let status = internal_upsert(
+        let (status, recovered_ctx) = internal_upsert(
             &ctx,
             guard.session_mut(),
             &self.functions,
@@ -941,24 +957,34 @@ impl<F: Functions> FasterKv<F> {
         metrics_inc!(self.metrics, total_operations);
         if status == OperationStatus::Pending {
             self.dispatch_pending_io(session);
+            OperationOutcome::pending()
+        } else {
+            OperationOutcome::completed(
+                status,
+                recovered_ctx.expect("context must be returned on non-Pending path"),
+            )
         }
-        status
     }
 
     /// Read-modify-write a key.
     ///
-    /// Enters epoch protection, performs the RMW, and returns the status.
+    /// Enters epoch protection, performs the RMW, and returns the outcome.
     /// If the key exists, the [`Functions::rmw_in_place`] or
     /// [`Functions::rmw_copy_update`] callback is invoked. If the key
     /// does not exist, [`Functions::rmw_initial`] creates a new record.
     ///
     /// # Returns
     ///
+    /// An [`OperationOutcome`] whose status is one of:
+    ///
     /// - [`OperationStatus::Created`] — new record created via `rmw_initial`.
     /// - [`OperationStatus::InPlaceUpdated`] — updated in mutable region.
     /// - [`OperationStatus::CopyUpdated`] — read-only record copied to tail.
     /// - [`OperationStatus::Revivified`] — sealed record revivified in-place.
     /// - [`OperationStatus::Pending`] — record is on disk; queued for async I/O.
+    ///
+    /// On non-Pending paths the context is returned inside the outcome so
+    /// the caller can reuse it (e.g., retry on Aborted).
     pub fn rmw(
         &self,
         session: &mut FasterSession<F>,
@@ -966,7 +992,7 @@ impl<F: Functions> FasterKv<F> {
         input: &F::Input,
         output: &mut F::Output,
         context: F::Context,
-    ) -> OperationStatus {
+    ) -> OperationOutcome<F::Context> {
         let mut guard = session.begin_unsafe();
         sim_yield!("rmw::after_epoch_protect");
         let ctx = InternalContext {
@@ -974,7 +1000,7 @@ impl<F: Functions> FasterKv<F> {
             allocator: &self.allocator,
             on_alloc_failure: Some(&|| self.maintenance()),
         };
-        let status = internal_rmw(
+        let (status, recovered_ctx) = internal_rmw(
             &ctx,
             guard.session_mut(),
             &self.functions,
@@ -988,8 +1014,13 @@ impl<F: Functions> FasterKv<F> {
         metrics_inc!(self.metrics, total_operations);
         if status == OperationStatus::Pending {
             self.dispatch_pending_io(session);
+            OperationOutcome::pending()
+        } else {
+            OperationOutcome::completed(
+                status,
+                recovered_ctx.expect("context must be returned on non-Pending path"),
+            )
         }
-        status
     }
 
     /// Delete a key.
@@ -1000,15 +1031,20 @@ impl<F: Functions> FasterKv<F> {
     ///
     /// # Returns
     ///
+    /// An [`OperationOutcome`] whose status is one of:
+    ///
     /// - [`OperationStatus::Deleted`] — key deleted successfully.
     /// - [`OperationStatus::NotFound`] — key does not exist.
     /// - [`OperationStatus::Pending`] — record is on disk; queued for async I/O.
+    ///
+    /// On non-Pending paths the context is returned inside the outcome so
+    /// the caller can reuse it (e.g., retry on Aborted).
     pub fn delete(
         &self,
         session: &mut FasterSession<F>,
         key: &F::Key,
         context: F::Context,
-    ) -> OperationStatus {
+    ) -> OperationOutcome<F::Context> {
         let mut guard = session.begin_unsafe();
         sim_yield!("delete::after_epoch_protect");
         let ctx = InternalContext {
@@ -1016,13 +1052,19 @@ impl<F: Functions> FasterKv<F> {
             allocator: &self.allocator,
             on_alloc_failure: Some(&|| self.maintenance()),
         };
-        let status = internal_delete(&ctx, guard.session_mut(), &self.functions, key, context);
+        let (status, recovered_ctx) =
+            internal_delete(&ctx, guard.session_mut(), &self.functions, key, context);
         drop(guard);
         metrics_inc!(self.metrics, total_operations);
         if status == OperationStatus::Pending {
             self.dispatch_pending_io(session);
+            OperationOutcome::pending()
+        } else {
+            OperationOutcome::completed(
+                status,
+                recovered_ctx.expect("context must be returned on non-Pending path"),
+            )
         }
-        status
     }
 
     // ── Pending I/O Completion ──────────────────────────────────────
@@ -1637,7 +1679,10 @@ impl<F: Functions> FasterKv<F> {
         // the cliff where all writers stall simultaneously at 100%.
         let eager_flush = info.in_memory_pages() * 4 >= buffer_size * 3;
 
-        if buffer_pressure || eager_flush || info.needs_read_only_shift(self.allocator.mutable_fraction_pages()) {
+        if buffer_pressure
+            || eager_flush
+            || info.needs_read_only_shift(self.allocator.mutable_fraction_pages())
+        {
             self.allocator.shift_read_only_to_tail();
         }
 
@@ -1665,7 +1710,8 @@ impl<F: Functions> FasterKv<F> {
 
         // 3. Evict if the in-memory footprint exceeds the policy threshold,
         //    the buffer is under pressure, or we've hit the eager flush watermark.
-        if buffer_pressure || eager_flush || self.evictor.needs_eviction(&self.allocator.snapshot()) {
+        if buffer_pressure || eager_flush || self.evictor.needs_eviction(&self.allocator.snapshot())
+        {
             if self.config.lossy {
                 // Lossy mode: evict, advance begin_address, truncate device,
                 // and invalidate stale hash entries in a single step.

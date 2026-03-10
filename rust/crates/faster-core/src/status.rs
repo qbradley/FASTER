@@ -371,6 +371,160 @@ impl<T> OperationResult<T> {
     }
 }
 
+// ── OperationOutcome ────────────────────────────────────────────────
+
+/// The outcome of a FASTER operation that consumed a context value.
+///
+/// Operations take `context: F::Context` by value.  When the record is on
+/// disk the context is consumed (moved into the pending-I/O queue and later
+/// returned via [`complete_pending`]).  On every other code-path — success,
+/// not-found, **or aborted** — the context is unused and returned here so
+/// the caller can reuse it (e.g., retry on [`Aborted`]).
+///
+/// This follows the same pattern as [`std::sync::mpsc::Sender::send`],
+/// which returns `SendError<T>` containing the unsent value on failure.
+///
+/// [`Aborted`]: OperationStatus::Aborted
+/// [`complete_pending`]: crate::store::FasterKv::complete_pending
+///
+/// # Examples
+///
+/// ```
+/// use faster_core::status::{OperationOutcome, OperationStatus};
+///
+/// // Successful upsert — context recovered, can be dropped or reused
+/// let outcome = OperationOutcome::completed(OperationStatus::Created, 42u64);
+/// assert!(outcome.is_success());
+/// assert_eq!(outcome.status(), OperationStatus::Created);
+/// assert_eq!(outcome.into_context(), Some(42));
+///
+/// // Pending — context consumed by the I/O pipeline
+/// let outcome: OperationOutcome<u64> = OperationOutcome::pending();
+/// assert!(outcome.is_pending());
+/// assert_eq!(outcome.into_context(), None);
+///
+/// // Aborted — recover context for retry
+/// let outcome = OperationOutcome::aborted(42u64);
+/// assert!(outcome.is_aborted());
+/// if let Some(ctx) = outcome.into_context() {
+///     // Retry the operation with `ctx`
+///     assert_eq!(ctx, 42);
+/// }
+/// ```
+#[derive(Debug)]
+#[must_use]
+pub struct OperationOutcome<C> {
+    /// The operation status code.
+    status: OperationStatus,
+    /// The caller's context, returned on all non-Pending paths.
+    ///
+    /// `None` **only** when `status == Pending` (context consumed by the
+    /// pending-I/O queue).
+    context: Option<C>,
+}
+
+impl<C> OperationOutcome<C> {
+    /// Create an outcome for a completed (non-pending) operation.
+    ///
+    /// The context is returned to the caller.
+    #[inline]
+    pub fn completed(status: OperationStatus, context: C) -> Self {
+        debug_assert_ne!(status, OperationStatus::Pending);
+        Self {
+            status,
+            context: Some(context),
+        }
+    }
+
+    /// Create an outcome for a pending (on-disk I/O) operation.
+    ///
+    /// The context has been consumed by the pending-I/O queue.
+    #[inline]
+    pub fn pending() -> Self {
+        Self {
+            status: OperationStatus::Pending,
+            context: None,
+        }
+    }
+
+    /// Convenience: create an `Aborted` outcome with the recovered context.
+    #[inline]
+    pub fn aborted(context: C) -> Self {
+        Self {
+            status: OperationStatus::Aborted,
+            context: Some(context),
+        }
+    }
+
+    /// Returns the operation status code.
+    #[inline]
+    pub fn status(&self) -> OperationStatus {
+        self.status
+    }
+
+    /// Consumes the outcome, returning the context if it was not consumed
+    /// by the pending-I/O queue.
+    #[inline]
+    pub fn into_context(self) -> Option<C> {
+        self.context
+    }
+
+    /// Decompose into `(status, Option<context>)`.
+    #[inline]
+    pub fn into_parts(self) -> (OperationStatus, Option<C>) {
+        (self.status, self.context)
+    }
+
+    // ── Delegation helpers ──────────────────────────────────────────
+
+    /// Returns `true` if the operation completed successfully.
+    #[inline]
+    pub fn is_success(&self) -> bool {
+        self.status.is_success()
+    }
+
+    /// Returns `true` if the operation is pending asynchronous I/O.
+    #[inline]
+    pub fn is_pending(&self) -> bool {
+        self.status.is_pending()
+    }
+
+    /// Returns `true` if the key was not found.
+    #[inline]
+    pub fn is_not_found(&self) -> bool {
+        self.status.is_not_found()
+    }
+
+    /// Returns `true` if the operation was aborted.
+    #[inline]
+    pub fn is_aborted(&self) -> bool {
+        self.status.is_aborted()
+    }
+}
+
+/// Compare an `OperationOutcome` directly against an `OperationStatus`.
+///
+/// This enables migration-friendly code:
+/// ```
+/// # use faster_core::status::{OperationOutcome, OperationStatus};
+/// let outcome = OperationOutcome::completed(OperationStatus::Created, ());
+/// // Old pattern still works via PartialEq:
+/// assert!(outcome == OperationStatus::Created);
+/// ```
+impl<C> PartialEq<OperationStatus> for OperationOutcome<C> {
+    #[inline]
+    fn eq(&self, other: &OperationStatus) -> bool {
+        self.status == *other
+    }
+}
+
+impl<C> fmt::Display for OperationOutcome<C> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.status.fmt(f)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

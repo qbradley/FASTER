@@ -310,7 +310,7 @@ fn disk_eviction_and_readback() {
     for i in 0..N {
         let mut out: Option<u64> = None;
         let status = store.read(&mut s, &i, &0u64, &mut out, ());
-        match status {
+        match status.status() {
             OperationStatus::Ok => {
                 assert_eq!(out, Some(i * 13), "value mismatch at key {i}");
                 ok_count += 1;

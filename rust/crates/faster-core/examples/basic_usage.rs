@@ -51,7 +51,7 @@ fn main() {
     // ── 4. Read ─────────────────────────────────────────────────────
     let mut output: Option<u64> = None;
     let status = store.read(&mut session, &42, &0, &mut output, ());
-    match status {
+    match status.status() {
         OperationStatus::Ok => {
             let val = output.expect("output should be Some on Ok");
             println!("Read key 42 → value {val}");

@@ -1,10 +1,10 @@
 //! Mutation-testing gap-fill tests for `store/builder.rs`, `store/batch.rs`,
 //! and `store/pending_io.rs`.
 
-use faster_core::device::NullDevice;
-use faster_core::hybrid_log::EvictionPolicy;
 use faster_core::InMemoryDevice;
+use faster_core::device::NullDevice;
 use faster_core::grow::GrowConfig;
+use faster_core::hybrid_log::EvictionPolicy;
 use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
 
 // ===========================================================================
@@ -26,7 +26,7 @@ fn builder_eviction_policy_applied() {
             .expect("valid config");
 
     let mut session = store.new_session();
-    store.upsert(&mut session, &1u64, &100u64, ());
+    let _ = store.upsert(&mut session, &1u64, &100u64, ());
     store.dispose_session(session);
 }
 
@@ -41,7 +41,7 @@ fn builder_grow_chunks_per_operation_applied() {
             .expect("valid config with custom grow chunks");
 
     let mut session = store.new_session();
-    store.upsert(&mut session, &1u64, &100u64, ());
+    let _ = store.upsert(&mut session, &1u64, &100u64, ());
     store.dispose_session(session);
 }
 
@@ -56,7 +56,7 @@ fn builder_grow_enabled_false() {
             .expect("valid config with grow disabled");
 
     let mut session = store.new_session();
-    store.upsert(&mut session, &1u64, &100u64, ());
+    let _ = store.upsert(&mut session, &1u64, &100u64, ());
     store.dispose_session(session);
 }
 
@@ -66,7 +66,10 @@ fn builder_grow_enabled_false() {
 
 fn large_store() -> FasterKv<SimpleFunctions<u64, u64>> {
     let config = FasterKvConfig {
-        grow_config: GrowConfig { enabled: false, ..Default::default() },
+        grow_config: GrowConfig {
+            enabled: false,
+            ..Default::default()
+        },
         hash_index_size_log2: 12,
         buffer_size_pages: 16,
         mutable_fraction: 0.9,
