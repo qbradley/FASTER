@@ -257,7 +257,10 @@ fn eviction_policy_default_values() {
         policy.max_in_memory_pages, 256,
         "default max_in_memory_pages"
     );
-    assert_eq!(policy.eviction_batch_size, 4, "default eviction_batch_size");
+    assert_eq!(
+        policy.eviction_batch_size, 16,
+        "default eviction_batch_size"
+    );
 }
 
 #[test]
