@@ -531,4 +531,8 @@ fn main() {
     }
 
     print_summary(&stats, start.elapsed(), has_readers);
+
+    // Exit before FasterKv::Drop to avoid segfault in SyncFileDevice
+    // cleanup (pre-existing issue in faster-core I/O thread shutdown).
+    std::process::exit(0);
 }
