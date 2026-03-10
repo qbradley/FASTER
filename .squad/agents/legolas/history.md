@@ -18,6 +18,12 @@
 
 ## Learnings
 <!-- Append new learnings -->
+- **Multi-writer permanent stall (FASTER core bug)**: With 2+ writers doing linear (all-new-key) upserts, the system permanently stalls after filling the circular buffer. Root cause is a 3-point deadlock: (1) SF-10 check in `log_allocator.rs:313-320` blocks writers when `tail_page >= head_page + buffer_size`, (2) head only advances contiguously past Flushed pages (`eviction.rs:171`), (3) device back-pressure (`flush.rs:379`) reverts pages to Sealed and breaks the flush loop early, leaving unflushed pages blocking head advancement. **This is a core library issue, not a sample bug.**
+- **io_uring vs SyncFileDevice throughput**: On this VM (1.3 GB/s disk write bandwidth), io_uring peaks ~24% higher than sync (270K vs 231K ops/s) in the first 60 seconds but degrades under sustained 5-minute load, ending ~23% slower than sync overall (167K vs 218K avg ops/s). The uring completion processing appears to create contention with the eviction pipeline over time.
+- **Wrap-around throughput degradation**: With a smaller buffer (1GB log, 256MB in-memory, 32 buffer pages), single-writer throughput degrades ~28% after the log wraps around (206K → 146K peak→end ops/s over 5 minutes). The 4GB log, 512MB in-memory config (64 buffer pages) is stable at ~218K/s.
+- **Maintenance thread interval matters**: Reducing maintenance thread sleep from 5ms to 1ms actually HURTS single-writer sync throughput by ~38% (218K → 135K ops/s) due to CPU contention with the I/O thread pool. Keep at 5ms.
+- **Disk bandwidth utilization**: Single-writer page-cache achieves 852 MB/s (66% of raw 1285 MB/s disk write bandwidth). The gap is overhead from record headers, hash table operations, and the flush pipeline.
+- **FasterKv uses `impl Device`, not `Box<dyn Device>`**: Device backend must be instantiated with concrete type in each match arm — can't use trait objects. Match arm returns `Arc<FasterKv<F>>` directly.
 - **Shared working directory hazard**: Multiple agents modify the same files. `git checkout -- <file>` wipes ALL uncommitted changes. Always stage + commit immediately.
 - **Atomic commit workflow**: edit → stage → commit in rapid succession. Never leave changes unstaged.
 - **Criterion baseline structure**: Criterion stores baselines *inside* each benchmark directory (e.g., `target/criterion/<bench_name>/<baseline_name>/estimates.json`), not in a flat directory. Scripts must traverse all benchmark dirs to check for baseline existence.
@@ -151,3 +157,30 @@ Built the release benchmarking layer on top of Wave 2's comparison scripts.
 - **Arwen (agent-147):** Documentation audit rated project 7.5/10. P0 gaps include missing sample crate READMEs.
 - **Gandalf (agent-148):** Release pipeline live — tag format `rust-v{version}`, 5 publishable crates. semver-checks added to CI.
 - **Boromir (agent-150):** `rust/scripts/release-gate` integrates your `bench-release-compare.sh` in Tier 3. Run `release-gate --tier 3` for deep validation including bench regression.
+
+---
+
+### Disk Throughput Stress Test — page-cache Sample (2026-03-10)
+**Branch:** `legolas/page-cache-perf`
+
+Comprehensive disk I/O benchmarking of the new `page-cache` sample crate with 4KB page writes to FASTER's hybrid log.
+
+**Disk Baseline:** Sequential write 1,285 MB/s, read 4,286 MB/s.
+
+**Results (4GB log, 512MB in-memory, linear distribution, 5 min):**
+
+| Config | ops/s | MB/s | % Disk BW | Notes |
+|--------|-------|------|-----------|-------|
+| 1 writer, sync | 218,166 | 852 | 66% | Stable throughput, 2,187 errors |
+| 1 writer, uring | 167,050 | 653 | 51% | Peaks 270K/s then degrades |
+| 2 writers, sync | STALLED | ~14 | 1% | Permanent stall after initial burst |
+| Wrap-around (1GB log) | 144,488 | 564 | 44% | 28% degradation over 5 min |
+
+**Critical Bug Found:** Multi-writer permanent stall — 3-point deadlock in faster-core:
+1. SF-10 buffer overflow check (`log_allocator.rs:313-320`) blocks writers
+2. Head only advances contiguously past Flushed pages (`eviction.rs:171`)
+3. Device back-pressure (`flush.rs:379`) reverts pages to Sealed, breaking flush loop
+
+**Code Change:** Added `--device sync|uring` CLI flag to page-cache sample for I/O backend comparison. Also adds `--uring-queue-depth` for io_uring tuning.
+
+**Key Insight:** We're NOT saturating disk I/O — 66% utilization at best. The bottleneck is the flush/evict pipeline, not the disk. The multi-writer deadlock makes >1 writer unusable with linear (all-new-key) distribution.
