@@ -20,6 +20,9 @@
 ## Learnings
 <!-- Append new learnings -->
 - Multiple concurrent agents sharing working tree creates constant conflicts — stage immediately.
+- In lossy mode, maintenance() can evict pages between find_record_for_key (chain walk) and the subsequent get_record call. Never .expect() on get_record results in the read/rmw/delete hot paths — always handle None gracefully.
+- The epoch protection comment in find_record_for_key was misleading: epoch guards don't prevent eviction when a separate maintenance thread drives lossy eviction concurrently. Snapshot-based classification is advisory, not a guarantee.
+- Three operation paths were affected by the same race: internal_read (NotFound), internal_rmw FuzzyRegion/ReadOnly (Aborted), internal_delete FuzzyRegion/ReadOnly (NotFound). The Mutable paths already had proper None handling.
 - EvictionPolicy::default() has max_in_memory_pages=256; never triggers eviction for small buffers. Must set explicitly for disk-heavy workloads.
 - FASTER's flush pipeline is async (Sealed→Flushing→Flushed). Buffer needs 4x target_pages headroom so the tail doesn't lap the head while waiting for I/O callbacks.
 - A dedicated maintenance thread (5ms interval) is essential for sustained writes beyond the buffer — writer retry loops alone can't pump the flush/evict pipeline fast enough.
