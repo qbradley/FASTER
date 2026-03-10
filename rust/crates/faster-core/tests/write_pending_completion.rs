@@ -72,22 +72,22 @@ impl Value for BigVal {
     }
 }
 
-/// Number of records to fill ~5 pages and force eviction.
+/// Number of records to fill enough pages and force eviction.
 /// Each page = 32 MiB, each record ≈ 4 KiB → ~8192 records/page.
-/// 5 pages × 8192 ≈ 40960 records.
-const RECORD_COUNT: u64 = 42_000;
+/// With buffer_size_pages=4 and max_in_memory_pages=2, ~3 pages triggers eviction.
+const RECORD_COUNT: u64 = 25_000;
 
 /// Create an in-memory-device-backed store with BigVal values.
 fn test_store() -> FasterKv<SimpleFunctions<u64, BigVal>> {
     let config = FasterKvConfig {
         grow_config: GrowConfig::default(),
-        hash_index_size_log2: 18, // 256K buckets (smaller — fewer keys)
-        buffer_size_pages: 8,
+        hash_index_size_log2: 16, // 64K buckets
+        buffer_size_pages: 4,
         mutable_fraction: 0.5,
         sector_size: 512,
         eviction_policy: EvictionPolicy {
-            max_in_memory_pages: 4,
-            eviction_batch_size: 4,
+            max_in_memory_pages: 2,
+            eviction_batch_size: 2,
         },
         auto_compact: false,
         lossy: false,

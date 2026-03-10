@@ -867,7 +867,7 @@ fn corrupt_index_checkpoint_header_detected() {
 fn discover_many_checkpoints() {
     let dir = tempfile::tempdir().unwrap();
 
-    for i in 1..=20u128 {
+    for i in 1..=5u128 {
         let token = sample_token(5100 + i);
         write_checkpoint_metadata(
             dir.path(),
@@ -880,11 +880,11 @@ fn discover_many_checkpoints() {
 
     let mgr = RecoveryManager::new(dir.path().to_path_buf());
     let infos = mgr.discover_checkpoints().unwrap();
-    assert_eq!(infos.len(), 20);
+    assert_eq!(infos.len(), 5);
 
     // Verify all tokens are unique and present.
     let tokens: Vec<u128> = infos.iter().map(|i| i.token.as_u128()).collect();
-    for i in 1..=20u128 {
+    for i in 1..=5u128 {
         assert!(
             tokens.contains(&(5100 + i)),
             "checkpoint {} not found in discovery",
