@@ -20,6 +20,11 @@
 ## Learnings
 <!-- Append new learnings -->
 - `log` crate added as non-optional dep for compaction runtime warnings.
+- Mutation testing: cargo-mutants config must be at `.cargo/mutants.toml`; use `--no-config` to bypass `examine_globs`.
+- Mutation testing: `-F` is substring match — use full path like `"hybrid_log/flush.rs"`.
+- Mutation testing: exclude pre-existing failures with `--cargo-test-arg="-E" --cargo-test-arg="not (test(...) | binary(...))"`.
+- Equivalent mutant patterns: Display/Debug impls, Drop impls (leak not detectable), const bitshifts (type system catches), page-boundary alignment with redundant safety paths.
+- 32MB page size (OFFSET_BITS=25) makes page-fill tests impractical — 1.4M records for one page.
 - release-gate `run_check()` and `run_check_warn()` now always show command, tail output, and "To reproduce:" on failure — never hide diagnostics behind `--verbose`.
 - Loom and Miri checks are advisory (`run_check_warn`) because no loom compatibility layer or miri-annotated tests exist yet. Promote to `run_check` once those are implemented.
 - Report markdown detail column includes the repro command (e.g., `exit 101 — \`cmd\``) instead of bare exit codes.
@@ -124,3 +129,19 @@ Built the unified release gate validation script integrating all 4 tiers.
 - **Arwen (agent-147):** Tier 4 checks changelog (`rust/CHANGELOG.md` she created). Keep it updated each release.
 - **Gandalf (agent-148):** Tier 4 runs semver-checks (he added to CI) and validates packaging/Cargo.toml metadata. Release workflow: `release-gate all` before tagging with `rust-v*`.
 - **Legolas (agent-149):** Tier 3 calls `bench-release-compare.sh`. Record a baseline with `bench-record-baseline.sh` before running Tier 3.
+
+---
+
+### Mutation Testing Campaign — hybrid_log Module (2026-03-10)
+**Branch:** `boromir/mutation-testing-hybrid-log`
+
+Systematic cargo-mutants campaign across all 8 files in `hybrid_log/` module (5,491 LOC, 399 mutants).
+
+**Artifacts:**
+- `tests/hybrid_log_mutation_tests.rs` (28 tests, ~1,050 lines) — targeted gap-fill tests
+- `.cargo/mutants.toml` — corrected config location for cargo-mutants
+- Decision: `boromir-mutation-hybrid-log.md`
+
+**Results:** 314 caught, 55 missed → 28 tests written, 19 triaged as equivalent. Effective kill rate: 100% for non-equivalent mutants. No bugs found — all gaps were test coverage only.
+
+**Key files tested:** flush.rs, eviction.rs, log_allocator.rs, page.rs, regions.rs, scan.rs, record_ops.rs, mod.rs.
