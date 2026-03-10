@@ -126,6 +126,7 @@ fn varlen_store() -> FasterKv<VarLenFunctions> {
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         auto_compact: false,
+        lossy: false,
     };
     FasterKv::new(config, VarLenFunctions, InMemoryDevice::new())
 }
@@ -140,6 +141,7 @@ fn large_varlen_store() -> FasterKv<VarLenFunctions> {
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         auto_compact: false,
+        lossy: false,
     };
     FasterKv::new(config, VarLenFunctions, InMemoryDevice::new())
 }
@@ -157,6 +159,7 @@ fn tiny_buffer_varlen_store() -> FasterKv<VarLenFunctions> {
             eviction_batch_size: 2,
         },
         auto_compact: false,
+        lossy: false,
     };
     FasterKv::new(config, VarLenFunctions, InMemoryDevice::new())
 }
@@ -387,6 +390,7 @@ fn many_keys_same_bucket_variable_length() {
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         auto_compact: false,
+        lossy: false,
     };
     let store = FasterKv::new(config, VarLenFunctions, InMemoryDevice::new());
     let mut s = store.new_session();
@@ -696,6 +700,7 @@ fn concurrent_varlen_upsert_disjoint_keys() {
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         auto_compact: false,
+        lossy: false,
     };
     let store = Arc::new(FasterKv::new(
         config,
@@ -756,6 +761,7 @@ fn concurrent_varlen_mixed_workload() {
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         auto_compact: false,
+        lossy: false,
     };
     let store = Arc::new(FasterKv::new(
         config,
@@ -834,6 +840,7 @@ fn concurrent_maintenance_with_varlen() {
             eviction_batch_size: 2,
         },
         auto_compact: false,
+        lossy: false,
     };
     let store = Arc::new(FasterKv::new(
         config,
@@ -1010,6 +1017,7 @@ fn tiny_hash_table_varlen_stress() {
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         auto_compact: false,
+        lossy: false,
     };
     let store = FasterKv::new(config, VarLenFunctions, InMemoryDevice::new());
     let mut s = store.new_session();

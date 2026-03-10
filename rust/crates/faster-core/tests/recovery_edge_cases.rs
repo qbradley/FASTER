@@ -639,6 +639,7 @@ fn checkpoint_recover_write_checkpoint_again() {
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
             auto_compact: false,
+            lossy: false,
         };
         FasterKv::new(
             config,
@@ -673,6 +674,7 @@ fn checkpoint_recover_write_checkpoint_again() {
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
             auto_compact: false,
+            lossy: false,
         };
         FasterKv::new(
             config,
@@ -747,6 +749,7 @@ fn concurrent_compaction_and_checkpoint() {
         eviction_policy: EvictionPolicy::default(),
         grow_config: GrowConfig::default(),
         auto_compact: false,
+        lossy: false,
     };
     let store = Arc::new(FasterKv::new(config, SimpleFunctions::default(), device));
     let n = 200u64;
@@ -1016,6 +1019,7 @@ fn concurrent_checkpoint_calls_do_not_corrupt() {
         eviction_policy: EvictionPolicy::default(),
         grow_config: GrowConfig::default(),
         auto_compact: false,
+        lossy: false,
     };
     let store = Arc::new(FasterKv::new(config, SimpleFunctions::default(), device));
 

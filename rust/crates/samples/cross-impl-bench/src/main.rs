@@ -252,6 +252,7 @@ fn make_config(n: usize, buffer_pages: usize) -> FasterKvConfig {
         eviction_policy: EvictionPolicy::default(),
         grow_config: faster_core::grow::GrowConfig::default(),
         auto_compact: false,
+        lossy: false,
     }
 }
 

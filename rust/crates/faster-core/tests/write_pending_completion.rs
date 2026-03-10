@@ -90,6 +90,7 @@ fn test_store() -> FasterKv<SimpleFunctions<u64, BigVal>> {
             eviction_batch_size: 4,
         },
         auto_compact: false,
+        lossy: false,
     };
     FasterKv::new(config, SimpleFunctions::default(), InMemoryDevice::new())
 }

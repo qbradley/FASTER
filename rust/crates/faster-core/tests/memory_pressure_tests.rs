@@ -57,6 +57,7 @@ fn pressure_store() -> FasterKv<SimpleFunctions<u64, u64>> {
             ..GrowConfig::default()
         },
         auto_compact: false,
+        lossy: false,
     };
     FasterKv::new(config, SimpleFunctions::default(), InMemoryDevice::new())
 }
@@ -77,6 +78,7 @@ fn pressure_counter_store() -> FasterKv<CounterFunctions<u64>> {
             ..GrowConfig::default()
         },
         auto_compact: false,
+        lossy: false,
     };
     FasterKv::new(config, CounterFunctions::new(), InMemoryDevice::new())
 }
@@ -94,6 +96,7 @@ fn saturated_hash_store() -> FasterKv<SimpleFunctions<u64, u64>> {
             ..GrowConfig::default()
         },
         auto_compact: false,
+        lossy: false,
     };
     FasterKv::new(config, SimpleFunctions::default(), InMemoryDevice::new())
 }
@@ -444,6 +447,7 @@ fn hybrid_log_concurrent_pressure() {
             ..GrowConfig::default()
         },
         auto_compact: false,
+        lossy: false,
     };
     let store = Arc::new(FasterKv::<SimpleFunctions<u64, u64>>::new(
         config,
@@ -589,6 +593,7 @@ fn checkpoint_under_memory_pressure() {
             ..GrowConfig::default()
         },
         auto_compact: false,
+        lossy: false,
     };
     let store = FasterKv::new(config, SimpleFunctions::default(), device);
     let mut s = store.new_session();
@@ -896,6 +901,7 @@ fn combined_pressure_concurrent() {
             ..GrowConfig::default()
         },
         auto_compact: false,
+        lossy: false,
     };
     let store = Arc::new(FasterKv::<SimpleFunctions<u64, u64>>::new(
         config,
@@ -1155,6 +1161,7 @@ fn pressure_with_null_device() {
             ..GrowConfig::default()
         },
         auto_compact: false,
+        lossy: false,
     };
     let store = FasterKv::new(config, SimpleFunctions::default(), NullDevice::new());
     let mut s = store.new_session();

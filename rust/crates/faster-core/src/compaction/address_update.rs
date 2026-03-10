@@ -274,6 +274,7 @@ mod tests {
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
             auto_compact: false,
+            lossy: false,
         };
         FasterKv::new(config, SimpleFunctions::default(), NullDevice::new())
     }

@@ -446,6 +446,7 @@ fn main() {
         },
         grow_config: GrowConfig::default(),
         auto_compact: false,
+        lossy: true,
     };
 
     let device_name = match args.device {

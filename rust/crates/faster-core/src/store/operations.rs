@@ -555,6 +555,21 @@ pub(crate) fn internal_upsert<F: Functions>(
             });
             OperationStatus::Pending
         }
+        AddressRegion::Truncated => {
+            // The record has been truncated (evicted past begin_address).
+            // Treat as a fresh insert via copy-to-tail: allocate a new
+            // record and CAS the stale hash entry to the new address.
+            upsert_copy_to_tail(
+                ctx,
+                functions,
+                key,
+                input,
+                &layout,
+                result.entry,
+                result.slot,
+                addr,
+            )
+        }
         _ => OperationStatus::Aborted,
     }
 }
@@ -931,6 +946,21 @@ pub(crate) fn internal_rmw<F: Functions>(
                 key_hash,
             });
             OperationStatus::Pending
+        }
+        AddressRegion::Truncated => {
+            // The record has been truncated (evicted past begin_address).
+            // Treat as a fresh initial insert: the old value is gone.
+            rmw_create_at_tail(
+                ctx,
+                functions,
+                key,
+                input,
+                output,
+                &layout,
+                result.entry,
+                result.slot,
+                addr,
+            )
         }
         _ => OperationStatus::Aborted,
     }
