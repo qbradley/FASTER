@@ -901,3 +901,156 @@ fn needs_flush_detects_unflushed_pages() {
         "should NOT need flush when all RO pages are flushed"
     );
 }
+
+// ===========================================================================
+// record_ops.rs — MutableRecordAccessor read-side methods & write_key
+// ===========================================================================
+
+/// Kill mutants on MutableRecordAccessor's read methods (record_info, key_ref,
+/// value_ref, as_slice, record_size) and write_key/write_value individual paths.
+///
+/// Existing tests only use write_full_record + RecordAccessor for reads.
+/// This test exercises the MutableRecordAccessor's own read interface.
+#[test]
+fn mutable_accessor_read_methods_and_individual_writes() {
+    use faster_core::hybrid_log::{HybridLogAllocator, LogRecordWriter};
+    use faster_core::record::{RecordInfo, RecordLayout};
+    use faster_core::address::LogicalAddress;
+
+    let alloc = HybridLogAllocator::new(4, 0.5, 512);
+    let writer = LogRecordWriter::new(&alloc);
+
+    let key: u64 = 0xDEAD_BEEF;
+    let value: u64 = 0xCAFE_BABE;
+    let layout = RecordLayout::for_kv(&key, &value);
+    let info = RecordInfo::new(LogicalAddress::ZERO, 42, false, true, false);
+
+    // Allocate a record — gives us a MutableRecordAccessor
+    let (_addr, mut acc) = writer.allocate_record(&key, &value).expect("alloc");
+
+    // Use individual write methods (kills write_key no-op + arithmetic mutants)
+    acc.write_record_info(&info);
+    acc.write_key(&key, &layout);
+    acc.write_value(&value, &layout);
+
+    // Read back through MutableRecordAccessor's own methods
+    // kills record_info -> Default::default() (line 225)
+    let ri = acc.record_info();
+    assert_eq!(ri.checkpoint_version(), 42);
+    assert!(ri.is_tombstone());
+
+    // kills key_ref mutations (line 256)
+    assert_eq!(acc.key_ref(&layout), &0xDEAD_BEEFu64.to_le_bytes());
+
+    // kills value_ref mutations (line 262)
+    assert_eq!(acc.value_ref(&layout), &0xCAFE_BABEu64.to_le_bytes());
+
+    // kills record_size -> 1 (line 282)
+    assert_eq!(acc.record_size(), layout.total_size() as u32);
+
+    // kills as_slice mutations (line 276) — verify slice contains header+key+value
+    let slice = acc.as_slice();
+    assert_eq!(slice.len(), layout.total_size());
+    // Key bytes should appear at key_offset
+    assert_eq!(
+        &slice[layout.key_offset()..layout.value_offset()],
+        &0xDEAD_BEEFu64.to_le_bytes()
+    );
+}
+
+/// Kill mutant: RecordAccessor::record_size() -> u32 with 0 or 1 (line 149).
+///
+/// Existing tests never call record_size() on RecordAccessor directly.
+#[test]
+fn record_accessor_record_size_returns_correct_value() {
+    use faster_core::hybrid_log::{HybridLogAllocator, LogRecordReader, LogRecordWriter};
+    use faster_core::record::{RecordInfo, RecordLayout};
+    use faster_core::address::LogicalAddress;
+
+    let alloc = HybridLogAllocator::new(4, 0.5, 512);
+    let writer = LogRecordWriter::new(&alloc);
+    let reader = LogRecordReader::new(&alloc);
+
+    let key: u64 = 1;
+    let value: u64 = 2;
+    let layout = RecordLayout::for_kv(&key, &value);
+    let info = RecordInfo::new(LogicalAddress::ZERO, 0, false, false, false);
+
+    let addr = writer.write_record(&info, &key, &value).expect("write");
+
+    let accessor = reader
+        .get_record(addr, layout.total_size() as u32)
+        .expect("get record");
+    assert_eq!(accessor.record_size(), layout.total_size() as u32);
+    // Also verify it's the correct non-trivial value (24 for u64/u64)
+    assert_eq!(accessor.record_size(), 24);
+}
+
+/// Kill mutant: MutableRecordAccessor::zero() replaced with () (line 328).
+#[test]
+fn mutable_accessor_zero_clears_record() {
+    use faster_core::hybrid_log::{HybridLogAllocator, LogRecordReader, LogRecordWriter};
+    use faster_core::record::{RecordInfo, RecordLayout};
+    use faster_core::address::LogicalAddress;
+
+    let alloc = HybridLogAllocator::new(4, 0.5, 512);
+    let writer = LogRecordWriter::new(&alloc);
+    let reader = LogRecordReader::new(&alloc);
+
+    let key: u64 = 0xFFFF_FFFF;
+    let value: u64 = 0xFFFF_FFFF;
+    let layout = RecordLayout::for_kv(&key, &value);
+    let info = RecordInfo::new(LogicalAddress::ZERO, 1, false, false, false);
+
+    let (addr, mut acc) = writer.allocate_record(&key, &value).expect("alloc");
+    acc.write_full_record(&info, &key, &value, &layout);
+
+    // Verify non-zero before zeroing
+    let ri = reader.read_record_info(addr).expect("read info");
+    assert_eq!(ri.checkpoint_version(), 1);
+
+    // Zero the record via a new mutable accessor
+    let ptr = alloc.get_physical_address(addr).expect("phys");
+    let mut mut_acc =
+        unsafe { faster_core::hybrid_log::MutableRecordAccessor::new(ptr, layout.total_size() as u32) };
+    mut_acc.zero();
+
+    // All bytes should now be zero
+    let zeroed_ri = reader.read_record_info(addr).expect("read info");
+    assert!(zeroed_ri.is_null(), "zeroed record should be null");
+    assert_eq!(zeroed_ri.checkpoint_version(), 0);
+}
+
+/// Kill mutant: read_header_and_match_key_varlen returns
+/// Some((Default::default(), true)) (line 547).
+#[test]
+fn read_header_and_match_key_varlen_returns_correct_info() {
+    use faster_core::hybrid_log::{HybridLogAllocator, LogRecordReader, LogRecordWriter};
+    use faster_core::record::RecordInfo;
+    use faster_core::address::LogicalAddress;
+
+    let alloc = HybridLogAllocator::new(4, 0.5, 512);
+    let writer = LogRecordWriter::new(&alloc);
+    let reader = LogRecordReader::new(&alloc);
+
+    let key: u64 = 42;
+    let value: u64 = 999;
+    let info = RecordInfo::new(LogicalAddress::ZERO, 7, false, true, false);
+
+    let addr = writer.write_record(&info, &key, &value).expect("write");
+
+    // Matching key — should return (info, true) with correct RecordInfo
+    let (ri, matched) = reader
+        .read_header_and_match_key_varlen(addr, &42u64)
+        .expect("read");
+    assert!(matched, "should match the written key");
+    assert_eq!(ri.checkpoint_version(), 7);
+    assert!(ri.is_tombstone());
+
+    // Non-matching key — should return (info, false)
+    let (ri2, matched2) = reader
+        .read_header_and_match_key_varlen(addr, &99u64)
+        .expect("read");
+    assert!(!matched2, "should not match a different key");
+    assert_eq!(ri2.checkpoint_version(), 7);
+}
