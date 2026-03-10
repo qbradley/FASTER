@@ -329,11 +329,11 @@ fn writer_thread(
                 stats.write_bytes.fetch_add(page_size as u64, Ordering::Relaxed);
                 break;
             } else {
-                // Aborted — run maintenance and retry
+                // Aborted — run maintenance and retry with short backoff
                 store.maintenance();
                 let _ = store.complete_pending(&mut session);
                 stats.write_errors.fetch_add(1, Ordering::Relaxed);
-                thread::sleep(Duration::from_millis(10));
+                thread::yield_now();
                 if shutdown.load(Ordering::Relaxed) {
                     break;
                 }
@@ -341,7 +341,7 @@ fn writer_thread(
         }
 
         op_count += 1;
-        if op_count % 256 == 0 {
+        if op_count % 64 == 0 {
             store.maintenance();
             let _ = store.complete_pending(&mut session);
         }
