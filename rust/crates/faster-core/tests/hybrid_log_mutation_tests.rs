@@ -119,6 +119,7 @@ fn flush_page_sync_open_page_returns_error() {
 /// seals them, and flushes. We verify the count is accurate by
 /// using the lower-level PageFlusher API on a manually prepared PageTable.
 #[test]
+#[ignore = "tier-2: fills 500K+ records to test page flush counting"]
 fn flush_sealed_pages_returns_exact_count() {
     // Use FasterKv to get a real allocator with sealed pages, then
     // call flush_sealed_pages and verify the count.
@@ -427,6 +428,7 @@ fn evict_and_truncate_no_eviction_no_truncation() {
 /// This exercises the `evict_and_truncate` path where evicted > 0 and
 /// the truncate offset calculation uses multiplication (page * page_size).
 #[test]
+#[ignore = "tier-2: fills 2M records to test real eviction + truncation"]
 fn evict_and_truncate_with_real_eviction() {
     use faster_core::grow::GrowConfig;
     use faster_core::hybrid_log::eviction::EvictionPolicy;
@@ -476,6 +478,7 @@ fn evict_and_truncate_with_real_eviction() {
 /// When a page is Flushed (not yet Evicted), head should still advance
 /// past it. With `&&`, head would stop at any single-state page.
 #[test]
+#[ignore = "tier-2: fills 2M records to test head advancement past flushed pages"]
 fn advance_head_past_flushed_pages() {
     use faster_core::grow::GrowConfig;
     use faster_core::hybrid_log::eviction::EvictionPolicy;
@@ -658,6 +661,7 @@ fn concurrent_page_advancement_correctness() {
 /// boundary would advance much more aggressively. This test verifies
 /// the mutable region size matches the configured fraction.
 #[test]
+#[ignore = "tier-2: fills 2M records to verify mutable fraction boundary"]
 fn mutable_fraction_pages_affects_ro_boundary() {
     use faster_core::grow::GrowConfig;
     use faster_core::hybrid_log::eviction::EvictionPolicy;
