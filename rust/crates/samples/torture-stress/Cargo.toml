@@ -1,0 +1,16 @@
+[package]
+name = "torture-stress"
+version = "0.1.0"
+description = "Comprehensive correctness torture-test for FASTER KV with a test oracle"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+faster-core = { path = "../../faster-core" }
+clap = { version = "4", features = ["derive"] }
+rand = "0.9"
+dashmap = "6"
+ctrlc = "3"
