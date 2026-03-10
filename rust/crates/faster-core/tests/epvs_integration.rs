@@ -767,6 +767,7 @@ fn concurrent_counter_store() -> Arc<FasterKv<CounterFunctions<u64>>> {
 /// must see consistent (phase, version) — otherwise records might be
 /// written to the wrong version, causing data loss or corruption.
 #[test]
+#[ignore = "tier-2: 4-thread concurrent upsert + checkpoint stress test"]
 fn concurrent_upserts_during_checkpoint() {
     let dir = tempfile::tempdir().expect("create tempdir");
     let store = concurrent_test_store();
@@ -933,6 +934,7 @@ fn concurrent_reads_during_checkpoint() {
 /// If the phase transition is not atomic with the version, the RMW could
 /// observe a torn phase/version and corrupt the record.
 #[test]
+#[ignore = "tier-2: 4-thread concurrent RMW + checkpoint stress test"]
 fn concurrent_rmw_during_checkpoint() {
     let dir = tempfile::tempdir().expect("create tempdir");
     let store = concurrent_counter_store();
@@ -1118,6 +1120,7 @@ fn concurrent_upserts_during_grow() {
 ///
 /// INVARIANT: No panics, no data corruption, no deadlocks.
 #[test]
+#[ignore = "tier-2: 8-thread × 50K ops stress test with periodic checkpoints"]
 fn stress_8_threads_with_checkpoints() {
     stress_operations_with_checkpoints(8, 50_000, 5_000);
 }

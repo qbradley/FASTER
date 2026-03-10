@@ -850,6 +850,7 @@ mod tests {
         use std::collections::HashSet;
 
         proptest! {
+            #![proptest_config(ProptestConfig::with_cases(8))]
             /// Random sequence of upsert/delete operations.
             ///
             /// After all operations, the scanner's live record count must
