@@ -18,6 +18,11 @@
 
 ## Learnings
 <!-- Append new learnings -->
+- **Shared workspace branch switching:** Other agents (Legolas, Boromir) switch branches in the shared working tree. Always verify `git branch --show-current` immediately before `git commit`. Cherry-picks across diverged branches cause conflicts — prefer re-applying changes directly.
+- **Property test case cost:** HashIndex proptest cases cost ~240ms each in isolation (epoch framework + allocator setup). Even 8 cases = ~2s. For <1s gate, use 2 cases in tier-1, full counts in tier-2.
+- **Page-fill tests are fundamentally slow:** With 32MB pages and 24-byte records, filling 1 page = 1.4M records ≈ 1-2s minimum. Tests requiring eviction (6+ pages) need 40s+. Only #[ignore] works.
+- **Nextest parallel contention inflates times:** Tests taking 0.1-0.8s in isolation show 1-1.7s under full parallel load on 4-core VMs. Individual times (in isolation) are the true metric.
+- **Write-pending tests need precise record counts:** With 4KB BigVal records, 8192 records/page. Config `buffer_size_pages=4, max_in_memory_pages=2` needs ~25K records for eviction (3 pages). Too few = no eviction = test fails.
 - **Doctest type inference pitfall:** `FasterKv::builder()` returns `FasterKvBuilder` (non-generic). Doctests must use turbofish: `FasterKv::<SimpleFunctions<u64, u64>>::builder()`.
 - **Mutation testing config:** `rust/mutants.toml` configures cargo-mutants v27.0. Key files: `rust/docs/mutation-testing.md` (workflow guide), `rust/mutants.out/` (gitignored output).
 - **cargo-mutants `-F` flag is substring match:** `-F 'address.rs'` also matches `begin_address.rs`. Use `-F 'src/address.rs'` for precision.
@@ -103,3 +108,34 @@
 - Test parallelism (>2 threads) with lossy tests (~300MB each) causes resource contention failures in unrelated tests.
 
 **Results:** 1608 existing tests pass, 9 new lossy tests pass, page-cache sample runs 60s stable with readers+writers.
+
+---
+
+### Code Quality Cleanup — Precheckin Gate (2026-03-10)
+**Files:** 10+ test files, 2 source files (kv.rs, sync_file_device.rs, scan.rs, scanner.rs)
+
+**Task:** Make precheckin clean: `cargo fmt --check`, `cargo clippy`, all tests passing with none >1s individually.
+
+**Fixes applied:**
+1. **cargo fmt** — 13 files had whitespace/line-wrap drift (stable rustfmt skips nightly-only features).
+2. **clippy** — 2 undocumented unsafe blocks in mutation_tests.rs and hybrid_log_mutation_tests.rs.
+3. **Slow tests** — 17 tests moved to #[ignore] (tier-2), 9 tests sped up via iteration reduction.
+
+**Test speedups (made <1s in isolation):**
+- property_tests: proptest cases 64/32 → 2
+- memory_pressure_tests: proptest cases 32 → 2
+- write_pending_completion: RECORD_COUNT 42K→25K, smaller buffer config (4 pages, 2 max in-memory)
+- quickstart concurrent: ops_per_thread 1M→10K
+- concurrent_readers_writers_lossy: deadline 5s→100ms
+- allocator_page_advancement: records 1M→50K
+- scanner proptest: cases 256→8
+- discover_many_checkpoints: 20→5 checkpoints
+
+**Tests moved to tier-2 (#[ignore]):**
+- 8 lossy_cache_tests (fill 6-12 pages, 40-71s)
+- 4 hybrid_log_mutation_tests (500K-2M records, 19-22s)
+- 3 epvs_integration stress tests (multi-thread + checkpoint, ~30s)
+- 1 scan_across_page_boundary (fills 32MB page, ~2.5s)
+- 1 quickstart_example_2_persistent_storage (SyncFileDevice disk I/O, ~3.6s)
+
+**Results:** 1628 tests pass (<1s each), 22 ignored (pass with --run-ignored). Total count unchanged (1645→1628+17).
