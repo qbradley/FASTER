@@ -1644,7 +1644,11 @@ impl<F: Functions> FasterKv<F> {
         let buffer_size = self.allocator.page_table().buffer_size() as u64;
         if in_memory_pages + 2 >= buffer_size {
             self.allocator.shift_read_only_to_tail();
-            self.evictor.evict_and_truncate(&self.allocator, self.device.as_ref());
+            if self.config.lossy {
+                self.evictor.evict_and_truncate(&self.allocator, self.device.as_ref());
+            } else {
+                self.evictor.evict_pages(&self.allocator);
+            }
         }
 
         // 2. Flush sealed pages to the device.
@@ -1667,8 +1671,7 @@ impl<F: Functions> FasterKv<F> {
                         .invalidate_entries_in_range(old_begin, new_begin);
                 }
             } else {
-                self.evictor
-                    .evict_and_truncate(&self.allocator, self.device.as_ref());
+                self.evictor.evict_pages(&self.allocator);
             }
         }
     }
