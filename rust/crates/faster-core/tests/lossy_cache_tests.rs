@@ -439,3 +439,322 @@ fn truncated_upsert_non_lossy() {
 
     store.dispose_session(session);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Regression tests for the reader-panic race condition (SF-reader-panic).
+//
+// The race: maintenance() advances begin_address and evicts pages while a
+// concurrent reader holds a stale snapshot. find_record_for_key returns a
+// valid address, but by the time get_record is called the page is gone.
+// Before the fix, this caused a panic at .expect() in internal_read,
+// internal_rmw, and internal_delete.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Aggressive concurrent read + eviction stress: 1 writer + 2 readers +
+/// rapid maintenance. This directly reproduces the page-cache sample
+/// configuration that triggered the original panic.
+#[test]
+fn reader_panic_regression_concurrent_eviction() {
+    // Use a tiny buffer so pages cycle very fast, maximizing the race window.
+    let config = FasterKvConfig {
+        hash_index_size_log2: 10, // small index → high collision rate → long chains
+        buffer_size_pages: 4,
+        mutable_fraction: 0.5,
+        sector_size: 512,
+        eviction_policy: EvictionPolicy {
+            max_in_memory_pages: 3,
+            eviction_batch_size: 2,
+        },
+        grow_config: GrowConfig {
+            enabled: false,
+            ..GrowConfig::default()
+        },
+        auto_compact: false,
+        lossy: true,
+    };
+    let store = Arc::new(FasterKv::<SimpleFunctions<u64, u64>>::new(
+        config,
+        SimpleFunctions::default(),
+        InMemoryDevice::new(),
+    ));
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let mut handles = Vec::new();
+
+    // Aggressive maintenance thread — no sleep between calls.
+    {
+        let store = Arc::clone(&store);
+        let shutdown = Arc::clone(&shutdown);
+        handles.push(thread::spawn(move || {
+            while !shutdown.load(Ordering::Relaxed) {
+                store.maintenance();
+                // No sleep — maximize eviction pressure.
+                thread::yield_now();
+            }
+        }));
+    }
+
+    // Writer: sequential linear keys → fills and wraps the log fast.
+    {
+        let store = Arc::clone(&store);
+        let shutdown = Arc::clone(&shutdown);
+        handles.push(thread::spawn(move || {
+            let mut session = store.new_session();
+            let mut key = 0u64;
+            while !shutdown.load(Ordering::Relaxed) {
+                loop {
+                    let status = store.upsert(&mut session, &key, &key, ());
+                    if status != OperationStatus::Aborted {
+                        break;
+                    }
+                    store.maintenance();
+                    let _ = store.complete_pending(&mut session);
+                }
+                key += 1;
+            }
+            store.dispose_session(session);
+        }));
+    }
+
+    // Two readers: sweep through all keys linearly (high chance of hitting
+    // an address that was just evicted by the maintenance thread).
+    for reader_id in 0..2u64 {
+        let store = Arc::clone(&store);
+        let shutdown = Arc::clone(&shutdown);
+        handles.push(thread::spawn(move || {
+            let mut session = store.new_session();
+            let mut key = reader_id * 1_000_000;
+            while !shutdown.load(Ordering::Relaxed) {
+                let mut output: Option<u64> = None;
+                let status = store.read(&mut session, &key, &0u64, &mut output, ());
+                // The fix: readers must NEVER panic. All three statuses are valid.
+                assert!(
+                    status == OperationStatus::Ok
+                        || status == OperationStatus::NotFound
+                        || status == OperationStatus::Pending,
+                    "reader {reader_id}: unexpected {status:?} for key {key}"
+                );
+                // If we got a value, verify it's not corrupted.
+                if status == OperationStatus::Ok {
+                    if let Some(v) = output {
+                        assert_eq!(v, key, "reader {reader_id}: corrupted value at key {key}");
+                    }
+                }
+                key = key.wrapping_add(1);
+                if key % 8192 == 0 {
+                    let _ = store.complete_pending(&mut session);
+                }
+            }
+            store.dispose_session(session);
+        }));
+    }
+
+    // Run for 500ms — enough for many eviction cycles on a fast machine.
+    thread::sleep(Duration::from_millis(500));
+    shutdown.store(true, Ordering::SeqCst);
+
+    for h in handles {
+        h.join()
+            .expect("thread panicked — race condition regression!");
+    }
+}
+
+/// RMW + concurrent eviction: rmw_need_copy_update reads the old value
+/// from a potentially-evicted page.
+#[test]
+fn rmw_no_panic_under_concurrent_eviction() {
+    let config = FasterKvConfig {
+        hash_index_size_log2: 10,
+        buffer_size_pages: 4,
+        mutable_fraction: 0.5,
+        sector_size: 512,
+        eviction_policy: EvictionPolicy {
+            max_in_memory_pages: 3,
+            eviction_batch_size: 2,
+        },
+        grow_config: GrowConfig {
+            enabled: false,
+            ..GrowConfig::default()
+        },
+        auto_compact: false,
+        lossy: true,
+    };
+    let store = Arc::new(FasterKv::new(
+        config,
+        faster_core::store::CounterFunctions::default(),
+        InMemoryDevice::new(),
+    ));
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let mut handles = Vec::new();
+
+    // Maintenance thread.
+    {
+        let store = Arc::clone(&store);
+        let shutdown = Arc::clone(&shutdown);
+        handles.push(thread::spawn(move || {
+            while !shutdown.load(Ordering::Relaxed) {
+                store.maintenance();
+                thread::yield_now();
+            }
+        }));
+    }
+
+    // RMW writer: increments counters for linear keys.
+    {
+        let store = Arc::clone(&store);
+        let shutdown = Arc::clone(&shutdown);
+        handles.push(thread::spawn(move || {
+            let mut session = store.new_session();
+            let mut key = 0u64;
+            while !shutdown.load(Ordering::Relaxed) {
+                let mut rmw_output: i64 = 0;
+                let status = store.rmw(&mut session, &key, &1i64, &mut rmw_output, ());
+                // Any non-panicking status is acceptable under eviction pressure.
+                assert!(
+                    status.is_success()
+                        || status == OperationStatus::Aborted
+                        || status == OperationStatus::Pending
+                        || status == OperationStatus::NotFound,
+                    "rmw returned unexpected {status:?} for key {key}"
+                );
+                key += 1;
+                if key % 4096 == 0 {
+                    store.maintenance();
+                    let _ = store.complete_pending(&mut session);
+                }
+            }
+            store.dispose_session(session);
+        }));
+    }
+
+    // Concurrent reader.
+    {
+        let store = Arc::clone(&store);
+        let shutdown = Arc::clone(&shutdown);
+        handles.push(thread::spawn(move || {
+            let mut session = store.new_session();
+            let mut key = 0u64;
+            while !shutdown.load(Ordering::Relaxed) {
+                let mut output: i64 = 0;
+                let status = store.read(&mut session, &key, &0i64, &mut output, ());
+                assert!(
+                    status == OperationStatus::Ok
+                        || status == OperationStatus::NotFound
+                        || status == OperationStatus::Pending,
+                    "read during rmw+eviction: unexpected {status:?} for key {key}"
+                );
+                key = key.wrapping_add(1);
+                if key % 8192 == 0 {
+                    let _ = store.complete_pending(&mut session);
+                }
+            }
+            store.dispose_session(session);
+        }));
+    }
+
+    thread::sleep(Duration::from_millis(500));
+    shutdown.store(true, Ordering::SeqCst);
+
+    for h in handles {
+        h.join().expect("thread panicked — rmw+eviction race!");
+    }
+}
+
+/// Delete + concurrent eviction: ensures the delete path's value read
+/// from FuzzyRegion/ReadOnly doesn't panic on evicted pages.
+#[test]
+fn delete_no_panic_under_concurrent_eviction() {
+    let config = FasterKvConfig {
+        hash_index_size_log2: 10,
+        buffer_size_pages: 4,
+        mutable_fraction: 0.5,
+        sector_size: 512,
+        eviction_policy: EvictionPolicy {
+            max_in_memory_pages: 3,
+            eviction_batch_size: 2,
+        },
+        grow_config: GrowConfig {
+            enabled: false,
+            ..GrowConfig::default()
+        },
+        auto_compact: false,
+        lossy: true,
+    };
+    let store = Arc::new(FasterKv::<SimpleFunctions<u64, u64>>::new(
+        config,
+        SimpleFunctions::default(),
+        InMemoryDevice::new(),
+    ));
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let mut handles = Vec::new();
+
+    // Maintenance thread.
+    {
+        let store = Arc::clone(&store);
+        let shutdown = Arc::clone(&shutdown);
+        handles.push(thread::spawn(move || {
+            while !shutdown.load(Ordering::Relaxed) {
+                store.maintenance();
+                thread::yield_now();
+            }
+        }));
+    }
+
+    // Writer: upserts keys.
+    {
+        let store = Arc::clone(&store);
+        let shutdown = Arc::clone(&shutdown);
+        handles.push(thread::spawn(move || {
+            let mut session = store.new_session();
+            let mut key = 0u64;
+            while !shutdown.load(Ordering::Relaxed) {
+                loop {
+                    let status = store.upsert(&mut session, &key, &key, ());
+                    if status != OperationStatus::Aborted {
+                        break;
+                    }
+                    store.maintenance();
+                    let _ = store.complete_pending(&mut session);
+                }
+                key += 1;
+                if key % 4096 == 0 {
+                    store.maintenance();
+                    let _ = store.complete_pending(&mut session);
+                }
+            }
+            store.dispose_session(session);
+        }));
+    }
+
+    // Deleter: deletes keys that were recently written.
+    {
+        let store = Arc::clone(&store);
+        let shutdown = Arc::clone(&shutdown);
+        handles.push(thread::spawn(move || {
+            let mut session = store.new_session();
+            let mut key = 0u64;
+            while !shutdown.load(Ordering::Relaxed) {
+                let status = store.delete(&mut session, &key, ());
+                assert!(
+                    status == OperationStatus::Deleted
+                        || status == OperationStatus::NotFound
+                        || status == OperationStatus::Aborted
+                        || status == OperationStatus::Pending,
+                    "delete during eviction: unexpected {status:?} for key {key}"
+                );
+                key += 1;
+                if key % 4096 == 0 {
+                    store.maintenance();
+                    let _ = store.complete_pending(&mut session);
+                }
+            }
+            store.dispose_session(session);
+        }));
+    }
+
+    thread::sleep(Duration::from_millis(500));
+    shutdown.store(true, Ordering::SeqCst);
+
+    for h in handles {
+        h.join().expect("thread panicked — delete+eviction race!");
+    }
+}
