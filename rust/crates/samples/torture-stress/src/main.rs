@@ -287,6 +287,7 @@ struct ThreadStats {
     reads: AtomicU64,
     rmws: AtomicU64,
     deletes: AtomicU64,
+    aborted: AtomicU64,
     oracle_checks: AtomicU64,
     oracle_violations: AtomicU64,
     bytes_written: AtomicU64,
@@ -300,6 +301,7 @@ impl ThreadStats {
             reads: AtomicU64::new(0),
             rmws: AtomicU64::new(0),
             deletes: AtomicU64::new(0),
+            aborted: AtomicU64::new(0),
             oracle_checks: AtomicU64::new(0),
             oracle_violations: AtomicU64::new(0),
             bytes_written: AtomicU64::new(0),
@@ -523,6 +525,7 @@ fn do_upsert(
     key: u64,
     value_size: usize,
     rng: &mut SmallRng,
+    stats: &ThreadStats,
 ) -> usize {
     let seed: u64 = rng.random();
     let payload_len = value_size.saturating_sub(SEED_SIZE);
@@ -546,6 +549,9 @@ fn do_upsert(
 
     if status == OperationStatus::Pending {
         let _ = store.complete_pending(session);
+    }
+    if status.is_aborted() {
+        stats.aborted.fetch_add(1, Ordering::Relaxed);
     }
     byte_len
 }
@@ -573,6 +579,9 @@ fn do_read(
     if status == OperationStatus::Pending {
         let _ = state.store.complete_pending(session);
     }
+    if status.is_aborted() {
+        state.stats.aborted.fetch_add(1, Ordering::Relaxed);
+    }
 
     let bytes = output.value.as_ref().map_or(0, |v| v.len());
 
@@ -599,6 +608,7 @@ fn do_rmw(
     key: u64,
     value_size: usize,
     rng: &mut SmallRng,
+    stats: &ThreadStats,
 ) -> usize {
     let new_seed: u64 = rng.random();
     let payload_len = value_size.saturating_sub(SEED_SIZE);
@@ -624,6 +634,9 @@ fn do_rmw(
     if status == OperationStatus::Pending {
         let _ = store.complete_pending(session);
     }
+    if status.is_aborted() {
+        stats.aborted.fetch_add(1, Ordering::Relaxed);
+    }
     SEED_SIZE + payload_len
 }
 
@@ -632,6 +645,7 @@ fn do_delete(
     session: &mut FasterSession<TortureTestFunctions>,
     oracle: &DashMap<u64, OracleEntry>,
     key: u64,
+    stats: &ThreadStats,
 ) {
     oracle.entry(key).and_modify(|e| {
         e.deleted = true;
@@ -639,9 +653,13 @@ fn do_delete(
     });
 
     let mut ctx = store.unsafe_context(session);
-    let _status = ctx.delete(store, &key, ());
+    let status = ctx.delete(store, &key, ());
     ctx.refresh();
     drop(ctx);
+
+    if status.is_aborted() {
+        stats.aborted.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 fn record_violation(state: &SharedState, kind: ViolationKind, key: u64, thread: &str, val: &[u8]) {
@@ -726,7 +744,7 @@ fn heavy_writer_fn(
 ) {
     let key = random_key(rng, state.args.key_space);
     let size = random_value_size(rng, 1024, state.args.max_value_size.max(1024));
-    let bytes = do_upsert(&state.store, session, &state.oracle, key, size, rng);
+    let bytes = do_upsert(&state.store, session, &state.oracle, key, size, rng, &state.stats);
     state.stats.upserts.fetch_add(1, Ordering::Relaxed);
     state
         .stats
@@ -742,7 +760,7 @@ fn light_writer_fn(
 ) {
     let key = random_key(rng, state.args.key_space);
     let size = random_value_size(rng, state.args.min_value_size, 256);
-    let bytes = do_upsert(&state.store, session, &state.oracle, key, size, rng);
+    let bytes = do_upsert(&state.store, session, &state.oracle, key, size, rng, &state.stats);
     state.stats.upserts.fetch_add(1, Ordering::Relaxed);
     state
         .stats
@@ -790,7 +808,7 @@ fn mixed_worker_fn(
     if roll < 0.4 {
         // upsert
         let size = random_value_size(rng, state.args.min_value_size, state.args.max_value_size);
-        let bytes = do_upsert(&state.store, session, &state.oracle, key, size, rng);
+        let bytes = do_upsert(&state.store, session, &state.oracle, key, size, rng, &state.stats);
         state.stats.upserts.fetch_add(1, Ordering::Relaxed);
         state
             .stats
@@ -807,7 +825,7 @@ fn mixed_worker_fn(
     } else if roll < 0.9 {
         // rmw
         let size = random_value_size(rng, state.args.min_value_size, state.args.max_value_size);
-        let bytes = do_rmw(&state.store, session, &state.oracle, key, size, rng);
+        let bytes = do_rmw(&state.store, session, &state.oracle, key, size, rng, &state.stats);
         state.stats.rmws.fetch_add(1, Ordering::Relaxed);
         state
             .stats
@@ -815,7 +833,7 @@ fn mixed_worker_fn(
             .fetch_add(bytes as u64, Ordering::Relaxed);
     } else {
         // delete
-        do_delete(&state.store, session, &state.oracle, key);
+        do_delete(&state.store, session, &state.oracle, key, &state.stats);
         state.stats.deletes.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -831,7 +849,7 @@ fn rmw_hammer_fn(
 
     if roll < 0.8 {
         let size = random_value_size(rng, state.args.min_value_size, state.args.max_value_size);
-        let bytes = do_rmw(&state.store, session, &state.oracle, key, size, rng);
+        let bytes = do_rmw(&state.store, session, &state.oracle, key, size, rng, &state.stats);
         state.stats.rmws.fetch_add(1, Ordering::Relaxed);
         state
             .stats
@@ -857,11 +875,11 @@ fn deleter_fn(
     let roll: f64 = rng.random();
 
     if roll < 0.5 {
-        do_delete(&state.store, session, &state.oracle, key);
+        do_delete(&state.store, session, &state.oracle, key, &state.stats);
         state.stats.deletes.fetch_add(1, Ordering::Relaxed);
     } else {
         let size = random_value_size(rng, state.args.min_value_size, state.args.max_value_size);
-        let bytes = do_upsert(&state.store, session, &state.oracle, key, size, rng);
+        let bytes = do_upsert(&state.store, session, &state.oracle, key, size, rng, &state.stats);
         state.stats.upserts.fetch_add(1, Ordering::Relaxed);
         state
             .stats
@@ -896,6 +914,7 @@ fn reporter_thread(state: Arc<SharedState>) {
         let r = state.stats.reads.load(Ordering::Relaxed);
         let m = state.stats.rmws.load(Ordering::Relaxed);
         let d = state.stats.deletes.load(Ordering::Relaxed);
+        let a = state.stats.aborted.load(Ordering::Relaxed);
         let total = u + r + m + d;
         let checks = state.stats.oracle_checks.load(Ordering::Relaxed);
         let violations = state.stats.oracle_violations.load(Ordering::Relaxed);
@@ -942,7 +961,7 @@ fn reporter_thread(state: Arc<SharedState>) {
         };
 
         eprintln!(
-            "[{:02}:{:02}] Ops: {} total ({}/s) | W:{} R:{} RMW:{} D:{}",
+            "[{:02}:{:02}] Ops: {} total ({}/s) | W:{} R:{} RMW:{} D:{} | Aborted: {}",
             elapsed as u64 / 60,
             elapsed as u64 % 60,
             fmt(total),
@@ -951,6 +970,7 @@ fn reporter_thread(state: Arc<SharedState>) {
             fmt(r),
             fmt(m),
             fmt(d),
+            fmt(a),
         );
         eprintln!(
             "        Oracle: {} checks, {} violations | Wave: {:?} @ {:.0}%",
@@ -978,11 +998,17 @@ fn print_summary(state: &SharedState, duration: f64) {
     let r = state.stats.reads.load(Ordering::Relaxed);
     let m = state.stats.rmws.load(Ordering::Relaxed);
     let d = state.stats.deletes.load(Ordering::Relaxed);
+    let a = state.stats.aborted.load(Ordering::Relaxed);
     let total = u + r + m + d;
     let checks = state.stats.oracle_checks.load(Ordering::Relaxed);
     let violations = state.stats.oracle_violations.load(Ordering::Relaxed);
     let avg_ops = if duration > 0.0 {
         (total as f64 / duration) as u64
+    } else {
+        0
+    };
+    let avg_aborted = if duration > 0.0 {
+        (a as f64 / duration) as u64
     } else {
         0
     };
@@ -1013,6 +1039,11 @@ fn print_summary(state: &SharedState, duration: f64) {
             d as f64 / total as f64 * 100.0
         );
     }
+
+    println!();
+    println!("Aborted Operations:");
+    println!("  Total aborted:    {}", fmt_num(a));
+    println!("  Avg aborted/sec:  {}", fmt_num(avg_aborted));
 
     println!();
     println!("Oracle Verification:");
