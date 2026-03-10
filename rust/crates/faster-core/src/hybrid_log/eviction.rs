@@ -48,7 +48,7 @@ impl Default for EvictionPolicy {
     fn default() -> Self {
         Self {
             max_in_memory_pages: 256,
-            eviction_batch_size: 4,
+            eviction_batch_size: 16,
         }
     }
 }
@@ -587,7 +587,7 @@ mod tests {
     fn default_policy_values() {
         let policy = EvictionPolicy::default();
         assert_eq!(policy.max_in_memory_pages, 256);
-        assert_eq!(policy.eviction_batch_size, 4);
+        assert_eq!(policy.eviction_batch_size, 16);
     }
 
     // Additional: policy accessor
