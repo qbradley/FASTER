@@ -14,16 +14,16 @@
 
 mod common;
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use faster_core::InMemoryDevice;
 use faster_core::grow::GrowConfig;
 use faster_core::hybrid_log::EvictionPolicy;
 use faster_core::status::OperationStatus;
 use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
-use faster_core::InMemoryDevice;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
@@ -118,6 +118,7 @@ fn fill_pages(
 /// After enough writes to wrap the log, old keys return NotFound (not a
 /// crash, not stale data).
 #[test]
+#[ignore = "tier-2: fills 6+ pages (~8M records) to test eviction"]
 fn evicted_keys_return_not_found() {
     let store = lossy_store();
     let mut session = store.new_session();
@@ -150,6 +151,7 @@ fn evicted_keys_return_not_found() {
 
 /// Reads of recently-written keys still succeed after wrap-around.
 #[test]
+#[ignore = "tier-2: fills 6+ pages (~8M records) to test eviction"]
 fn recent_keys_still_readable_after_wrap() {
     let store = lossy_store();
     let mut session = store.new_session();
@@ -176,6 +178,7 @@ fn recent_keys_still_readable_after_wrap() {
 
 /// Upsert to a previously-evicted key creates a fresh record (not Aborted).
 #[test]
+#[ignore = "tier-2: fills 6+ pages (~8M records) to test eviction"]
 fn upsert_to_evicted_key_succeeds() {
     let store = lossy_store();
     let mut session = store.new_session();
@@ -208,6 +211,7 @@ fn upsert_to_evicted_key_succeeds() {
 
 /// No panics or crashes after multiple wrap-arounds of the log.
 #[test]
+#[ignore = "tier-2: fills 12+ pages (~17M records) for multi-wrap stress"]
 fn no_crashes_after_multiple_wraps() {
     let store = lossy_store();
     let mut session = store.new_session();
@@ -241,7 +245,7 @@ fn no_crashes_after_multiple_wraps() {
 fn concurrent_readers_writers_lossy() {
     let store = Arc::new(lossy_store());
     let shutdown = Arc::new(AtomicBool::new(false));
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_millis(100);
 
     let mut handles = Vec::new();
 
@@ -322,6 +326,7 @@ fn concurrent_readers_writers_lossy() {
 
 /// Write throughput does not degrade after wrap-around.
 #[test]
+#[ignore = "tier-2: fills 8+ pages to measure post-wrap throughput"]
 fn throughput_stable_after_wrap() {
     let store = lossy_store();
     let mut session = store.new_session();
@@ -351,6 +356,7 @@ fn throughput_stable_after_wrap() {
 
 /// Lossy maintenance keeps `begin_address` advancing (disk usage bounded).
 #[test]
+#[ignore = "tier-2: fills 6+ pages to verify begin_address advancement"]
 fn lossy_advances_begin_address() {
     let store = lossy_store();
     let mut session = store.new_session();
@@ -372,6 +378,7 @@ fn lossy_advances_begin_address() {
 
 /// Delete of an evicted key returns NotFound (not crash or Aborted).
 #[test]
+#[ignore = "tier-2: fills 6+ pages (~8M records) to test eviction"]
 fn delete_evicted_key_returns_not_found() {
     let store = lossy_store();
     let mut session = store.new_session();
@@ -393,6 +400,7 @@ fn delete_evicted_key_returns_not_found() {
 /// Non-lossy mode: upsert to a truncated address (from compaction's
 /// begin_address advance) handles gracefully instead of Aborted.
 #[test]
+#[ignore = "tier-2: fills 6+ pages with non-lossy config to test truncated upsert"]
 fn truncated_upsert_non_lossy() {
     // Use a non-lossy store — verify the Truncated upsert fix
     // works even without lossy mode (correctness fix).

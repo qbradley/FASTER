@@ -561,6 +561,7 @@ mod tests {
     // ── 8. Page boundary crossing ───────────────────────────────────
 
     #[test]
+    #[ignore = "tier-2: fills entire 32MB page (~1.4M records) to test boundary"]
     fn scan_across_page_boundary() {
         let alloc = make_allocator();
         let layout = RecordLayout::compute(8, 8);

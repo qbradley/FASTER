@@ -760,6 +760,7 @@ dependencies = [
  "clap",
  "ctrlc",
  "faster-core",
+ "faster-uring",
  "rand",
 ]
 

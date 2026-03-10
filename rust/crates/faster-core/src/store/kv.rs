@@ -1629,9 +1629,7 @@ impl<F: Functions> FasterKv<F> {
         // Force a read-only shift and eviction in this case to unblock them.
         let buffer_pressure = info.in_memory_pages() + 2 >= buffer_size;
 
-        if buffer_pressure
-            || info.needs_read_only_shift(self.allocator.mutable_fraction_pages())
-        {
+        if buffer_pressure || info.needs_read_only_shift(self.allocator.mutable_fraction_pages()) {
             self.allocator.shift_read_only_to_tail();
         }
 
@@ -1645,7 +1643,8 @@ impl<F: Functions> FasterKv<F> {
         if in_memory_pages + 2 >= buffer_size {
             self.allocator.shift_read_only_to_tail();
             if self.config.lossy {
-                self.evictor.evict_and_truncate(&self.allocator, self.device.as_ref());
+                self.evictor
+                    .evict_and_truncate(&self.allocator, self.device.as_ref());
             } else {
                 self.evictor.evict_pages(&self.allocator);
             }
@@ -1679,7 +1678,12 @@ impl<F: Functions> FasterKv<F> {
     /// Return a snapshot of pipeline addresses for diagnostic purposes.
     pub fn pipeline_snapshot(
         &self,
-    ) -> (LogicalAddress, LogicalAddress, LogicalAddress, LogicalAddress) {
+    ) -> (
+        LogicalAddress,
+        LogicalAddress,
+        LogicalAddress,
+        LogicalAddress,
+    ) {
         let head = self.allocator.head_address();
         let ro = self.allocator.read_only_address();
         let tail = self.allocator.tail_address();

@@ -12,7 +12,7 @@ mod common;
 use faster_core::address::{LogicalAddress, Offset, Page};
 use faster_core::allocator::MallocFixedPageSize;
 use faster_core::hash::{self, KeyHash};
-use faster_core::hash_bucket::{HashBucketEntry, BUCKET_NUM_ENTRIES};
+use faster_core::hash_bucket::{BUCKET_NUM_ENTRIES, HashBucketEntry};
 use faster_core::hash_index::HashIndex;
 use faster_core::overflow::OverflowBucketPool;
 
@@ -145,11 +145,7 @@ fn page_boundary_crossing_allocates_correct_address() {
 
     for i in 0..to_fill {
         let addr = alloc.allocate();
-        assert_eq!(
-            addr.page(),
-            Page(0),
-            "item {i} should be on page 0"
-        );
+        assert_eq!(addr.page(), Page(0), "item {i} should be on page 0");
     }
 
     // This allocation should land at page 1, offset 0 — the boundary.
@@ -166,6 +162,7 @@ fn page_boundary_crossing_allocates_correct_address() {
     assert_eq!(after_boundary.offset(), Offset(1));
 
     // Verify we can actually read/write both boundary addresses.
+    // SAFETY: Both addresses were just allocated above and are valid within the allocator.
     unsafe {
         alloc.get_mut(boundary).value = 0xDEAD;
         alloc.get_mut(after_boundary).value = 0xBEEF;
@@ -468,10 +465,7 @@ fn faster_hash_u64_high_bits_affect_output() {
     let input_hi = 0x0001_0000_0000_0001u64; // differs only in bits 48+
     let h_lo = hash::faster_hash_u64(input_lo);
     let h_hi = hash::faster_hash_u64(input_hi);
-    assert_ne!(
-        h_lo, h_hi,
-        "upper 16 bits of input must affect hash output"
-    );
+    assert_ne!(h_lo, h_hi, "upper 16 bits of input must affect hash output");
 
     // Also check bits 32..47.
     let input_mid = 0x0000_0001_0000_0001u64;
@@ -556,8 +550,5 @@ fn overflow_pool_reused_bucket_is_rezeroed() {
     // Must be zeroed.
     let bucket = pool.get(addr2);
     let entry = bucket.entry(0).load(std::sync::atomic::Ordering::Relaxed);
-    assert!(
-        entry.is_empty(),
-        "reused bucket entry must be re-zeroed"
-    );
+    assert!(entry.is_empty(), "reused bucket entry must be re-zeroed");
 }

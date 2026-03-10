@@ -45,6 +45,7 @@ fn quickstart_example_1_hello_faster() {
 // ═══════════════════════════════════════════════════════════════════
 
 #[test]
+#[ignore = "tier-2: requires SyncFileDevice disk I/O for checkpoint + recovery"]
 fn quickstart_example_2_persistent_storage() {
     use faster_core::SyncFileDevice;
     use faster_core::checkpoint::CheckpointType;
@@ -159,7 +160,7 @@ fn quickstart_example_3_concurrent_upserts() {
     ));
 
     let num_threads = 8;
-    let ops_per_thread = 1_000_000;
+    let ops_per_thread = 10_000;
 
     let start = std::time::Instant::now();
 

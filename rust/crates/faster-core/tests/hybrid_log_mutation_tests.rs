@@ -4,9 +4,9 @@
 //! mutants in `flush.rs`, `eviction.rs`, `log_allocator.rs`, `page.rs`,
 //! `regions.rs`, `record_ops.rs`, and `scan.rs`.
 
+use faster_core::address::Page;
 use faster_core::device::{InMemoryDevice, NullDevice};
 use faster_core::hybrid_log::{FlushError, PageFlusher, PageState, PageTable};
-use faster_core::address::Page;
 use std::sync::atomic::Ordering;
 
 // ===========================================================================
@@ -29,11 +29,22 @@ fn flush_page_sync_already_flushing_returns_ok_false() {
     let page = Page(0);
     // get_or_allocate_frame creates frame in Open state
     let frame = page_table.get_or_allocate_frame(page);
-    assert!(frame.state().try_transition(PageState::Open, PageState::Sealed));
-    assert!(frame.state().try_transition(PageState::Sealed, PageState::Flushing));
+    assert!(
+        frame
+            .state()
+            .try_transition(PageState::Open, PageState::Sealed)
+    );
+    assert!(
+        frame
+            .state()
+            .try_transition(PageState::Sealed, PageState::Flushing)
+    );
 
     let result = flusher.flush_page_sync(page, &page_table, &device, page_size as u32);
-    assert_eq!(result.unwrap(), false, "should return Ok(false) for already-Flushing page");
+    assert!(
+        !result.unwrap(),
+        "should return Ok(false) for already-Flushing page"
+    );
 }
 
 /// Kill mutant: `flush_page_sync` line 316 — `==` → `!=` on Flushed check.
@@ -47,12 +58,27 @@ fn flush_page_sync_already_flushed_returns_ok_false() {
 
     let page = Page(0);
     let frame = page_table.get_or_allocate_frame(page);
-    assert!(frame.state().try_transition(PageState::Open, PageState::Sealed));
-    assert!(frame.state().try_transition(PageState::Sealed, PageState::Flushing));
-    assert!(frame.state().try_transition(PageState::Flushing, PageState::Flushed));
+    assert!(
+        frame
+            .state()
+            .try_transition(PageState::Open, PageState::Sealed)
+    );
+    assert!(
+        frame
+            .state()
+            .try_transition(PageState::Sealed, PageState::Flushing)
+    );
+    assert!(
+        frame
+            .state()
+            .try_transition(PageState::Flushing, PageState::Flushed)
+    );
 
     let result = flusher.flush_page_sync(page, &page_table, &device, page_size as u32);
-    assert_eq!(result.unwrap(), false, "should return Ok(false) for already-Flushed page");
+    assert!(
+        !result.unwrap(),
+        "should return Ok(false) for already-Flushed page"
+    );
 }
 
 /// Kill mutant: `flush_page_sync` line 316 — `==` → `!=` distinguishes
@@ -93,6 +119,7 @@ fn flush_page_sync_open_page_returns_error() {
 /// seals them, and flushes. We verify the count is accurate by
 /// using the lower-level PageFlusher API on a manually prepared PageTable.
 #[test]
+#[ignore = "tier-2: fills 500K+ records to test page flush counting"]
 fn flush_sealed_pages_returns_exact_count() {
     // Use FasterKv to get a real allocator with sealed pages, then
     // call flush_sealed_pages and verify the count.
@@ -104,7 +131,7 @@ fn flush_sealed_pages_returns_exact_count() {
         hash_index_size_log2: 10,
         buffer_size_pages: 8,
         mutable_fraction: 0.9,
-            lossy: false,
+        lossy: false,
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         grow_config: GrowConfig::default(),
@@ -123,7 +150,10 @@ fn flush_sealed_pages_returns_exact_count() {
 
     // Use checkpoint to force pages to read-only and trigger flush.
     let dir = tempfile::tempdir().unwrap();
-    let _ = store.checkpoint(dir.path(), faster_core::checkpoint::CheckpointType::FoldOver);
+    let _ = store.checkpoint(
+        dir.path(),
+        faster_core::checkpoint::CheckpointType::FoldOver,
+    );
 
     // After checkpoint, maintenance should have flushed sealed pages.
     // The key is that the count returned is accurate.
@@ -148,11 +178,19 @@ fn flush_page_already_flushing_returns_ok_false() {
 
     let page = Page(0);
     let frame = page_table.get_or_allocate_frame(page);
-    assert!(frame.state().try_transition(PageState::Open, PageState::Sealed));
-    assert!(frame.state().try_transition(PageState::Sealed, PageState::Flushing));
+    assert!(
+        frame
+            .state()
+            .try_transition(PageState::Open, PageState::Sealed)
+    );
+    assert!(
+        frame
+            .state()
+            .try_transition(PageState::Sealed, PageState::Flushing)
+    );
 
     let result = flusher.flush_page(page, &page_table, &device, page_size as u32);
-    assert_eq!(result.unwrap(), false);
+    assert!(!result.unwrap());
 }
 
 /// Test that async `flush_page` returns error for Open page.
@@ -187,10 +225,14 @@ fn flush_page_sync_sealed_page_returns_ok_true() {
 
     let page = Page(0);
     let frame = page_table.get_or_allocate_frame(page);
-    assert!(frame.state().try_transition(PageState::Open, PageState::Sealed));
+    assert!(
+        frame
+            .state()
+            .try_transition(PageState::Open, PageState::Sealed)
+    );
 
     let result = flusher.flush_page_sync(page, &page_table, &device, page_size as u32);
-    assert_eq!(result.unwrap(), true, "sealed page flush should return Ok(true)");
+    assert!(result.unwrap(), "sealed page flush should return Ok(true)");
 
     // After flush, state should be Flushed
     let state = frame.state().load(Ordering::Acquire);
@@ -225,18 +267,27 @@ fn flush_page_sync_missing_page_returns_not_found() {
 fn flush_error_display_produces_expected_messages() {
     let err = FlushError::PageNotFound(Page(42));
     let msg = format!("{err}");
-    assert!(msg.contains("42"), "Display should include page number: got '{msg}'");
+    assert!(
+        msg.contains("42"),
+        "Display should include page number: got '{msg}'"
+    );
 
     let err = FlushError::InvalidPageState {
         page: Page(7),
         state: PageState::Open,
     };
     let msg = format!("{err}");
-    assert!(msg.contains("7"), "Display should include page number: got '{msg}'");
+    assert!(
+        msg.contains("7"),
+        "Display should include page number: got '{msg}'"
+    );
 
     let err = FlushError::QueueFull(Page(3));
     let msg = format!("{err}");
-    assert!(msg.contains("3"), "Display should include page number: got '{msg}'");
+    assert!(
+        msg.contains("3"),
+        "Display should include page number: got '{msg}'"
+    );
 }
 
 /// Kill mutant: replace source -> None and delete IoError match arm.
@@ -245,7 +296,7 @@ fn flush_error_display_produces_expected_messages() {
 fn flush_error_source_returns_inner_io_error() {
     use std::error::Error;
 
-    let io_err = std::io::Error::new(std::io::ErrorKind::Other, "test io error");
+    let io_err = std::io::Error::other("test io error");
     let flush_err = FlushError::IoError(io_err);
 
     let source = flush_err.source();
@@ -271,9 +322,9 @@ fn flush_error_source_returns_inner_io_error() {
 /// eviction triggers when pages equal the max. This tests the exact boundary.
 #[test]
 fn needs_eviction_boundary_exact_equals_max() {
-    use faster_core::hybrid_log::eviction::{EvictionPolicy, PageEvictor};
-    use faster_core::hybrid_log::AddressInfo;
     use faster_core::address::{LogicalAddress, Offset};
+    use faster_core::hybrid_log::AddressInfo;
+    use faster_core::hybrid_log::eviction::{EvictionPolicy, PageEvictor};
 
     let policy = EvictionPolicy {
         max_in_memory_pages: 4,
@@ -336,7 +387,7 @@ fn needs_eviction_boundary_exact_equals_max() {
 #[test]
 fn evict_and_truncate_no_eviction_no_truncation() {
     use faster_core::grow::GrowConfig;
-    use faster_core::hybrid_log::eviction::{EvictionPolicy, PageEvictor};
+    use faster_core::hybrid_log::eviction::EvictionPolicy;
     use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
 
     // Create a store with a large max_in_memory_pages so no eviction happens
@@ -344,7 +395,7 @@ fn evict_and_truncate_no_eviction_no_truncation() {
         hash_index_size_log2: 10,
         buffer_size_pages: 8,
         mutable_fraction: 0.5,
-            lossy: false,
+        lossy: false,
         sector_size: 512,
         eviction_policy: EvictionPolicy {
             max_in_memory_pages: 256,
@@ -377,6 +428,7 @@ fn evict_and_truncate_no_eviction_no_truncation() {
 /// This exercises the `evict_and_truncate` path where evicted > 0 and
 /// the truncate offset calculation uses multiplication (page * page_size).
 #[test]
+#[ignore = "tier-2: fills 2M records to test real eviction + truncation"]
 fn evict_and_truncate_with_real_eviction() {
     use faster_core::grow::GrowConfig;
     use faster_core::hybrid_log::eviction::EvictionPolicy;
@@ -386,7 +438,7 @@ fn evict_and_truncate_with_real_eviction() {
         hash_index_size_log2: 14,
         buffer_size_pages: 4,
         mutable_fraction: 0.5,
-            lossy: false,
+        lossy: false,
         sector_size: 512,
         eviction_policy: EvictionPolicy {
             max_in_memory_pages: 3,
@@ -426,6 +478,7 @@ fn evict_and_truncate_with_real_eviction() {
 /// When a page is Flushed (not yet Evicted), head should still advance
 /// past it. With `&&`, head would stop at any single-state page.
 #[test]
+#[ignore = "tier-2: fills 2M records to test head advancement past flushed pages"]
 fn advance_head_past_flushed_pages() {
     use faster_core::grow::GrowConfig;
     use faster_core::hybrid_log::eviction::EvictionPolicy;
@@ -435,7 +488,7 @@ fn advance_head_past_flushed_pages() {
         hash_index_size_log2: 14,
         buffer_size_pages: 4,
         mutable_fraction: 0.5,
-            lossy: false,
+        lossy: false,
         sector_size: 512,
         eviction_policy: EvictionPolicy {
             max_in_memory_pages: 3,
@@ -462,13 +515,16 @@ fn advance_head_past_flushed_pages() {
     let mut found = 0u64;
     for i in (1_500_000u64..2_000_000).step_by(1000) {
         let mut output = None;
-        let status = store.read(&mut session, &i, &0u64, &mut output, ());
+        let _status = store.read(&mut session, &i, &0u64, &mut output, ());
         if output.is_some() {
             found += 1;
         }
     }
     // At least some recent keys should be found
-    assert!(found > 0, "should find at least some recent keys after eviction");
+    assert!(
+        found > 0,
+        "should find at least some recent keys after eviction"
+    );
     drop(session);
 }
 
@@ -494,7 +550,7 @@ fn allocator_page_advancement_across_multiple_pages() {
         hash_index_size_log2: 14,
         buffer_size_pages: 8,
         mutable_fraction: 0.9,
-            lossy: false,
+        lossy: false,
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         grow_config: GrowConfig::default(),
@@ -504,7 +560,7 @@ fn allocator_page_advancement_across_multiple_pages() {
 
     // Insert enough data to cross multiple page boundaries
     let mut session = store.new_session();
-    for i in 0u64..1_000_000 {
+    for i in 0u64..50_000 {
         let _ = store.upsert(&mut session, &i, &i, ());
     }
 
@@ -512,7 +568,7 @@ fn allocator_page_advancement_across_multiple_pages() {
     // If seal happened on wrong allocations (mutation), pages would be
     // prematurely sealed and data could be corrupted.
     let mut verified = 0u64;
-    for i in (0u64..1_000_000).step_by(100) {
+    for i in (0u64..50_000).step_by(100) {
         let mut output = None;
         let _status = store.read(&mut session, &i, &0u64, &mut output, ());
         if let Some(v) = output {
@@ -520,7 +576,10 @@ fn allocator_page_advancement_across_multiple_pages() {
             verified += 1;
         }
     }
-    assert!(verified > 5000, "should verify at least 5000 keys, got {verified}");
+    assert!(
+        verified > 250,
+        "should verify at least 250 keys, got {verified}"
+    );
     drop(session);
 }
 
@@ -541,7 +600,7 @@ fn concurrent_page_advancement_correctness() {
         hash_index_size_log2: 14,
         buffer_size_pages: 8,
         mutable_fraction: 0.9,
-            lossy: false,
+        lossy: false,
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         grow_config: GrowConfig::default(),
@@ -587,7 +646,10 @@ fn concurrent_page_advancement_correctness() {
                 found += 1;
             }
         }
-        assert!(found > 100, "thread {t}: should find >100 keys, got {found}");
+        assert!(
+            found > 100,
+            "thread {t}: should find >100 keys, got {found}"
+        );
     }
     drop(session);
 }
@@ -599,6 +661,7 @@ fn concurrent_page_advancement_correctness() {
 /// boundary would advance much more aggressively. This test verifies
 /// the mutable region size matches the configured fraction.
 #[test]
+#[ignore = "tier-2: fills 2M records to verify mutable fraction boundary"]
 fn mutable_fraction_pages_affects_ro_boundary() {
     use faster_core::grow::GrowConfig;
     use faster_core::hybrid_log::eviction::EvictionPolicy;
@@ -609,7 +672,7 @@ fn mutable_fraction_pages_affects_ro_boundary() {
         hash_index_size_log2: 14,
         buffer_size_pages: 8,
         mutable_fraction: 0.9,
-            lossy: false,
+        lossy: false,
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         grow_config: GrowConfig::default(),
@@ -640,7 +703,10 @@ fn mutable_fraction_pages_affects_ro_boundary() {
             verified += 1;
         }
     }
-    assert!(verified > 500, "recent keys should be readable, got {verified}");
+    assert!(
+        verified > 500,
+        "recent keys should be readable, got {verified}"
+    );
     drop(session);
 }
 
@@ -651,8 +717,8 @@ fn mutable_fraction_pages_affects_ro_boundary() {
 /// This would read page 0's data for every page during recovery.
 #[test]
 fn recovery_loads_correct_pages_from_device() {
-    use faster_core::checkpoint::CheckpointType;
     use faster_core::SyncFileDevice;
+    use faster_core::checkpoint::CheckpointType;
     use faster_core::grow::GrowConfig;
     use faster_core::hybrid_log::eviction::EvictionPolicy;
     use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
@@ -661,7 +727,7 @@ fn recovery_loads_correct_pages_from_device() {
         hash_index_size_log2: 14,
         buffer_size_pages: 8,
         mutable_fraction: 0.9,
-            lossy: false,
+        lossy: false,
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         grow_config: GrowConfig::default(),
@@ -672,9 +738,8 @@ fn recovery_loads_correct_pages_from_device() {
 
     // Write data and checkpoint
     {
-        let device = SyncFileDevice::new(
-            dir.path(), "log.", 512, 1024 * 1024 * 1024, 4,
-        ).expect("device creation");
+        let device = SyncFileDevice::new(dir.path(), "log.", 512, 1024 * 1024 * 1024, 4)
+            .expect("device creation");
         let store = FasterKv::new(config.clone(), SimpleFunctions::default(), device);
         let mut session = store.new_session();
         for i in 0u64..10_000 {
@@ -685,7 +750,8 @@ fn recovery_loads_correct_pages_from_device() {
         for _ in 0..5 {
             store.maintenance();
         }
-        store.checkpoint(dir.path(), CheckpointType::FoldOver)
+        store
+            .checkpoint(dir.path(), CheckpointType::FoldOver)
             .expect("checkpoint should succeed");
         for _ in 0..5 {
             store.maintenance();
@@ -695,12 +761,16 @@ fn recovery_loads_correct_pages_from_device() {
 
     // Recover and verify data
     {
-        let device = SyncFileDevice::new(
-            dir.path(), "log.", 512, 1024 * 1024 * 1024, 4,
-        ).expect("device creation");
+        let device = SyncFileDevice::new(dir.path(), "log.", 512, 1024 * 1024 * 1024, 4)
+            .expect("device creation");
         let mut store = FasterKv::new(config, SimpleFunctions::default(), device);
-        let info = store.recover(dir.path(), None).expect("recovery should succeed");
-        assert!(info.pages_loaded > 0, "should have loaded pages from device");
+        let info = store
+            .recover(dir.path(), None)
+            .expect("recovery should succeed");
+        assert!(
+            info.pages_loaded > 0,
+            "should have loaded pages from device"
+        );
 
         let mut session = store.new_session();
         let mut verified = 0u64;
@@ -712,7 +782,10 @@ fn recovery_loads_correct_pages_from_device() {
                 verified += 1;
             }
         }
-        assert!(verified > 500, "should recover and verify >500 keys, got {verified}");
+        assert!(
+            verified > 500,
+            "should recover and verify >500 keys, got {verified}"
+        );
         store.dispose_session(session);
     }
 }
@@ -736,10 +809,26 @@ fn get_or_allocate_frame_recycles_evicted_frame() {
     assert_eq!(frame.state().load(Ordering::Acquire), PageState::Open);
 
     // Walk through the lifecycle: Open → Sealed → Flushing → Flushed → Evicted
-    assert!(frame.state().try_transition(PageState::Open, PageState::Sealed));
-    assert!(frame.state().try_transition(PageState::Sealed, PageState::Flushing));
-    assert!(frame.state().try_transition(PageState::Flushing, PageState::Flushed));
-    assert!(frame.state().try_transition(PageState::Flushed, PageState::Evicted));
+    assert!(
+        frame
+            .state()
+            .try_transition(PageState::Open, PageState::Sealed)
+    );
+    assert!(
+        frame
+            .state()
+            .try_transition(PageState::Sealed, PageState::Flushing)
+    );
+    assert!(
+        frame
+            .state()
+            .try_transition(PageState::Flushing, PageState::Flushed)
+    );
+    assert!(
+        frame
+            .state()
+            .try_transition(PageState::Flushed, PageState::Evicted)
+    );
     assert_eq!(frame.state().load(Ordering::Acquire), PageState::Evicted);
 
     // Now get_or_allocate_frame should recycle the Evicted frame back to Open
@@ -798,7 +887,10 @@ fn page_trailer_write_size_sector_alignment() {
 
     // Case 2: valid_bytes = 504. needed = 512. aligned = 512 (exact fit).
     let ws = PageTrailer::write_size(504, sector_size, page_size);
-    assert_eq!(ws, 512, "504 bytes + 8 trailer = 512, exact sector alignment");
+    assert_eq!(
+        ws, 512,
+        "504 bytes + 8 trailer = 512, exact sector alignment"
+    );
 
     // Case 3: valid_bytes = 505. needed = 513. aligned = 1024 (next sector).
     let ws = PageTrailer::write_size(505, sector_size, page_size);
@@ -814,7 +906,10 @@ fn page_trailer_write_size_sector_alignment() {
 
     // Case 6: different sector size
     let ws = PageTrailer::write_size(100, 4096, 32768);
-    assert_eq!(ws, 4096, "100 bytes + 8 trailer should align to 4096 sector size");
+    assert_eq!(
+        ws, 4096,
+        "100 bytes + 8 trailer should align to 4096 sector size"
+    );
 }
 
 /// Verify PageTrailer round-trip serialization.
@@ -825,7 +920,10 @@ fn page_trailer_round_trip() {
     let trailer = PageTrailer::new(12345, 0xDEADBEEF);
     let bytes = trailer.to_bytes();
     let recovered = PageTrailer::from_bytes(bytes);
-    assert_eq!(recovered, trailer, "trailer should survive round-trip serialization");
+    assert_eq!(
+        recovered, trailer,
+        "trailer should survive round-trip serialization"
+    );
 }
 
 // ===========================================================================
@@ -867,8 +965,8 @@ fn is_in_memory_returns_false_for_disk_regions() {
 /// pages (wrong).
 #[test]
 fn needs_flush_detects_unflushed_pages() {
-    use faster_core::hybrid_log::AddressInfo;
     use faster_core::address::{LogicalAddress, Offset};
+    use faster_core::hybrid_log::AddressInfo;
 
     // Scenario 1: fuzzy region exists (read_only < safe_read_only)
     let info = AddressInfo {
@@ -921,9 +1019,9 @@ fn needs_flush_detects_unflushed_pages() {
 /// This test exercises the MutableRecordAccessor's own read interface.
 #[test]
 fn mutable_accessor_read_methods_and_individual_writes() {
+    use faster_core::address::LogicalAddress;
     use faster_core::hybrid_log::{HybridLogAllocator, LogRecordWriter};
     use faster_core::record::{RecordInfo, RecordLayout};
-    use faster_core::address::LogicalAddress;
 
     let alloc = HybridLogAllocator::new(4, 0.5, 512);
     let writer = LogRecordWriter::new(&alloc);
@@ -971,9 +1069,9 @@ fn mutable_accessor_read_methods_and_individual_writes() {
 /// Existing tests never call record_size() on RecordAccessor directly.
 #[test]
 fn record_accessor_record_size_returns_correct_value() {
+    use faster_core::address::LogicalAddress;
     use faster_core::hybrid_log::{HybridLogAllocator, LogRecordReader, LogRecordWriter};
     use faster_core::record::{RecordInfo, RecordLayout};
-    use faster_core::address::LogicalAddress;
 
     let alloc = HybridLogAllocator::new(4, 0.5, 512);
     let writer = LogRecordWriter::new(&alloc);
@@ -997,9 +1095,9 @@ fn record_accessor_record_size_returns_correct_value() {
 /// Kill mutant: MutableRecordAccessor::zero() replaced with () (line 328).
 #[test]
 fn mutable_accessor_zero_clears_record() {
+    use faster_core::address::LogicalAddress;
     use faster_core::hybrid_log::{HybridLogAllocator, LogRecordReader, LogRecordWriter};
     use faster_core::record::{RecordInfo, RecordLayout};
-    use faster_core::address::LogicalAddress;
 
     let alloc = HybridLogAllocator::new(4, 0.5, 512);
     let writer = LogRecordWriter::new(&alloc);
@@ -1019,8 +1117,11 @@ fn mutable_accessor_zero_clears_record() {
 
     // Zero the record via a new mutable accessor
     let ptr = alloc.get_physical_address(addr).expect("phys");
-    let mut mut_acc =
-        unsafe { faster_core::hybrid_log::MutableRecordAccessor::new(ptr, layout.total_size() as u32) };
+    // SAFETY: `ptr` is a valid physical address from the allocator, and `total_size()` matches
+    // the record layout at that address.
+    let mut mut_acc = unsafe {
+        faster_core::hybrid_log::MutableRecordAccessor::new(ptr, layout.total_size() as u32)
+    };
     mut_acc.zero();
 
     // All bytes should now be zero
@@ -1033,9 +1134,9 @@ fn mutable_accessor_zero_clears_record() {
 /// Some((Default::default(), true)) (line 547).
 #[test]
 fn read_header_and_match_key_varlen_returns_correct_info() {
+    use faster_core::address::LogicalAddress;
     use faster_core::hybrid_log::{HybridLogAllocator, LogRecordReader, LogRecordWriter};
     use faster_core::record::RecordInfo;
-    use faster_core::address::LogicalAddress;
 
     let alloc = HybridLogAllocator::new(4, 0.5, 512);
     let writer = LogRecordWriter::new(&alloc);

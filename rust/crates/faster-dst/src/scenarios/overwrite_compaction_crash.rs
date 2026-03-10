@@ -17,9 +17,8 @@ pub fn template(crash_point: CrashPoint, count: usize) -> ScenarioTemplate {
         .workload(move |seed| {
             let mut rt = SimulationRuntime::new(seed);
             let initial = rt.sequential_kv_pairs(count);
-            let overwrites: Vec<(u64, u64)> = (0..count)
-                .map(|i| (i as u64, rt.child_seed()))
-                .collect();
+            let overwrites: Vec<(u64, u64)> =
+                (0..count).map(|i| (i as u64, rt.child_seed())).collect();
             let records: Vec<(u64, u64)> = initial.into_iter().chain(overwrites).collect();
             CrudWorkload::from_records(records)
         })
