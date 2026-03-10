@@ -5,19 +5,19 @@
 //! storage wraps around — this is a cache, not a store.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use clap::{Parser, ValueEnum};
+use faster_core::SyncFileDevice;
 use faster_core::grow::GrowConfig;
 use faster_core::hybrid_log::eviction::EvictionPolicy;
 use faster_core::status::OperationStatus;
 use faster_core::store::{
     FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo,
 };
-use faster_core::SyncFileDevice;
 use faster_uring::{BatchPolicy, UringConfig, UringDevice, UringDeviceConfig};
 use rand::Rng;
 
@@ -215,7 +215,10 @@ fn print_interval(stats: &Stats, elapsed: Duration, has_readers: bool) {
         } else {
             0.0
         };
-        print!(" | R: {rt:>10} ({:>8.0}/s, {hit_pct:.1}% hit, {rp} pend)", rt as f64 / s);
+        print!(
+            " | R: {rt:>10} ({:>8.0}/s, {hit_pct:.1}% hit, {rp} pend)",
+            rt as f64 / s
+        );
     }
     println!();
 }
@@ -247,7 +250,10 @@ fn print_summary(stats: &Stats, elapsed: Duration, has_readers: bool) {
         } else {
             0.0
         };
-        println!("  Reads:        {rt} ({:.0}/s, {hit_pct:.1}% hit)", rt as f64 / s);
+        println!(
+            "  Reads:        {rt} ({:.0}/s, {hit_pct:.1}% hit)",
+            rt as f64 / s
+        );
     }
     println!("════════════════════════════════════════");
 }
@@ -321,12 +327,16 @@ fn writer_thread(
             let status = store.upsert(&mut session, &key, &page_data, ());
             if status == OperationStatus::CopyUpdated || status.is_pending() {
                 stats.writes.fetch_add(1, Ordering::Relaxed);
-                stats.write_bytes.fetch_add(page_size as u64, Ordering::Relaxed);
+                stats
+                    .write_bytes
+                    .fetch_add(page_size as u64, Ordering::Relaxed);
                 stats.write_cold.fetch_add(1, Ordering::Relaxed);
                 break;
             } else if status.is_success() {
                 stats.writes.fetch_add(1, Ordering::Relaxed);
-                stats.write_bytes.fetch_add(page_size as u64, Ordering::Relaxed);
+                stats
+                    .write_bytes
+                    .fetch_add(page_size as u64, Ordering::Relaxed);
                 break;
             } else {
                 // Aborted — run maintenance and retry with short backoff
@@ -426,9 +436,7 @@ fn main() {
     let buffer_size_pages = (target_pages * 4).next_power_of_two();
 
     let key_space_est = match args.distribution {
-        KeyDistribution::Linear => {
-            args.log_size_mb as u64 * 1024 * 1024 / args.page_size as u64
-        }
+        KeyDistribution::Linear => args.log_size_mb as u64 * 1024 * 1024 / args.page_size as u64,
         KeyDistribution::Zipf => args.key_space,
     };
     let hash_index_log2 = ((key_space_est as f64 * 2.0).log2().ceil() as usize).max(10);
@@ -465,15 +473,12 @@ fn main() {
         "  Storage: {} MB log, {} MB in-memory, {} byte pages",
         args.log_size_mb, args.in_memory_mb, args.page_size,
     );
-    println!(
-        "  Config:  {buffer_size_pages} buffer pages, {hash_index_log2} hash index log2",
-    );
+    println!("  Config:  {buffer_size_pages} buffer pages, {hash_index_log2} hash index log2",);
 
     let store: Arc<FasterKv<PageFunctions>> = match args.device {
         DeviceBackend::Sync => {
-            let device =
-                SyncFileDevice::new(&args.storage_dir, "log.", 512, segment_size, 4)
-                    .expect("failed to create sync storage device");
+            let device = SyncFileDevice::new(&args.storage_dir, "log.", 512, segment_size, 4)
+                .expect("failed to create sync storage device");
             Arc::new(FasterKv::new(config, PageFunctions, device))
         }
         DeviceBackend::Uring => {

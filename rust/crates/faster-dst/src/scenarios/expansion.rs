@@ -364,9 +364,7 @@ pub fn all_expanded_scenarios() -> Vec<ScenarioTemplate> {
     for &rate in &[0.05, 0.10, 0.20] {
         for &point in &CrashPoint::ALL_CHECKPOINT {
             for &count in &[30usize, 100] {
-                scenarios.push(super::overwrite_torn_write::template(
-                    rate, point, count,
-                ));
+                scenarios.push(super::overwrite_torn_write::template(rate, point, count));
             }
         }
     }
@@ -429,9 +427,7 @@ pub fn all_expanded_scenarios() -> Vec<ScenarioTemplate> {
                         break 'outer;
                     }
                     if seen.insert((ckpt, compact, recovery)) {
-                        scenarios.push(super::triple_crash::template(
-                            ckpt, compact, recovery,
-                        ));
+                        scenarios.push(super::triple_crash::template(ckpt, compact, recovery));
                         added += 1;
                     }
                 }
@@ -553,4 +549,3 @@ mod tests {
         }
     }
 }
-

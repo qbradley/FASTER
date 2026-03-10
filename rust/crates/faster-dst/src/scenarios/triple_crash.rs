@@ -15,9 +15,7 @@ pub fn template(
     compact_phase: usize,
     recovery_phase: usize,
 ) -> ScenarioTemplate {
-    let name = format!(
-        "triple_c{ckpt_phase}_m{compact_phase}_r{recovery_phase}"
-    );
+    let name = format!("triple_c{ckpt_phase}_m{compact_phase}_r{recovery_phase}");
     ScenarioTemplate::builder(name)
         .workload(|seed| CrudWorkload::new(seed, 100))
         .crash_schedule(move |_seed| {

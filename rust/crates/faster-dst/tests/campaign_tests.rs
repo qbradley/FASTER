@@ -344,21 +344,57 @@ fn campaign_extended_category_coverage() {
     let scenarios = faster_dst::scenarios::expansion::all_expanded_scenarios();
 
     // Count scenarios by name prefix to verify coverage per category.
-    let checkpoint_crash = scenarios.iter().filter(|s| s.name.starts_with("checkpoint_crash_")).count();
-    let compaction_crash = scenarios.iter().filter(|s| s.name.starts_with("compaction_crash_")).count();
-    let recovery_crash = scenarios.iter().filter(|s| s.name.starts_with("recovery_crash_")).count();
-    let concurrent = scenarios.iter().filter(|s| s.name.starts_with("concurrent_")).count();
-    let dual = scenarios.iter().filter(|s| s.name.starts_with("dual_")).count();
-    let overwrite = scenarios.iter().filter(|s| s.name.contains("overwrite")).count();
+    let checkpoint_crash = scenarios
+        .iter()
+        .filter(|s| s.name.starts_with("checkpoint_crash_"))
+        .count();
+    let compaction_crash = scenarios
+        .iter()
+        .filter(|s| s.name.starts_with("compaction_crash_"))
+        .count();
+    let recovery_crash = scenarios
+        .iter()
+        .filter(|s| s.name.starts_with("recovery_crash_"))
+        .count();
+    let concurrent = scenarios
+        .iter()
+        .filter(|s| s.name.starts_with("concurrent_"))
+        .count();
+    let dual = scenarios
+        .iter()
+        .filter(|s| s.name.starts_with("dual_"))
+        .count();
+    let overwrite = scenarios
+        .iter()
+        .filter(|s| s.name.contains("overwrite"))
+        .count();
     let torn_write = scenarios.iter().filter(|s| s.name.contains("torn")).count();
-    let sparse = scenarios.iter().filter(|s| s.name.starts_with("sparse_")).count();
-    let graduated = scenarios.iter().filter(|s| s.name.starts_with("graduated_")).count();
-    let boundary = scenarios.iter().filter(|s| s.name.starts_with("boundary_")).count();
-    let triple = scenarios.iter().filter(|s| s.name.starts_with("triple_")).count();
+    let sparse = scenarios
+        .iter()
+        .filter(|s| s.name.starts_with("sparse_"))
+        .count();
+    let graduated = scenarios
+        .iter()
+        .filter(|s| s.name.starts_with("graduated_"))
+        .count();
+    let boundary = scenarios
+        .iter()
+        .filter(|s| s.name.starts_with("boundary_"))
+        .count();
+    let triple = scenarios
+        .iter()
+        .filter(|s| s.name.starts_with("triple_"))
+        .count();
 
     // Each major category should have meaningful coverage.
-    assert!(checkpoint_crash >= 40, "checkpoint_crash: {checkpoint_crash}");
-    assert!(compaction_crash >= 40, "compaction_crash: {compaction_crash}");
+    assert!(
+        checkpoint_crash >= 40,
+        "checkpoint_crash: {checkpoint_crash}"
+    );
+    assert!(
+        compaction_crash >= 40,
+        "compaction_crash: {compaction_crash}"
+    );
     assert!(recovery_crash >= 40, "recovery_crash: {recovery_crash}");
     assert!(concurrent >= 30, "concurrent: {concurrent}");
     assert!(dual >= 60, "dual: {dual}");

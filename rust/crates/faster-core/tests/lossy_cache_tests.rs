@@ -14,16 +14,16 @@
 
 mod common;
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use faster_core::InMemoryDevice;
 use faster_core::grow::GrowConfig;
 use faster_core::hybrid_log::EvictionPolicy;
 use faster_core::status::OperationStatus;
 use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
-use faster_core::InMemoryDevice;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers

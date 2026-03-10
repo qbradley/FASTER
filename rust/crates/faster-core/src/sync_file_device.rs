@@ -83,7 +83,6 @@ fn read_complete_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> 
     Ok(())
 }
 
-
 /// Write all of `buf`, retrying on partial writes and interrupts.
 fn write_complete_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
     let mut pos = 0usize;
@@ -153,10 +152,7 @@ impl SegmentRegistry {
         }
 
         let mut opts = OpenOptions::new();
-        opts.read(true)
-            .write(true)
-            .create(true)
-            .truncate(false);
+        opts.read(true).write(true).create(true).truncate(false);
         let file = opts.open(self.segment_path(segment_index))?;
 
         let file = Arc::new(file);
