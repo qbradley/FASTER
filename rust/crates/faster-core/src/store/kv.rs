@@ -128,6 +128,21 @@ pub struct FasterKvConfig {
     ///
     /// Default: `false` (manual compaction only via [`FasterKv::compact()`]).
     pub auto_compact: bool,
+    /// Enable lossy (LRU cache) mode.
+    ///
+    /// When `true`, [`maintenance()`](FasterKv::maintenance) will:
+    /// 1. Advance `begin_address` to match `head_address` after eviction,
+    ///    effectively discarding on-disk data.
+    /// 2. Truncate the storage device to reclaim disk space.
+    /// 3. Invalidate hash index entries pointing to truncated addresses.
+    ///
+    /// In this mode the store acts as a bounded LRU cache: old records are
+    /// silently lost when the log wraps. Reads of evicted keys return
+    /// [`NotFound`](crate::status::OperationStatus::NotFound), and writes
+    /// transparently create fresh records.
+    ///
+    /// Default: `false`.
+    pub lossy: bool,
 }
 
 impl Default for FasterKvConfig {
@@ -140,6 +155,7 @@ impl Default for FasterKvConfig {
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
             auto_compact: false,
+            lossy: false,
         }
     }
 }
@@ -1605,7 +1621,17 @@ impl<F: Functions> FasterKv<F> {
     pub fn maintenance(&self) {
         // 1. Shift read-only boundary if mutable region is too large.
         let info = self.allocator.snapshot();
-        if info.needs_read_only_shift(self.allocator.mutable_fraction_pages()) {
+        let buffer_size = self.allocator.page_table().buffer_size() as u32;
+
+        // Detect buffer pressure: when the in-memory page count approaches the
+        // circular buffer capacity, writers will stall on the SF-10 check even
+        // though the normal mutable_fraction threshold has not been crossed.
+        // Force a read-only shift and eviction in this case to unblock them.
+        let buffer_pressure = info.in_memory_pages() + 2 >= buffer_size;
+
+        if buffer_pressure
+            || info.needs_read_only_shift(self.allocator.mutable_fraction_pages())
+        {
             self.allocator.shift_read_only_to_tail();
         }
 
@@ -1614,10 +1640,74 @@ impl<F: Functions> FasterKv<F> {
             .flusher
             .flush_sealed_pages(&self.allocator, self.device.as_ref());
 
-        // 3. Evict if the in-memory footprint exceeds the policy threshold.
-        if self.evictor.needs_eviction(&self.allocator.snapshot()) {
-            self.evictor.evict_pages(&self.allocator);
+        // 3. Evict if the in-memory footprint exceeds the policy threshold
+        //    or the buffer is under pressure.
+        if buffer_pressure || self.evictor.needs_eviction(&self.allocator.snapshot()) {
+            if self.config.lossy {
+                // Lossy mode: evict, advance begin_address, truncate device,
+                // and invalidate stale hash entries in a single step.
+                let old_begin = self.allocator.begin_address();
+                self.evictor
+                    .evict_and_truncate(&self.allocator, self.device.as_ref());
+                let new_begin = self.allocator.begin_address();
+                if new_begin > old_begin {
+                    self.hash_index
+                        .invalidate_entries_in_range(old_begin, new_begin);
+                }
+            } else {
+                self.evictor.evict_pages(&self.allocator);
+            }
         }
+    }
+
+    /// Return a snapshot of pipeline addresses for diagnostic purposes.
+    pub fn pipeline_snapshot(
+        &self,
+    ) -> (LogicalAddress, LogicalAddress, LogicalAddress, LogicalAddress) {
+        let head = self.allocator.head_address();
+        let ro = self.allocator.read_only_address();
+        let tail = self.allocator.tail_address();
+        let begin = self.allocator.begin_address();
+        (begin, head, ro, tail)
+    }
+
+    /// Debug the pipeline state by printing page frame states.
+    pub fn debug_pipeline_state(&self) {
+        use crate::hybrid_log::page::PageState;
+        let head = self.allocator.head_address();
+        let ro = self.allocator.read_only_address();
+        let tail = self.allocator.tail_address();
+        let page_table = self.allocator.page_table();
+        let buf_sz = page_table.buffer_size() as u32;
+
+        eprint!(
+            "  head={} ro={} tail={} buf={} | ",
+            head.page().0,
+            ro.page().0,
+            tail.page().0,
+            buf_sz,
+        );
+        let start = head.page().0;
+        let end = tail.page().0.min(start + buf_sz);
+        for p in start..=end {
+            let page = crate::address::Page(p);
+            match page_table.get_frame(page) {
+                Some(frame) => {
+                    let st = frame.state().load(core::sync::atomic::Ordering::Relaxed);
+                    let c = match st {
+                        PageState::Open => 'O',
+                        PageState::Sealed => 'S',
+                        PageState::Flushing => 'G',
+                        PageState::Flushed => 'D',
+                        PageState::Evicted => 'E',
+                        PageState::Free => 'F',
+                    };
+                    eprint!("{c}");
+                }
+                None => eprint!("_"),
+            }
+        }
+        eprintln!();
     }
 
     /// Check whether the configured compaction policy recommends
@@ -1779,6 +1869,7 @@ mod tests {
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
             auto_compact: false,
+            lossy: false,
         };
         FasterKv::new(config, SimpleFunctions::default(), NullDevice::new())
     }
@@ -1905,6 +1996,7 @@ mod tests {
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
             auto_compact: false,
+            lossy: false,
         };
         let store: FasterKv<CounterFunctions<u64>> =
             FasterKv::new(config, CounterFunctions::new(), NullDevice::new());
@@ -1938,6 +2030,7 @@ mod tests {
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
             auto_compact: false,
+            lossy: false,
         };
         let store: SimpleStore =
             FasterKv::new(config, SimpleFunctions::default(), NullDevice::new());
@@ -1979,6 +2072,7 @@ mod tests {
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
             auto_compact: false,
+            lossy: false,
         };
         let store = Arc::new(FasterKv::<SimpleFunctions<u64, u64>>::new(
             config,
@@ -2033,6 +2127,7 @@ mod tests {
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
             auto_compact: false,
+            lossy: false,
         };
         let store: SimpleStore =
             FasterKv::new(config, SimpleFunctions::default(), NullDevice::new());
@@ -2127,6 +2222,7 @@ mod tests {
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
             auto_compact: false,
+            lossy: false,
         };
         let store: SimpleStore =
             FasterKv::new(config, SimpleFunctions::default(), NullDevice::new());
@@ -2155,6 +2251,7 @@ mod tests {
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
             auto_compact: false,
+            lossy: false,
         };
         let store: SimpleStore =
             FasterKv::new(config, SimpleFunctions::default(), NullDevice::new());
@@ -2216,6 +2313,7 @@ mod tests {
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
             auto_compact: false,
+            lossy: false,
         };
         let device = InMemoryDevice::with_sizes(512, 1 << 24); // 16 MiB
         let store: FasterKv<SimpleFunctions<u64, u64>> =
@@ -2280,6 +2378,7 @@ mod tests {
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
             auto_compact: false,
+            lossy: false,
         };
         let device = InMemoryDevice::with_sizes(512, 1 << 24);
         let store: FasterKv<SimpleFunctions<u64, u64>> =
@@ -2381,6 +2480,7 @@ mod tests {
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
             auto_compact: false,
+            lossy: false,
         };
         let device = InMemoryDevice::with_sizes(512, 1 << 24);
         let store: FasterKv<SimpleFunctions<u64, u64>> =
@@ -2500,6 +2600,7 @@ mod tests {
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
             auto_compact: false,
+            lossy: false,
         };
         let device = InMemoryDevice::with_sizes(512, 1 << 24);
         let store = Arc::new(FasterKv::<SimpleFunctions<u64, u64>>::new(
@@ -2787,6 +2888,7 @@ mod tests {
             eviction_policy: EvictionPolicy::default(),
             grow_config: GrowConfig::default(),
             auto_compact: false,
+            lossy: false,
         };
         let store: FasterKv<CounterFunctions<u64>> =
             FasterKv::new(config, CounterFunctions::new(), NullDevice::new());

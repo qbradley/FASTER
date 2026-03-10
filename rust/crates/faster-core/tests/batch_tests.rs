@@ -19,6 +19,7 @@ fn small_store() -> FasterKv<SimpleFunctions<u64, u64>> {
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         auto_compact: false,
+        lossy: false,
     };
     FasterKv::new(config, SimpleFunctions::default(), InMemoryDevice::new())
 }
@@ -32,6 +33,7 @@ fn counter_store() -> FasterKv<CounterFunctions<u64>> {
         sector_size: 512,
         eviction_policy: EvictionPolicy::default(),
         auto_compact: false,
+        lossy: false,
     };
     FasterKv::new(config, CounterFunctions::default(), InMemoryDevice::new())
 }

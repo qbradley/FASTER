@@ -523,6 +523,7 @@ fn main() {
         },
         grow_config: GrowConfig::default(),
         auto_compact: false,
+        lossy: false,
     };
 
     let dist_name = match args.distribution {

@@ -486,6 +486,7 @@ async fn main() {
         eviction_policy: EvictionPolicy::default(),
         grow_config: GrowConfig::default(),
         auto_compact: args.compact,
+        lossy: false,
     };
 
     let device = TokioFileDevice::new(&args.dir, "log", 512, args.segment_size)

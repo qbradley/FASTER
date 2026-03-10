@@ -216,6 +216,7 @@ impl FasterKvBuilder {
                 enabled: self.grow_enabled,
             },
             auto_compact: false,
+            lossy: false,
         };
 
         Ok(FasterKv::new(config, functions, device))
