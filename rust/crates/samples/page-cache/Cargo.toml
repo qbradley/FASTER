@@ -1,0 +1,15 @@
+[package]
+name = "page-cache"
+version = "0.1.0"
+description = "Disk-I/O-heavy lossy page cache sample using FASTER"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+faster-core = { path = "../../faster-core" }
+clap = { version = "4", features = ["derive"] }
+rand = "0.9"
+ctrlc = "3"
