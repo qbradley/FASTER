@@ -162,6 +162,7 @@ fn page_boundary_crossing_allocates_correct_address() {
     assert_eq!(after_boundary.offset(), Offset(1));
 
     // Verify we can actually read/write both boundary addresses.
+    // SAFETY: Both addresses were just allocated above and are valid within the allocator.
     unsafe {
         alloc.get_mut(boundary).value = 0xDEAD;
         alloc.get_mut(after_boundary).value = 0xBEEF;
