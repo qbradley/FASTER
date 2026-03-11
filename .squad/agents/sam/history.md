@@ -116,3 +116,51 @@ Implemented all three fixes from Aragorn's design to close the multi-writer flus
 - The Device trait already has a default `poll_completions()` method (returns 0) added during the deadlock fix. All Device implementations (NullDevice, InMemoryDevice, SyncFileDevice, SimulatedDevice) either use the default or have their own implementation. No additional work needed.
 - Recovery code was tightly coupled to the hardcoded "log." prefix for log segment filenames. Added `log_prefix` parameter to `recover_fold_over()` and `recover_snapshot()` methods, and threaded it through all validation functions (`validate_log_file`, `validate_log_file_for_head`, `validate_page_checksums`).
 - The simplest correct approach for the prefix fix is to pass the prefix as a parameter to recovery functions, rather than storing it in checkpoint metadata or trying to auto-discover it. This makes recovery explicit and predictable.
+
+## 2026-03-11: Backlog Sprint — API Parameterization & Test Classification
+
+**Timestamp:** 2026-03-11T19:33:26Z  
+**Collaboration:** Quadrant sprint (Aragorn, Sam, Éowyn, Galadriel)
+
+### What Happened
+
+Fixed log prefix coupling in recovery API by adding parameterized prefix support. Verified `poll_completions` trait already had default implementation. Established tier-2 test classification criteria and optimized/marked 16 slow tests.
+
+### Key Changes
+
+1. **Log Prefix Coupling Fix**
+   - Added `log_prefix: &str` parameter to recovery functions
+   - Updated 4 hardcoded references in log_recovery.rs
+   - Made recovery API explicit and device-config-agnostic
+
+2. **poll_completions** (already complete)
+   - Device trait has default impl (returns 0)
+   - All Device implementations correct
+   - No additional work required
+
+3. **Tier-2 Test Classification**
+   - Established criteria: 32MB pages, minimum-case proptests, multi-round I/O, concurrent stress
+   - Optimized 4 tests by reducing iterations
+   - Marked 12 tests tier-2
+   - Result: 0 tier-1 tests >1s (was 17)
+
+### Decisions Generated
+
+- **Log Prefix Coupling Fix:** Parameter approach chosen over metadata storage
+- **Tier-2 Test Classification Criteria:** Clear guidelines for marking slow tests
+
+### Team Coordination
+
+- **Aragorn:** Loom shim integration — SUCCESS
+- **Éowyn:** DST smoke test split — SUCCESS
+- **Galadriel:** Miri coverage expansion — SUCCESS
+- **Coordinator:** Fixed 8 missed test callsites
+
+**Commits:**
+- fc0d3da9: Add log_prefix parameter to recovery API
+- 33fb44cf: Update test callsites for log_prefix param
+- 4fca1523 (Coordinator): Fix checkpoint/checksum test callsites
+
+### Verification
+
+All 1719 existing tests pass. Recovery API now supports custom prefixes. Test timing optimized for CI performance.
