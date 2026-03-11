@@ -5,7 +5,7 @@
 //! `regions.rs`, `record_ops.rs`, and `scan.rs`.
 
 use faster_core::address::Page;
-use faster_core::device::{InMemoryDevice, NullDevice, Device};
+use faster_core::device::{Device, InMemoryDevice, NullDevice};
 use faster_core::hybrid_log::{FlushError, PageFlusher, PageState, PageTable};
 use std::sync::atomic::Ordering;
 
@@ -1181,9 +1181,9 @@ fn read_header_and_match_key_varlen_returns_correct_info() {
 /// This test verifies that when pages == max, eviction is NOT needed.
 #[test]
 fn mutation_needs_eviction_boundary_exact_max_pages() {
+    use faster_core::address::{LogicalAddress, Offset, Page};
     use faster_core::hybrid_log::eviction::{EvictionPolicy, PageEvictor};
     use faster_core::hybrid_log::regions::AddressInfo;
-    use faster_core::address::{LogicalAddress, Page, Offset};
 
     let policy = EvictionPolicy {
         max_in_memory_pages: 10,
@@ -1202,7 +1202,10 @@ fn mutation_needs_eviction_boundary_exact_max_pages() {
     };
 
     // At exactly max pages, should NOT need eviction (10 > 10 is false)
-    assert!(!evictor.needs_eviction(&info), "should not need eviction at exact boundary");
+    assert!(
+        !evictor.needs_eviction(&info),
+        "should not need eviction at exact boundary"
+    );
 
     // With one more page, should need eviction (11 > 10 is true)
     let info_over = AddressInfo {
@@ -1212,7 +1215,10 @@ fn mutation_needs_eviction_boundary_exact_max_pages() {
         safe_read_only_address: LogicalAddress::new(Page(8), Offset(0)),
         tail_address: LogicalAddress::new(Page(13), Offset(0)),
     };
-    assert!(evictor.needs_eviction(&info_over), "should need eviction when over boundary");
+    assert!(
+        evictor.needs_eviction(&info_over),
+        "should need eviction when over boundary"
+    );
 }
 
 /// Kills mutation: eviction.rs advance_head line 168, || → &&
@@ -1240,17 +1246,17 @@ fn mutation_advance_head_or_logic_documented() {
 /// eviction yields zero pages.
 #[test]
 fn mutation_evict_and_truncate_zero_evicted() {
-    use faster_core::hybrid_log::{HybridLogAllocator, PageState, PageEvictor, EvictionPolicy};
     use faster_core::address::Page;
     use faster_core::device::InMemoryDevice;
+    use faster_core::hybrid_log::{EvictionPolicy, HybridLogAllocator, PageEvictor, PageState};
     use std::sync::atomic::Ordering;
 
     let alloc = HybridLogAllocator::new(4, 0.5, 4096);
     let device = InMemoryDevice::new();
-    
+
     // Allocate some data
     let _ = alloc.try_allocate(100).expect("alloc");
-    
+
     // Leave page 0 in Open state (not Flushed, so cannot be evicted)
     let page_table = alloc.page_table();
     let frame = page_table.get_or_allocate_frame(Page(0));
@@ -1258,16 +1264,19 @@ fn mutation_evict_and_truncate_zero_evicted() {
     assert_eq!(state, PageState::Open, "page should remain Open");
 
     let begin_before = alloc.begin_address();
-    
+
     let evictor = PageEvictor::new(EvictionPolicy::default(), 4096);
     let evicted = evictor.evict_and_truncate(&alloc, &device);
-    
+
     // Zero pages evicted
     assert_eq!(evicted, 0, "should evict 0 pages when none are Flushed");
-    
+
     // begin_address should NOT advance (no truncation)
     let begin_after = alloc.begin_address();
-    assert_eq!(begin_before, begin_after, "begin should not advance when evicted == 0");
+    assert_eq!(
+        begin_before, begin_after,
+        "begin should not advance when evicted == 0"
+    );
 }
 
 /// Kills mutation: eviction.rs evict_and_truncate line 203, * → +
@@ -1277,20 +1286,20 @@ fn mutation_evict_and_truncate_zero_evicted() {
 /// and verifies eviction behavior.
 #[test]
 fn mutation_evict_and_truncate_offset_calculation() {
-    use faster_core::hybrid_log::{HybridLogAllocator, PageState, PageEvictor, EvictionPolicy};
-    use faster_core::address::{Page, OFFSET_BITS};
+    use faster_core::address::{OFFSET_BITS, Page};
     use faster_core::device::InMemoryDevice;
+    use faster_core::hybrid_log::{EvictionPolicy, HybridLogAllocator, PageEvictor, PageState};
     use std::sync::atomic::Ordering;
 
     let page_size = (1u32 << OFFSET_BITS) as usize;
     let alloc = HybridLogAllocator::new(8, 0.1, 512); // Small mutable fraction
     let device = InMemoryDevice::new();
-    
+
     // Allocate multiple full pages
     for _ in 0..3 {
         let _ = alloc.try_allocate(page_size as u32).expect("alloc");
     }
-    
+
     // Transition pages to Flushed
     let page_table = alloc.page_table();
     let mut flushed_count = 0;
@@ -1298,32 +1307,45 @@ fn mutation_evict_and_truncate_offset_calculation() {
         if let Some(frame) = page_table.get_frame(Page(p)) {
             let state = frame.state().load(Ordering::Acquire);
             if state == PageState::Sealed
-                && frame.state().try_transition(PageState::Sealed, PageState::Flushing)
+                && frame
+                    .state()
+                    .try_transition(PageState::Sealed, PageState::Flushing)
             {
-                frame.state().try_transition(PageState::Flushing, PageState::Flushed);
+                frame
+                    .state()
+                    .try_transition(PageState::Flushing, PageState::Flushed);
                 flushed_count += 1;
             }
         }
     }
-    
+
     assert!(flushed_count > 0, "should have at least one flushed page");
-    
+
     let evictor = PageEvictor::new(
-        EvictionPolicy { max_in_memory_pages: 2, eviction_batch_size: 2 },
+        EvictionPolicy {
+            max_in_memory_pages: 2,
+            eviction_batch_size: 2,
+        },
         page_size as u32,
     );
-    
+
     let begin_before = alloc.begin_address();
     let evicted = evictor.evict_and_truncate(&alloc, &device);
     let begin_after = alloc.begin_address();
-    
+
     // With correct offset calculation (page * page_size), truncation should work
     // With + mutation (page + page_size), offset would be wrong but begin would still advance
     if evicted > 0 {
-        assert!(begin_after >= begin_before, "begin should advance or stay same");
+        assert!(
+            begin_after >= begin_before,
+            "begin should advance or stay same"
+        );
         // The key is that eviction happened, which requires correct offset logic
-        assert_eq!(begin_after.page().0, begin_before.page().0 + evicted,
-            "begin page should advance by evicted count");
+        assert_eq!(
+            begin_after.page().0,
+            begin_before.page().0 + evicted,
+            "begin page should advance by evicted count"
+        );
     }
 }
 
@@ -1380,8 +1402,8 @@ fn mutation_flush_sealed_pages_counter_documented() {
 /// allocating a full page and observing the behavior.
 #[test]
 fn mutation_try_allocate_seal_only_at_page_boundary() {
+    use faster_core::address::{OFFSET_BITS, Page};
     use faster_core::hybrid_log::{HybridLogAllocator, PageState};
-    use faster_core::address::{Page, OFFSET_BITS};
     use std::sync::atomic::Ordering;
 
     let page_size = (1u32 << OFFSET_BITS) as usize;
@@ -1389,26 +1411,36 @@ fn mutation_try_allocate_seal_only_at_page_boundary() {
     let page_table = alloc.page_table();
 
     // Allocate exactly one page worth (triggers the boundary condition)
-    let addr1 = alloc.try_allocate(page_size as u32).expect("alloc full page");
+    let addr1 = alloc
+        .try_allocate(page_size as u32)
+        .expect("alloc full page");
     assert_eq!(addr1.page(), Page(0));
-    
+
     // Tail should have moved to page 1 after exact page fill
     let tail = alloc.tail_address();
     assert_eq!(tail.page(), Page(1), "tail should advance to next page");
-    
+
     // Page 0 should now be Sealed (allocation filled it exactly)
     let frame0 = page_table.get_frame(Page(0)).expect("page 0 exists");
     let state0 = frame0.state().load(Ordering::Acquire);
-    assert_eq!(state0, PageState::Sealed, "page 0 should be sealed when filled exactly");
-    
+    assert_eq!(
+        state0,
+        PageState::Sealed,
+        "page 0 should be sealed when filled exactly"
+    );
+
     // Allocate less than a page on page 1
     let addr2 = alloc.try_allocate(100).expect("alloc partial");
     assert_eq!(addr2.page(), Page(1));
-    
+
     // Page 1 should remain Open (not filled to boundary)
     let frame1 = page_table.get_frame(Page(1)).expect("page 1 exists");
     let state1 = frame1.state().load(Ordering::Acquire);
-    assert_eq!(state1, PageState::Open, "page 1 should stay Open when not filled");
+    assert_eq!(
+        state1,
+        PageState::Open,
+        "page 1 should stay Open when not filled"
+    );
 }
 
 /// Kills mutation: log_allocator.rs advance_to_next_page line 348, != → ==
@@ -1418,8 +1450,8 @@ fn mutation_try_allocate_seal_only_at_page_boundary() {
 /// This test verifies the retry logic works correctly.
 #[test]
 fn mutation_advance_to_next_page_retry_logic() {
-    use faster_core::hybrid_log::{HybridLogAllocator, PageState};
     use faster_core::address::Page;
+    use faster_core::hybrid_log::{HybridLogAllocator, PageState};
     use std::sync::atomic::Ordering;
 
     let page_size = 512usize;
@@ -1427,14 +1459,18 @@ fn mutation_advance_to_next_page_retry_logic() {
 
     // Fill page 0 partially
     let _ = alloc.try_allocate(400).expect("alloc");
-    
+
     // Manually advance to next page
     let next = alloc.advance_to_next_page();
     assert!(next.is_some(), "should successfully advance to next page");
-    
+
     let tail = alloc.tail_address();
-    assert_eq!(tail.page(), Page(1), "tail should be on page 1 after advance");
-    
+    assert_eq!(
+        tail.page(),
+        Page(1),
+        "tail should be on page 1 after advance"
+    );
+
     // Page 0 should be sealed
     let page_table = alloc.page_table();
     let frame = page_table.get_frame(Page(0)).expect("page 0");
@@ -1448,9 +1484,9 @@ fn mutation_advance_to_next_page_retry_logic() {
 /// offsets would be completely wrong. This test verifies correct offset calc.
 #[test]
 fn mutation_load_pages_device_offset_calculation() {
-    use faster_core::hybrid_log::HybridLogAllocator;
+    use faster_core::address::{LogicalAddress, OFFSET_BITS, Offset, Page};
     use faster_core::device::InMemoryDevice;
-    use faster_core::address::{LogicalAddress, Page, Offset, OFFSET_BITS};
+    use faster_core::hybrid_log::HybridLogAllocator;
 
     let page_size = (1u32 << OFFSET_BITS) as usize;
     let alloc = HybridLogAllocator::new(8, 0.5, 512);
@@ -1468,12 +1504,13 @@ fn mutation_load_pages_device_offset_calculation() {
     // Load pages 0-2 from device
     let head = LogicalAddress::new(Page(0), Offset(0));
     let tail = LogicalAddress::new(Page(2), Offset(100));
-    
-    let loaded = alloc.load_pages_from_device(&device, head, tail)
+
+    let loaded = alloc
+        .load_pages_from_device(&device, head, tail)
         .expect("load should succeed");
-    
+
     assert_eq!(loaded, 3, "should load 3 pages");
-    
+
     // Verify pages loaded correctly by checking marker bytes
     // This works if offsets are calculated correctly (p * page_size)
     let page_table = alloc.page_table();
@@ -1484,7 +1521,10 @@ fn mutation_load_pages_device_offset_calculation() {
         let first_byte = unsafe { *frame.as_ptr() };
         // With correct * offset, each page has its marker.
         // With / mutation, offsets would be wrong and markers wouldn't match.
-        assert_eq!(first_byte, p as u8, "page {p} should have correct marker byte (verifies * not /)");
+        assert_eq!(
+            first_byte, p as u8,
+            "page {p} should have correct marker byte (verifies * not /)"
+        );
     }
 }
 
@@ -1494,9 +1534,9 @@ fn mutation_load_pages_device_offset_calculation() {
 /// remain 0 (0 * 1 = 0). This test verifies accurate counting.
 #[test]
 fn mutation_load_pages_counter_accuracy() {
-    use faster_core::hybrid_log::HybridLogAllocator;
+    use faster_core::address::{LogicalAddress, Offset, Page};
     use faster_core::device::InMemoryDevice;
-    use faster_core::address::{LogicalAddress, Page, Offset};
+    use faster_core::hybrid_log::HybridLogAllocator;
 
     let page_size = 4096usize;
     let alloc = HybridLogAllocator::new(8, 0.5, page_size);
@@ -1511,10 +1551,11 @@ fn mutation_load_pages_counter_accuracy() {
 
     let head = LogicalAddress::new(Page(0), Offset(0));
     let tail = LogicalAddress::new(Page(4), Offset(500));
-    
-    let loaded = alloc.load_pages_from_device(&device, head, tail)
+
+    let loaded = alloc
+        .load_pages_from_device(&device, head, tail)
         .expect("load should succeed");
-    
+
     // With += mutation to *=, would return 0
     // With correct +=, should return 5
     assert_eq!(loaded, 5, "should accurately count 5 loaded pages");
@@ -1531,26 +1572,42 @@ fn mutation_load_pages_counter_accuracy() {
 /// This test verifies Evicted frames are recycled.
 #[test]
 fn mutation_get_or_allocate_frame_recycle_evicted() {
-    use faster_core::hybrid_log::{PageTable, PageState};
     use faster_core::address::Page;
+    use faster_core::hybrid_log::{PageState, PageTable};
     use std::sync::atomic::Ordering;
 
     let page_table = PageTable::new(4, 4096, 512);
-    
+
     // Allocate a frame
     let frame = page_table.get_or_allocate_frame(Page(0));
     let ptr = frame.as_ptr();
-    
+
     // Transition to Evicted
-    assert!(frame.state().try_transition(PageState::Open, PageState::Sealed));
-    assert!(frame.state().try_transition(PageState::Sealed, PageState::Flushing));
-    assert!(frame.state().try_transition(PageState::Flushing, PageState::Flushed));
-    assert!(frame.state().try_transition(PageState::Flushed, PageState::Evicted));
-    
+    assert!(
+        frame
+            .state()
+            .try_transition(PageState::Open, PageState::Sealed)
+    );
+    assert!(
+        frame
+            .state()
+            .try_transition(PageState::Sealed, PageState::Flushing)
+    );
+    assert!(
+        frame
+            .state()
+            .try_transition(PageState::Flushing, PageState::Flushed)
+    );
+    assert!(
+        frame
+            .state()
+            .try_transition(PageState::Flushed, PageState::Evicted)
+    );
+
     // Get again — should recycle the Evicted frame back to Open
     let frame2 = page_table.get_or_allocate_frame(Page(0));
     assert_eq!(frame2.as_ptr(), ptr, "should reuse same frame");
-    
+
     let state = frame2.state().load(Ordering::Acquire);
     assert_eq!(state, PageState::Open, "recycled frame should be Open");
 }
@@ -1558,21 +1615,25 @@ fn mutation_get_or_allocate_frame_recycle_evicted() {
 /// Kills mutation: page.rs get_or_allocate_frame line 447, test with Free state
 #[test]
 fn mutation_get_or_allocate_frame_recycle_free() {
-    use faster_core::hybrid_log::{PageTable, PageState};
     use faster_core::address::Page;
+    use faster_core::hybrid_log::{PageState, PageTable};
     use std::sync::atomic::Ordering;
 
     let page_table = PageTable::new(4, 4096, 512);
-    
+
     let frame = page_table.get_or_allocate_frame(Page(0));
-    
+
     // Manually set to Free (unusual but valid state for testing)
     frame.state().store(PageState::Free, Ordering::Release);
-    
+
     // Get again — should recycle Free frame
     let frame2 = page_table.get_or_allocate_frame(Page(0));
     let state = frame2.state().load(Ordering::Acquire);
-    assert_eq!(state, PageState::Open, "Free frame should be recycled to Open");
+    assert_eq!(
+        state,
+        PageState::Open,
+        "Free frame should be recycled to Open"
+    );
 }
 
 /// Kills mutation: page.rs PageTrailer::write_size line 660, - → +
@@ -1652,12 +1713,18 @@ fn mutation_is_in_memory_returns_false_for_disk_regions() {
     assert!(AddressRegion::ReadOnly.is_in_memory());
 
     // Non-memory regions should return false (mutation would return true always)
-    assert!(!AddressRegion::OnDisk.is_in_memory(),
-        "OnDisk should NOT be in memory");
-    assert!(!AddressRegion::Truncated.is_in_memory(),
-        "Truncated should NOT be in memory");
-    assert!(!AddressRegion::Invalid.is_in_memory(),
-        "Invalid should NOT be in memory");
+    assert!(
+        !AddressRegion::OnDisk.is_in_memory(),
+        "OnDisk should NOT be in memory"
+    );
+    assert!(
+        !AddressRegion::Truncated.is_in_memory(),
+        "Truncated should NOT be in memory"
+    );
+    assert!(
+        !AddressRegion::Invalid.is_in_memory(),
+        "Invalid should NOT be in memory"
+    );
 }
 
 /// Kills mutation: regions.rs needs_flush line 173, < → >
@@ -1666,8 +1733,8 @@ fn mutation_is_in_memory_returns_false_for_disk_regions() {
 /// With `>`, the condition would be inverted. This test verifies correct comparison.
 #[test]
 fn mutation_needs_flush_fuzzy_region_comparison() {
+    use faster_core::address::{LogicalAddress, Offset, Page};
     use faster_core::hybrid_log::regions::AddressInfo;
-    use faster_core::address::{LogicalAddress, Page, Offset};
 
     // Case 1: read_only < safe_read_only → fuzzy region exists → needs flush
     let info_fuzzy = AddressInfo {
@@ -1677,7 +1744,10 @@ fn mutation_needs_flush_fuzzy_region_comparison() {
         safe_read_only_address: LogicalAddress::new(Page(8), Offset(0)), // > read_only
         tail_address: LogicalAddress::new(Page(12), Offset(0)),
     };
-    assert!(info_fuzzy.needs_flush(), "should need flush when fuzzy region exists");
+    assert!(
+        info_fuzzy.needs_flush(),
+        "should need flush when fuzzy region exists"
+    );
 
     // Case 2: read_only == safe_read_only, but head < read_only → needs flush
     let info_no_fuzzy = AddressInfo {
@@ -1687,7 +1757,10 @@ fn mutation_needs_flush_fuzzy_region_comparison() {
         safe_read_only_address: LogicalAddress::new(Page(5), Offset(0)), // == read_only
         tail_address: LogicalAddress::new(Page(12), Offset(0)),
     };
-    assert!(info_no_fuzzy.needs_flush(), "should need flush when read-only pages exist");
+    assert!(
+        info_no_fuzzy.needs_flush(),
+        "should need flush when read-only pages exist"
+    );
 
     // Case 3: read_only == safe_read_only == head → no flush needed
     let info_no_flush = AddressInfo {
@@ -1697,7 +1770,10 @@ fn mutation_needs_flush_fuzzy_region_comparison() {
         safe_read_only_address: LogicalAddress::new(Page(5), Offset(0)),
         tail_address: LogicalAddress::new(Page(12), Offset(0)),
     };
-    assert!(!info_no_flush.needs_flush(), "should not need flush when no read-only region");
+    assert!(
+        !info_no_flush.needs_flush(),
+        "should not need flush when no read-only region"
+    );
 
     // Case 4: Mutation (< → >) would invert first check. With >, the fuzzy case
     // would incorrectly return false. Test that read_only > safe_read_only (invalid state)
