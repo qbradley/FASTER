@@ -18,6 +18,11 @@
 
 ## Learnings
 <!-- Append new learnings -->
+- Team retrospective at 2,102 tests / 107K LOC milestone: multi-layer verification (unit + Miri + loom + DST + mutation) is the pattern that catches bugs no single modality finds. MF-1 CRC corruption found by review, checkpoint stall by torture stress, reader panic by lossy eviction testing.
+- Architecture-first approach validated: 12 binding decisions on Day 1 were never revisited. The spec survived contact with reality across 9 agents working in parallel.
+- Multi-writer deadlock is the remaining P0: 3-point deadlock in flush/evict pipeline (SF-10 block + contiguous head advance + device back-pressure revert). Not a tuning problem — structural.
+- Loom tests re-implementing algorithms instead of testing production code is a significant gap — divergence between loom test and production code goes undetected. Wiring `crate::sync` shim is prerequisite for true concurrency verification.
+- SoT debate review ROI is high for safety-critical code (found MF-1) but too expensive for leaf features. Reserve heavyweight review proportionally.
 - Merge consolidation across 5+ agent branches requires careful ordering — merge dependency chains first.
 - For crates.io publishing, path dependencies must include `version = "x.y.z"` alongside `path = "..."` — omitting it causes publish failures.
 - The `checkin` script runs `git add -A`, so untracked files from other branches will get swept in. Stage explicitly and use `git commit` directly when surgical staging is needed.
