@@ -47,6 +47,25 @@ pub struct FlushRequest {
 }
 
 // ---------------------------------------------------------------------------
+// FlushBatchResult
+// ---------------------------------------------------------------------------
+
+/// Result of a batch flush operation ([`PageFlusher::flush_sealed_pages`]).
+///
+/// Reports both the number of pages successfully submitted for flushing and
+/// whether the batch was interrupted by device back-pressure (`QueueFull`).
+/// Callers should check `queue_full` and, if true, poll for I/O completions
+/// before retrying.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlushBatchResult {
+    /// Number of pages successfully submitted for flushing in this batch.
+    pub flushed: u32,
+    /// If `true`, at least one page flush was rejected because the device's
+    /// I/O queue was full. The caller should drain completions and retry.
+    pub queue_full: bool,
+}
+
+// ---------------------------------------------------------------------------
 // FlushError
 // ---------------------------------------------------------------------------
 
@@ -355,12 +374,15 @@ impl PageFlusher {
     /// Iterates from `head_address.page()` to `read_only_address.page()`
     /// (exclusive) and flushes every page whose state is `Sealed`.
     ///
-    /// Returns the number of pages for which a flush was initiated.
+    /// Returns a [`FlushBatchResult`] indicating how many pages were
+    /// submitted and whether the device signalled back-pressure. On
+    /// `QueueFull` the batch aborts immediately (no further pages are
+    /// attempted) so the caller can drain I/O completions before retrying.
     pub fn flush_sealed_pages(
         &self,
         allocator: &HybridLogAllocator,
         device: &dyn Device,
-    ) -> Result<u32, FlushError> {
+    ) -> Result<FlushBatchResult, FlushError> {
         trace_span!("flush_sealed_pages");
         let head_page = allocator.head_address().page().0;
         let ro_page = allocator.read_only_address().page().0;
@@ -376,14 +398,24 @@ impl PageFlusher {
                     match self.flush_page(page, page_table, device, self.page_size) {
                         Ok(true) => flushed_count += 1,
                         Ok(false) => {} // Already flushing/flushed.
-                        Err(FlushError::QueueFull(_)) => continue, // Skip, retry next maintenance cycle.
+                        Err(FlushError::QueueFull(_)) => {
+                            // Back-pressure: device cannot accept more I/O.
+                            // Abort the batch so the caller can drain completions.
+                            return Ok(FlushBatchResult {
+                                flushed: flushed_count,
+                                queue_full: true,
+                            });
+                        }
                         Err(e) => return Err(e),
                     }
                 }
             }
         }
 
-        Ok(flushed_count)
+        Ok(FlushBatchResult {
+            flushed: flushed_count,
+            queue_full: false,
+        })
     }
 
     /// Compute the device offset for a given page.
