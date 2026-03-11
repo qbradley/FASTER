@@ -276,6 +276,21 @@ pub trait Device: Send + Sync + 'static {
 
     /// Close the device and release resources.
     fn close(&self);
+
+    /// Poll for completed I/O operations without blocking.
+    ///
+    /// Returns the number of completions processed. Implementations that
+    /// run callbacks synchronously ([`NullDevice`], [`InMemoryDevice`])
+    /// return 0. Implementations with background worker threads
+    /// ([`SyncFileDevice`]) yield the current thread to give I/O workers
+    /// CPU time. io_uring-based devices can drain their completion queue.
+    ///
+    /// This method is called from [`maintenance()`](crate::store::FasterKv::maintenance)
+    /// and from the writer-side retry loop to help drain the flush pipeline
+    /// when the buffer is under pressure.
+    fn poll_completions(&self) -> u32 {
+        0
+    }
 }
 
 // ---------------------------------------------------------------------------
