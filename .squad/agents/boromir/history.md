@@ -2,6 +2,31 @@
 
 ## Learnings
 
+### Deadlock Test Harness (2026-03-11)
+
+Built test infrastructure for the multi-writer deadlock fix on `sam/deadlock-fix` branch:
+
+**Test Devices Created:**
+- `QueueFullDevice` — returns `IoRequestResult::QueueFull` from `write_async()` after N successful writes. Unlike `FaultInjectingDevice` (callback-level errors), this injects at the submission level. Has `queue_full_after(n)` and `toggleable()` constructors.
+- `QueueFullThenSucceedDevice` — QueueFull for first M writes, then succeeds. Tests retry loop recovery.
+- `SlowDevice` — wraps `InMemoryDevice` with background-thread callback delay. Returns `Submitted` (not `CompletedSync`), matching `SyncFileDevice` behavior.
+
+**Key Pattern: QueueFull vs Callback Errors:**
+- `FaultInjectingDevice` injects errors via the callback (`IoStatus::Error`), returning `CompletedSync`
+- `QueueFullDevice` returns `QueueFull` from `write_async()` itself (before any callback fires)
+- These exercise completely different code paths in `flush_page` / `flush_sealed_pages`
+
+**Key Pattern: OperationOutcome API:**
+- `store.upsert()` returns `OperationOutcome<C>`, not `OperationStatus`
+- Use `.is_success()`, `.is_aborted()`, `.status()` methods
+- `OperationOutcome<C>` implements `PartialEq<OperationStatus>` for direct comparison
+
+**Key Pattern: Atomic Counter Off-by-One:**
+- `fetch_add(1)` returns the *pre-increment* value
+- When using the counter for threshold checks, compare the pre-increment value (`count >= n`), not loading the post-increment atomic
+
+**Test Count:** 7 passing (device wrappers + basic integration), 6 ignored pending Sam's Fix A+B
+
 ### Mutation Testing Campaign - 17 Gap Survivors (2024)
 
 Successfully wrote mutation-killing tests for 17 identified mutations that survived the initial test suite:
