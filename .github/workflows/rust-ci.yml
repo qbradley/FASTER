@@ -87,6 +87,27 @@ jobs:
         env:
           RUSTFLAGS: "--cfg loom"
 
+  # ── DST Smoke Tests (Deterministic Simulation Testing) ───────
+  dst:
+    name: DST Smoke Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+      - name: Run DST core scenarios
+        run: cargo nextest run -p faster-dst -E 'not test(campaign_expanded)'
+        # Runs 133 tests in ~20s: crash recovery, fault injection, workload validation
+        # Extended campaign (1000+ scenarios) runs in nightly/deep validation
+
   # ── Miri UB Detection ─────────────────────────────────────────────
   miri:
     name: Miri UB Detection

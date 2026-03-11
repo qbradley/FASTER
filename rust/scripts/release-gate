@@ -455,9 +455,11 @@ run_tier_2() {
         return 1
     fi
 
-    # DST smoke
-    run_check $tier "DST scenarios (faster-dst)" \
-        cargo nextest run -p faster-dst || tier_failed=true
+    # DST core scenarios (excludes extended campaign — ~19s)
+    # Runs 133 tests: crash recovery, fault injection, workload validation
+    # Extended campaign (1000+ scenarios) runs in Tier 3
+    run_check $tier "DST core scenarios (faster-dst)" \
+        cargo nextest run -p faster-dst -E 'not test(campaign_expanded)' || tier_failed=true
 
     local tier_end
     tier_end=$(date +%s)
@@ -492,6 +494,18 @@ run_tier_3() {
             cargo mutants --package faster-core --timeout=300 -- --release
     else
         skip_check $tier "Mutation testing (faster-core)" "cargo-mutants not installed"
+    fi
+
+    # DST extended campaign (1003 scenarios × 3 seeds = 3009 test cases, ~220s)
+    # This is the comprehensive deterministic simulation campaign that validates
+    # crash recovery across all 44 scenario categories. Excluded from Tier 2 for speed.
+    run_check $tier "DST extended campaign (1003 scenarios)" \
+        cargo nextest run -p faster-dst -E 'test(campaign_expanded_smoke)' || tier_failed=true
+
+    if [[ "$tier_failed" == true && "$CONTINUE_ON_FAIL" == false ]]; then
+        TIER_RESULTS[$tier]="fail"
+        TIER_TIMES[$tier]=$(( $(date +%s) - tier_start ))
+        return 1
     fi
 
     # Extended fuzz (5 min per target)
