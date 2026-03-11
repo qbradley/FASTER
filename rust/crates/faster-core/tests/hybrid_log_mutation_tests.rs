@@ -1352,7 +1352,6 @@ fn mutation_evict_and_truncate_offset_calculation() {
 ///
 /// The existing test `flush_sealed_pages_returns_exact_count` is tier-2 (ignored).
 /// Add a simpler unit test using PageFlusher directly.
-#[test]
 /// Kills mutation: flush.rs flush_sealed_pages line 377, += → *=
 ///
 /// The code uses `flushed_count += 1` to count. With `*=`, the counter would
