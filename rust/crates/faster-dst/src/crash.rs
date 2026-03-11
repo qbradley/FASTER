@@ -201,7 +201,8 @@ impl CrashRecoveryRunner {
                     // Attempt another checkpoint so checkpoint crash points fire.
                     let s = store.new_session();
                     // Crash injection may interrupt this checkpoint.
-                    let _result = store.checkpoint(harness.checkpoint_dir(), CheckpointType::FoldOver);
+                    let _result =
+                        store.checkpoint(harness.checkpoint_dir(), CheckpointType::FoldOver);
                     store.dispose_session(s);
                 }
             }));
