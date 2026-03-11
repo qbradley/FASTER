@@ -16,6 +16,15 @@
 - **Visibility:** `pub(crate)` on FasterKv fields for cross-module access (e.g., session.rs batch methods).
 - **Builder pattern:** `FasterKv::<SimpleFunctions<K,V>>::builder()` — turbofish required because `FasterKvBuilder` is non-generic.
 
+### Review: Multi-Writer Deadlock Fix (2026-07-21)
+- **Verdict:** APPROVE WITH COMMENTS
+- **Findings:**
+  - Fix A/B/C implemented correctly.
+  - `deadlock_tests.rs` adds strong regression coverage but tests are `#[ignore]`-ed.
+  - `SyncFileDevice` yields in `poll_completions` (good).
+  - `allocate_at_tail` retry loop is bounded (32 retries).
+- **Action:** Validated fix by running ignored tests (all passed). Recommended enabling tests before merge.
+
 ## Learnings
 <!-- Append new learnings -->
 - **Multi-writer deadlock root cause:** The 3-point deadlock is a timing gap, not a logic error. `maintenance()` submits async I/O (Sealed→Flushing) then immediately runs eviction — but callbacks (Flushing→Flushed) fire on worker threads and haven't landed yet. All pages are still Flushing, head can't advance, buffer stays full. The `continue` on QueueFull in flush.rs:379 makes it worse by leaving individual pages Sealed (blocking head advancement), but even without QueueFull the timing gap alone causes stalls.
