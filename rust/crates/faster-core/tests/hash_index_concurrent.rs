@@ -457,6 +457,7 @@ fn concurrent_epoch_stress() {
 /// on < 1.0× (regression). On shared/CI machines, thread scheduling jitter
 /// can suppress speedup — a hard 1.5× threshold causes flaky failures.
 #[test]
+#[ignore = "tier-2: VM scheduling jitter causes false regressions"]
 fn scalability_4_threads_vs_1() {
     let ops = 200_000u64;
 
