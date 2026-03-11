@@ -19,6 +19,10 @@
 
 ## Learnings
 <!-- Append new learnings -->
+- Fuzz targets in `rust/fuzz/` are a standalone workspace — they reference faster-core by path but have their own Cargo.toml. When the store API changes (e.g., OperationOutcome wrapping OperationStatus), fuzz targets need manual updates since they're not in the workspace test matrix.
+- Proptest tests with `#[ignore]` inside `proptest!` blocks work fine — the attribute goes between `#[test]` and the function signature.
+- Debug-mode test times are dominated by memory allocation (32MB pages, hash table construction) not algorithmic work. Reducing iteration counts by 5× can bring concurrent tests under 1s without losing contention coverage.
+- The `OFFSET_BITS = 25` constant (32MB pages) means any test that allocates even one full page is inherently slow in debug. These should always be tier-2.
 - Multiple concurrent agents sharing working tree creates constant conflicts — stage immediately.
 - **Multi-writer deadlock root cause:** Not QueueFull per se — SyncFileDevice uses unbounded mpsc channel, `max_outstanding` is dead code. Real deadlock: pages stuck in Flushing state (I/O pending), evictor can't advance head (needs Flushed), allocator hits SF-10 (buffer full), maintenance does nothing useful (all pages already Flushing). Only I/O worker callback threads can break the cycle.
 - `flush_sealed_pages` `continue` on QueueFull is wrong — scans remaining pages which all also return QueueFull, making zero progress. Should `break` and signal caller.
