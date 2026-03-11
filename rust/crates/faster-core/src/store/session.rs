@@ -669,9 +669,7 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
             .epoch_table
             .current_epoch
             .load(Ordering::Relaxed);
-        entry
-            .local_current_epoch
-            .store(epoch, Ordering::Release);
+        entry.local_current_epoch.store(epoch, Ordering::Release);
         self.session.epoch_table.try_drain();
     }
 

@@ -830,8 +830,12 @@ impl<F: Functions> FasterKv<F> {
         // Step 3: Recover log address boundaries.
         let log_engine = LogRecoveryEngine::new();
         let log_result = match plan.checkpoint_type {
-            CheckpointType::FoldOver => log_engine.recover_fold_over(&plan, checkpoint_dir, "log.")?,
-            CheckpointType::Snapshot => log_engine.recover_snapshot(&plan, checkpoint_dir, "log.")?,
+            CheckpointType::FoldOver => {
+                log_engine.recover_fold_over(&plan, checkpoint_dir, "log.")?
+            }
+            CheckpointType::Snapshot => {
+                log_engine.recover_snapshot(&plan, checkpoint_dir, "log.")?
+            }
         };
 
         // Step 4: Restore allocator addresses.

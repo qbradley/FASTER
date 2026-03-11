@@ -48,11 +48,11 @@ use crate::hybrid_log::record_ops::{LogRecordReader, LogRecordWriter, MutableRec
 use crate::hybrid_log::regions::{AddressInfo, AddressRegion};
 use crate::record::{Key, RecordInfo, RecordLayout, Value};
 use crate::status::OperationStatus;
-use crate::sync::thread;
 use crate::store::functions::{
     DeleteInfo, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo,
 };
 use crate::store::session::{FasterSession, PendingOpType, PendingOperation};
+use crate::sync::thread;
 
 /// Maximum number of version chain hops before giving up.
 ///

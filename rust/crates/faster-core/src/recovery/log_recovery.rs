@@ -276,8 +276,8 @@ impl LogRecoveryEngine {
                 log_info.format_version,
                 self.checksum_policy,
                 self.sector_size,
-            log_prefix,
-        )?;
+                log_prefix,
+            )?;
         }
 
         // Step 4: Validate and load the snapshot file.
@@ -372,7 +372,11 @@ fn validate_address_consistency(log_info: &LogRecoveryInfo) -> Result<(), Recove
 ///
 /// Returns the number of records "scanned" (currently 0 — full record-chain
 /// scanning is reserved for a future enhancement).
-fn validate_log_file(base_dir: &Path, log_info: &LogRecoveryInfo, log_prefix: &str) -> Result<u64, RecoveryError> {
+fn validate_log_file(
+    base_dir: &Path,
+    log_info: &LogRecoveryInfo,
+    log_prefix: &str,
+) -> Result<u64, RecoveryError> {
     let tail = log_info.final_address;
 
     // An empty log (tail at zero) is trivially valid — no file required.
@@ -975,7 +979,9 @@ mod tests {
 
         // Don't create the log file.
         let engine = LogRecoveryEngine::new();
-        let err = engine.recover_fold_over(&plan, dir.path(), "log.").unwrap_err();
+        let err = engine
+            .recover_fold_over(&plan, dir.path(), "log.")
+            .unwrap_err();
 
         match err {
             RecoveryError::ValidationFailed(issues) => {
@@ -1006,7 +1012,9 @@ mod tests {
         create_log_file(dir.path(), 0, needed / 2);
 
         let engine = LogRecoveryEngine::new();
-        let err = engine.recover_fold_over(&plan, dir.path(), "log.").unwrap_err();
+        let err = engine
+            .recover_fold_over(&plan, dir.path(), "log.")
+            .unwrap_err();
 
         match err {
             RecoveryError::ValidationFailed(issues) => {
@@ -1047,7 +1055,9 @@ mod tests {
         let plan = mgr.select_checkpoint(Some(token)).expect("plan");
 
         let engine = LogRecoveryEngine::new();
-        let err = engine.recover_fold_over(&plan, dir.path(), "log.").unwrap_err();
+        let err = engine
+            .recover_fold_over(&plan, dir.path(), "log.")
+            .unwrap_err();
 
         match err {
             RecoveryError::CorruptMetadata(msg) => {
@@ -1076,7 +1086,9 @@ mod tests {
         let plan = build_plan(dir.path(), &token, &log_info);
 
         let engine = LogRecoveryEngine::new();
-        let err = engine.recover_fold_over(&plan, dir.path(), "log.").unwrap_err();
+        let err = engine
+            .recover_fold_over(&plan, dir.path(), "log.")
+            .unwrap_err();
 
         match err {
             RecoveryError::ValidationFailed(issues) => {
@@ -1101,7 +1113,9 @@ mod tests {
         let plan = build_plan(dir.path(), &token, &log_info);
 
         let engine = LogRecoveryEngine::new();
-        let err = engine.recover_fold_over(&plan, dir.path(), "log.").unwrap_err();
+        let err = engine
+            .recover_fold_over(&plan, dir.path(), "log.")
+            .unwrap_err();
 
         match err {
             RecoveryError::ValidationFailed(issues) => {
@@ -1464,7 +1478,9 @@ mod tests {
         let plan = mgr.select_checkpoint(Some(token)).expect("plan");
 
         let engine = LogRecoveryEngine::new();
-        let err = engine.recover_snapshot(&plan, dir.path(), "log.").unwrap_err();
+        let err = engine
+            .recover_snapshot(&plan, dir.path(), "log.")
+            .unwrap_err();
 
         match err {
             RecoveryError::CorruptMetadata(msg) => {
@@ -1499,7 +1515,9 @@ mod tests {
         let plan = mgr.select_checkpoint(Some(token)).expect("plan");
 
         let engine = LogRecoveryEngine::new();
-        let err = engine.recover_snapshot(&plan, dir.path(), "log.").unwrap_err();
+        let err = engine
+            .recover_snapshot(&plan, dir.path(), "log.")
+            .unwrap_err();
 
         match err {
             RecoveryError::CorruptMetadata(msg) => {
@@ -1529,7 +1547,9 @@ mod tests {
         let plan = build_plan(dir.path(), &token, &log_info);
 
         let engine = LogRecoveryEngine::new();
-        let err = engine.recover_snapshot(&plan, dir.path(), "log.").unwrap_err();
+        let err = engine
+            .recover_snapshot(&plan, dir.path(), "log.")
+            .unwrap_err();
 
         match err {
             RecoveryError::ValidationFailed(issues) => {
@@ -1555,7 +1575,9 @@ mod tests {
         let plan = build_plan(dir.path(), &token, &log_info);
 
         let engine = LogRecoveryEngine::new();
-        let err = engine.recover_snapshot(&plan, dir.path(), "log.").unwrap_err();
+        let err = engine
+            .recover_snapshot(&plan, dir.path(), "log.")
+            .unwrap_err();
 
         match err {
             RecoveryError::ValidationFailed(issues) => {
@@ -1580,7 +1602,9 @@ mod tests {
 
         // Don't create the snapshot file.
         let engine = LogRecoveryEngine::new();
-        let err = engine.recover_snapshot(&plan, dir.path(), "log.").unwrap_err();
+        let err = engine
+            .recover_snapshot(&plan, dir.path(), "log.")
+            .unwrap_err();
 
         match err {
             RecoveryError::ValidationFailed(issues) => {
@@ -1610,7 +1634,9 @@ mod tests {
         create_snapshot_file(dir.path(), &token, 0, 2);
 
         let engine = LogRecoveryEngine::new();
-        let err = engine.recover_snapshot(&plan, dir.path(), "log.").unwrap_err();
+        let err = engine
+            .recover_snapshot(&plan, dir.path(), "log.")
+            .unwrap_err();
 
         match err {
             RecoveryError::ValidationFailed(issues) => {
@@ -1652,7 +1678,9 @@ mod tests {
         writer.finalize().expect("finalize");
 
         let engine = LogRecoveryEngine::new();
-        let err = engine.recover_snapshot(&plan, dir.path(), "log.").unwrap_err();
+        let err = engine
+            .recover_snapshot(&plan, dir.path(), "log.")
+            .unwrap_err();
 
         match err {
             RecoveryError::ValidationFailed(issues) => {
@@ -1795,7 +1823,9 @@ mod tests {
         create_snapshot_file(dir.path(), &token, 3, 6);
 
         let engine = LogRecoveryEngine::new();
-        let err = engine.recover_snapshot(&plan, dir.path(), "log.").unwrap_err();
+        let err = engine
+            .recover_snapshot(&plan, dir.path(), "log.")
+            .unwrap_err();
 
         match err {
             RecoveryError::ValidationFailed(issues) => {
@@ -1850,7 +1880,9 @@ mod tests {
         writer.finalize().expect("finalize");
 
         let engine = LogRecoveryEngine::new();
-        let err = engine.recover_snapshot(&plan, dir.path(), "log.").unwrap_err();
+        let err = engine
+            .recover_snapshot(&plan, dir.path(), "log.")
+            .unwrap_err();
 
         match err {
             RecoveryError::ValidationFailed(issues) => {
