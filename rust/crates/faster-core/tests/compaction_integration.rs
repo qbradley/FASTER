@@ -1052,6 +1052,7 @@ fn maybe_compact_respects_auto_compact_off() {
 // ── Multiple sequential compactions ─────────────────────────────────
 
 #[test]
+#[ignore = "tier-2: sequential write+compact+write+compact cycle"]
 fn compact_sequential_write_compact_write_compact() {
     let store = inmemory_u64_store();
 
@@ -1099,6 +1100,7 @@ fn compact_sequential_write_compact_write_compact() {
 }
 
 #[test]
+#[ignore = "tier-2: three write+compact rounds with delete verification"]
 fn compact_three_rounds_with_deletes() {
     let store = inmemory_u64_store();
 

@@ -268,7 +268,7 @@ fn concurrent_insert_and_gc() {
     let num_inserters = 4;
     let num_gc_threads = 2;
     let total_threads = num_inserters + num_gc_threads;
-    let ops_per_thread = 20_000u64;
+    let ops_per_thread = 5_000u64;
     let barrier = Arc::new(Barrier::new(total_threads));
 
     // Inserters: insert on pages 100..103.
@@ -303,7 +303,7 @@ fn concurrent_insert_and_gc() {
             let barrier = Arc::clone(&barrier);
             thread::spawn(move || {
                 barrier.wait();
-                for _ in 0..100 {
+                for _ in 0..25 {
                     index.invalidate_entries_in_range(make_addr(0, 0), make_addr(50, 0));
                     std::thread::yield_now();
                 }

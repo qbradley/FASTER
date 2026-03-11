@@ -267,6 +267,7 @@ mod tests {
     // ── 3. Device segments truncated ────────────────────────────────
 
     #[test]
+    #[ignore = "tier-2: 32MB page alloc + device truncation I/O"]
     fn device_truncation() {
         use std::sync::Arc;
 

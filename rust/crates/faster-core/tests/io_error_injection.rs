@@ -975,6 +975,7 @@ fn checkpoint_handles_write_failure_gracefully() {
 
 /// Successful checkpoint, then I/O failure during recovery load_pages.
 #[test]
+#[ignore = "tier-2: fault-injecting device + checkpoint I/O"]
 fn recovery_handles_device_read_failure() {
     let dir = tempfile::tempdir().expect("tempdir");
 

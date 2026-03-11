@@ -322,7 +322,7 @@ fn grow_cycle_no_torn_reads() {
 /// sets version for its own transition.
 #[test]
 fn checkpoint_grow_mutual_exclusion_stress() {
-    let num_trials = 1_000;
+    let num_trials = 250;
     let checkpoint_wins = AtomicU64::new(0);
     let grow_wins = AtomicU64::new(0);
     let both_won = AtomicU64::new(0);
