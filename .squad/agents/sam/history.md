@@ -20,6 +20,14 @@
 ## Learnings
 <!-- Append new learnings -->
 - Multiple concurrent agents sharing working tree creates constant conflicts — stage immediately.
+- **Multi-writer deadlock root cause:** Not QueueFull per se — SyncFileDevice uses unbounded mpsc channel, `max_outstanding` is dead code. Real deadlock: pages stuck in Flushing state (I/O pending), evictor can't advance head (needs Flushed), allocator hits SF-10 (buffer full), maintenance does nothing useful (all pages already Flushing). Only I/O worker callback threads can break the cycle.
+- `flush_sealed_pages` `continue` on QueueFull is wrong — scans remaining pages which all also return QueueFull, making zero progress. Should `break` and signal caller.
+- `allocate_at_tail` calls maintenance exactly once and retries once — insufficient for pipeline stall. Writer threads need multi-retry with yield to let I/O callbacks fire.
+- `maintenance()` return at kv.rs:1708 is `let _ = ...` — discards flush result, so can't detect zero-progress cycles.
+- Flush completion signaling is entirely callback-driven (raw fn pointers on I/O threads). No condvar/waker — adding one requires `Arc` shared between FlushCallbackContext and maintenance caller.
+- `FaultInjectingDevice` (io_error_injection.rs) supports Error and torn writes but NOT QueueFull injection — needs extension for deadlock testing.
+- `advance_head` is strictly contiguous — can't skip unflushed pages. One slow page blocks entire eviction pipeline. This is by-design (matches C++).
+- **Deadlock fix pattern:** Break-on-QueueFull + poll_completions + bounded retry loop with yield is the standard C++ FASTER pattern (RETURN_NOT_OK + TryComplete + DoThrottling). All three together close the pipeline stall.
 - In lossy mode, maintenance() can evict pages between find_record_for_key (chain walk) and the subsequent get_record call. Never .expect() on get_record results in the read/rmw/delete hot paths — always handle None gracefully.
 - The epoch protection comment in find_record_for_key was misleading: epoch guards don't prevent eviction when a separate maintenance thread drives lossy eviction concurrently. Snapshot-based classification is advisory, not a guarantee.
 - Three operation paths were affected by the same race: internal_read (NotFound), internal_rmw FuzzyRegion/ReadOnly (Aborted), internal_delete FuzzyRegion/ReadOnly (NotFound). The Mutable paths already had proper None handling.
@@ -79,3 +87,25 @@ Two disk-I/O-heavy samples: `page-cache` (lossy cache with linear/Zipf key distr
 **Files:** `crates/samples/page-cache/{Cargo.toml,src/main.rs}`, `crates/samples/page-store/{Cargo.toml,src/main.rs}`, workspace `Cargo.toml`.
 **Results:** Both compile, clippy clean, and sustain >180K writes/sec on default config.
 **Branch:** `sam/page-cache-store`, **Commit:** `b6c8fd88`
+
+---
+
+### Multi-Writer Deadlock Preparatory Analysis (2026-03-10)
+Full code inventory of the 3-point structural deadlock: (1) `flush_sealed_pages` `continue` on QueueFull makes zero progress, (2) `allocate_at_tail` single-retry insufficient for pipeline stalls, (3) SyncFileDevice `max_outstanding` is dead code (unbounded channel never returns QueueFull). Mapped all touch points across flush.rs, eviction.rs, log_allocator.rs, operations.rs, kv.rs, device.rs, sync_file_device.rs. Identified `FaultInjectingDevice` as extensible test harness (needs QueueFull mode). Documented risks: contiguous eviction constraint, callback thread safety, discarded flush results.
+
+**Output:** `.squad/decisions/inbox/sam-deadlock-prep-analysis.md`
+
+---
+
+### Multi-Writer Deadlock Fix Implementation (2026-03-11)
+Implemented all three fixes from Aragorn's design to close the multi-writer flush pipeline deadlock:
+
+**Fix A** (`5b50d994`): `flush_sealed_pages` now returns `FlushBatchResult { flushed, queue_full }` and breaks on QueueFull instead of continuing. `maintenance()` captures the `queue_full` flag (was `let _ =`).
+
+**Fix B** (`a35b7846`): Added `poll_completions()` to `Device` trait (default returns 0). `SyncFileDevice` implementation yields to give I/O workers CPU time. `allocate_at_tail` now has a bounded retry loop (MAX_ALLOC_RETRIES=32) calling maintenance+yield between attempts.
+
+**Fix C** (`75cba9ea`): `maintenance()` now calls `poll_completions()` after every flush batch, and adds yield+poll when queue_full or buffer_pressure is detected.
+
+**Files:** `flush.rs`, `mod.rs` (export), `device.rs`, `sync_file_device.rs`, `operations.rs`, `kv.rs`.
+**Results:** 1728 tests pass. 6 previously-ignored deadlock tests now pass (including `multi_writer_forward_progress` with 3 writers + SlowDevice). Clippy clean.
+**Branch:** `sam/deadlock-fix`, **Commits:** `5b50d994`, `a35b7846`, `75cba9ea`
