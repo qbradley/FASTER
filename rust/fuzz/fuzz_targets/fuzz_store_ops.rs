@@ -48,6 +48,7 @@ fuzz_target!(|input: StoreInput| {
         eviction_policy: EvictionPolicy::default(),
         grow_config: GrowConfig::default(),
         auto_compact: false,
+        lossy: false,
     };
 
     let store: FasterKv<SimpleFunctions<u64, u64>> =
@@ -59,7 +60,7 @@ fuzz_target!(|input: StoreInput| {
         match op {
             Op::Read { key } => {
                 let mut output: Option<u64> = None;
-                let status = store.read(&mut session, key, &0u64, &mut output, ());
+                let status = store.read(&mut session, key, &0u64, &mut output, ()).status();
                 match status {
                     OperationStatus::Ok => {
                         assert!(output.is_some(), "Ok status but no output");
@@ -77,7 +78,7 @@ fuzz_target!(|input: StoreInput| {
                 }
             }
             Op::Upsert { key, value } => {
-                let status = store.upsert(&mut session, key, value, ());
+                let status = store.upsert(&mut session, key, value, ()).status();
                 assert!(
                     matches!(
                         status,
@@ -91,7 +92,7 @@ fuzz_target!(|input: StoreInput| {
             }
             Op::Rmw { key, input: inp } => {
                 let mut output: Option<u64> = None;
-                let status = store.rmw(&mut session, key, inp, &mut output, ());
+                let status = store.rmw(&mut session, key, inp, &mut output, ()).status();
                 assert!(
                     matches!(
                         status,
@@ -104,7 +105,7 @@ fuzz_target!(|input: StoreInput| {
                 );
             }
             Op::Delete { key } => {
-                let status = store.delete(&mut session, key, ());
+                let status = store.delete(&mut session, key, ()).status();
                 assert!(
                     matches!(
                         status,
