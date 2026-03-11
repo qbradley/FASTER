@@ -48,6 +48,7 @@ use crate::hybrid_log::record_ops::{LogRecordReader, LogRecordWriter, MutableRec
 use crate::hybrid_log::regions::{AddressInfo, AddressRegion};
 use crate::record::{Key, RecordInfo, RecordLayout, Value};
 use crate::status::OperationStatus;
+use crate::sync::thread;
 use crate::store::functions::{
     DeleteInfo, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo,
 };
@@ -213,7 +214,7 @@ const MAX_ALLOC_RETRIES: u32 = 32;
 ///
 /// When the buffer is full (SF-10), the function calls `on_alloc_failure`
 /// (typically [`FasterKv::maintenance`]) in a bounded retry loop with
-/// [`std::thread::yield_now`] between attempts, giving I/O worker threads
+/// [`thread::yield_now`] between attempts, giving I/O worker threads
 /// CPU time to complete flushes and free pages.
 pub(crate) fn allocate_at_tail<K: Key, V: Value>(
     allocator: &HybridLogAllocator,
@@ -240,7 +241,7 @@ pub(crate) fn allocate_at_tail<K: Key, V: Value>(
     let maint_fn = on_alloc_failure?;
     for _ in 0..MAX_ALLOC_RETRIES {
         maint_fn();
-        std::thread::yield_now();
+        thread::yield_now();
 
         if let Some(result) = writer.allocate_record(key, value) {
             return Some(result);

@@ -35,7 +35,7 @@
 // ============================================================
 #[cfg(loom)]
 pub(crate) use loom::sync::atomic::{
-    AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence,
+    AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering, fence,
 };
 #[cfg(loom)]
 pub(crate) use loom::sync::{Arc, Mutex};
@@ -43,7 +43,7 @@ pub(crate) use loom::sync::{Arc, Mutex};
 #[cfg(loom)]
 pub(crate) use loom::thread;
 #[cfg(loom)]
-pub(crate) use std::sync::RwLock;
+pub(crate) use std::sync::{RwLock, RwLockReadGuard};
 
 // ============================================================
 // Tier 2: simulation — cooperative DST framework
@@ -51,10 +51,10 @@ pub(crate) use std::sync::RwLock;
 // ============================================================
 #[cfg(all(not(loom), feature = "simulation"))]
 pub(crate) use std::sync::atomic::{
-    AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence,
+    AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering, fence,
 };
 #[cfg(all(not(loom), feature = "simulation"))]
-pub(crate) use std::sync::{Arc, Mutex, RwLock};
+pub(crate) use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 #[cfg(all(not(loom), feature = "simulation"))]
 pub(crate) use std::thread;
 
@@ -63,10 +63,10 @@ pub(crate) use std::thread;
 // ============================================================
 #[cfg(all(not(loom), not(feature = "simulation")))]
 pub(crate) use std::sync::atomic::{
-    AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence,
+    AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering, fence,
 };
 #[cfg(all(not(loom), not(feature = "simulation")))]
-pub(crate) use std::sync::{Arc, Mutex, RwLock};
+pub(crate) use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 #[cfg(all(not(loom), not(feature = "simulation")))]
 pub(crate) use std::thread;
 
@@ -102,6 +102,7 @@ mod tests {
         let _u32 = AtomicU32::new(0);
         let _u64 = AtomicU64::new(0);
         let _usize = AtomicUsize::new(0);
+        let _u8 = AtomicU8::new(0);
         let _ptr = AtomicPtr::new(std::ptr::null_mut::<u8>());
         let _ = Ordering::Relaxed;
         fence(Ordering::SeqCst);

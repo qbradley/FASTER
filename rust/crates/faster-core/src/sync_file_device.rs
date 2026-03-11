@@ -623,7 +623,7 @@ impl Device for SyncFileDevice {
         // SyncFileDevice uses background worker threads that complete I/O
         // independently. We cannot directly poll their completions, but
         // yielding gives them CPU time to run callbacks (Flushing → Flushed).
-        std::thread::yield_now();
+        thread::yield_now();
         0
     }
 

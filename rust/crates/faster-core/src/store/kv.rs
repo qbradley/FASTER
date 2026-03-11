@@ -32,7 +32,7 @@
 //! store.dispose_session(session);
 //! ```
 
-use crate::sync::{Arc, Duration, Instant, Mutex};
+use crate::sync::{Arc, Duration, Instant, Mutex, Ordering, thread};
 use std::path::Path;
 
 use crate::address::{LogicalAddress, Page};
@@ -740,7 +740,7 @@ impl<F: Functions> FasterKv<F> {
         for p in head_page..=tail_page {
             let page = Page(p);
             if let Some(frame) = page_table.get_frame(page) {
-                let state = frame.state().load(std::sync::atomic::Ordering::Acquire);
+                let state = frame.state().load(Ordering::Acquire);
                 // Seal Open pages so flush_page_sync can process them.
                 if state == PageState::Open {
                     let _ = frame
@@ -748,7 +748,7 @@ impl<F: Functions> FasterKv<F> {
                         .try_transition(PageState::Open, PageState::Sealed);
                 }
                 // Now flush any Sealed pages.
-                if frame.state().load(std::sync::atomic::Ordering::Acquire) == PageState::Sealed {
+                if frame.state().load(Ordering::Acquire) == PageState::Sealed {
                     let _ = self.flusher.flush_page_sync(
                         page,
                         page_table,
@@ -1476,7 +1476,7 @@ impl<F: Functions> FasterKv<F> {
         #[cfg(feature = "metrics")]
         self.metrics
             .flush_count
-            .fetch_add(u64::from(count), std::sync::atomic::Ordering::Relaxed);
+            .fetch_add(u64::from(count), Ordering::Relaxed);
         count
     }
 
@@ -1517,13 +1517,13 @@ impl<F: Functions> FasterKv<F> {
         for p in head_page..=tail_page {
             let page = Page(p);
             if let Some(frame) = page_table.get_frame(page) {
-                let state = frame.state().load(std::sync::atomic::Ordering::Acquire);
+                let state = frame.state().load(Ordering::Acquire);
                 if state == PageState::Open {
                     let _ = frame
                         .state()
                         .try_transition(PageState::Open, PageState::Sealed);
                 }
-                if frame.state().load(std::sync::atomic::Ordering::Acquire) == PageState::Sealed
+                if frame.state().load(Ordering::Acquire) == PageState::Sealed
                     && self
                         .flusher
                         .flush_page_sync(page, page_table, self.device.as_ref(), page_size)
@@ -1742,7 +1742,7 @@ impl<F: Functions> FasterKv<F> {
         //    under buffer pressure, yield to let I/O worker threads run and
         //    poll completions again.
         if queue_full || buffer_pressure {
-            std::thread::yield_now();
+            thread::yield_now();
             self.device.poll_completions();
         }
     }

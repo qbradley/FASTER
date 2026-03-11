@@ -24,6 +24,7 @@
 
 use crate::hash::index::HashIndex;
 use crate::hash::table::HashTable;
+use crate::sync::RwLock;
 
 use super::splitter::{BucketSplitter, HashResolver, SplitResult};
 use super::state_machine::{GrowError, GrowPhase, GrowStateMachine};
@@ -166,7 +167,7 @@ pub struct GrowManager {
     config: GrowConfig,
     /// The new (doubled) hash table allocated during grow. Only populated
     /// between `begin_grow` and `complete_grow`.
-    new_table: std::sync::RwLock<Option<HashTable>>,
+    new_table: RwLock<Option<HashTable>>,
 }
 
 impl GrowManager {
@@ -175,7 +176,7 @@ impl GrowManager {
         Self {
             state_machine: GrowStateMachine::new(),
             config,
-            new_table: std::sync::RwLock::new(None),
+            new_table: RwLock::new(None),
         }
     }
 

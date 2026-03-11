@@ -38,7 +38,9 @@
 //! | `GrowError`          | (status codes)              | (exceptions)                      |
 
 use core::fmt;
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::Ordering;
+
+use crate::sync::{AtomicU8, RwLock, RwLockReadGuard};
 
 use super::GrowState;
 
@@ -223,9 +225,9 @@ pub struct GrowStateMachine {
     /// Grow state for the active operation. Only valid when phase ≠ Rest.
     /// Protected by the phase transitions (only set during `start`, only
     /// cleared during `reset`).
-    state: std::sync::RwLock<Option<GrowState>>,
+    state: RwLock<Option<GrowState>>,
     /// Target table size in log2 bits for the current grow.
-    new_size_bits: std::sync::atomic::AtomicU8,
+    new_size_bits: AtomicU8,
 }
 
 impl GrowStateMachine {
@@ -243,8 +245,8 @@ impl GrowStateMachine {
     pub fn new() -> Self {
         Self {
             phase: AtomicU8::new(GrowPhase::Rest as u8),
-            state: std::sync::RwLock::new(None),
-            new_size_bits: std::sync::atomic::AtomicU8::new(0),
+            state: RwLock::new(None),
+            new_size_bits: AtomicU8::new(0),
         }
     }
 
@@ -503,7 +505,7 @@ impl fmt::Debug for GrowStateMachine {
 /// Dereferences to `&GrowState`. The guard holds a read-lock; drop it
 /// promptly to avoid blocking state transitions.
 pub struct GrowStateGuard<'a> {
-    guard: std::sync::RwLockReadGuard<'a, Option<GrowState>>,
+    guard: RwLockReadGuard<'a, Option<GrowState>>,
 }
 
 impl<'a> core::ops::Deref for GrowStateGuard<'a> {

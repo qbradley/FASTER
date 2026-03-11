@@ -20,7 +20,7 @@
 //! [`FasterKv`](crate::store::FasterKv). The orchestrator itself is
 //! stateless — it borrows what it needs for a single cycle.
 
-use crate::sync::{Arc, AtomicBool, Ordering};
+use crate::sync::{Arc, AtomicBool, Ordering, thread};
 
 use crate::address::LogicalAddress;
 use crate::compaction::CompactionPlan;
@@ -258,7 +258,7 @@ impl<'a> CompactionOrchestrator<'a> {
             }
             // Yield periodically to avoid burning CPU.
             if i % 1000 == 0 {
-                std::thread::yield_now();
+                thread::yield_now();
             }
             // Also try to drive epoch advancement ourselves.
             self.epoch_table.bump_current_epoch_no_callback();
