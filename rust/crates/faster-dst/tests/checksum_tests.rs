@@ -203,7 +203,7 @@ fn version_2_pages_skip_crc_validation() {
 
     // Recovery should succeed — CRC validation is skipped for v2.
     let engine = LogRecoveryEngine::new();
-    let result = engine.recover_fold_over(&plan, dir.path()).unwrap();
+    let result = engine.recover_fold_over(&plan, dir.path(), "log.").unwrap();
     assert_eq!(result.tail_address, tail);
 }
 
@@ -268,7 +268,9 @@ fn reject_policy_returns_error_on_corruption() {
 
     // Reject policy (default) — should fail with CRC mismatch or trailer corruption.
     let engine = LogRecoveryEngine::new().with_checksum_policy(ChecksumValidationPolicy::Reject);
-    let err = engine.recover_fold_over(&plan, dir.path()).unwrap_err();
+    let err = engine
+        .recover_fold_over(&plan, dir.path(), "log.")
+        .unwrap_err();
     match err {
         faster_core::recovery::RecoveryError::ValidationFailed(issues) => {
             assert!(!issues.is_empty());
@@ -342,7 +344,7 @@ fn warn_policy_continues_on_corruption() {
 
     // Warn policy — should succeed despite CRC mismatch.
     let engine = LogRecoveryEngine::new().with_checksum_policy(ChecksumValidationPolicy::Warn);
-    let result = engine.recover_fold_over(&plan, dir.path());
+    let result = engine.recover_fold_over(&plan, dir.path(), "log.");
     assert!(
         result.is_ok(),
         "Warn policy should allow recovery to proceed"
@@ -409,7 +411,9 @@ fn repair_policy_returns_error_on_corruption() {
 
     // Repair policy — currently behaves like Reject.
     let engine = LogRecoveryEngine::new().with_checksum_policy(ChecksumValidationPolicy::Repair);
-    let err = engine.recover_fold_over(&plan, dir.path()).unwrap_err();
+    let err = engine
+        .recover_fold_over(&plan, dir.path(), "log.")
+        .unwrap_err();
     match err {
         faster_core::recovery::RecoveryError::ValidationFailed(issues) => {
             assert!(
@@ -497,7 +501,7 @@ fn v3_flush_and_recover_passes_crc() {
 
     // Recovery with Reject policy should succeed (CRC is valid).
     let engine = LogRecoveryEngine::new().with_checksum_policy(ChecksumValidationPolicy::Reject);
-    let result = engine.recover_fold_over(&plan, dir.path()).unwrap();
+    let result = engine.recover_fold_over(&plan, dir.path(), "log.").unwrap();
     assert_eq!(result.tail_address, tail);
 }
 

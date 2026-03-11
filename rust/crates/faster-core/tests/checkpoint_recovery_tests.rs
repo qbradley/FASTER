@@ -1098,7 +1098,7 @@ fn log_recovery_fold_over_empty_log() {
     };
 
     let engine = LogRecoveryEngine::new();
-    let result = engine.recover_fold_over(&plan, dir.path()).unwrap();
+    let result = engine.recover_fold_over(&plan, dir.path(), "log.").unwrap();
 
     assert_eq!(result.begin_address, LogicalAddress::ZERO);
     assert_eq!(result.tail_address, LogicalAddress::ZERO);
@@ -1121,7 +1121,7 @@ fn log_recovery_fold_over_rejects_snapshot_type() {
     };
 
     let engine = LogRecoveryEngine::new();
-    let result = engine.recover_fold_over(&plan, Path::new("/nonexistent"));
+    let result = engine.recover_fold_over(&plan, Path::new("/nonexistent"), "log.");
     assert!(result.is_err(), "fold_over should reject snapshot type");
 }
 
@@ -1141,7 +1141,7 @@ fn log_recovery_snapshot_rejects_fold_over_type() {
     };
 
     let engine = LogRecoveryEngine::new();
-    let result = engine.recover_snapshot(&plan, Path::new("/nonexistent"));
+    let result = engine.recover_snapshot(&plan, Path::new("/nonexistent"), "log.");
     assert!(result.is_err(), "snapshot should reject fold-over type");
 }
 
