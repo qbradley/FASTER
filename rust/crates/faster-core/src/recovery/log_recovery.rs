@@ -125,7 +125,7 @@ impl fmt::Display for LogRecoveryResult {
 ///
 /// let engine = LogRecoveryEngine::new();
 /// let result = engine
-///     .recover_fold_over(&plan, Path::new("/data/faster"))
+///     .recover_fold_over(&plan, Path::new("/data/faster"), "log.")
 ///     .unwrap();
 /// println!("Recovered log: {result}");
 /// ```
