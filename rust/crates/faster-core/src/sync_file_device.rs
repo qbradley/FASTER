@@ -619,6 +619,14 @@ impl Device for SyncFileDevice {
         self.high_water.load(Ordering::Relaxed)
     }
 
+    fn poll_completions(&self) -> u32 {
+        // SyncFileDevice uses background worker threads that complete I/O
+        // independently. We cannot directly poll their completions, but
+        // yielding gives them CPU time to run callbacks (Flushing → Flushed).
+        std::thread::yield_now();
+        0
+    }
+
     fn close(&self) {
         if self
             .closed

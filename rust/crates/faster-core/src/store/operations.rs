@@ -199,10 +199,22 @@ fn find_record_for_key<K: Key>(
     None
 }
 
+/// Maximum number of maintenance + yield retry attempts when the buffer is
+/// full. Each iteration calls the `on_alloc_failure` callback (which runs
+/// `maintenance()` → flush + poll_completions + evict) and then yields to
+/// let I/O worker threads fire callbacks. 32 iterations ≈ a few milliseconds
+/// of cooperative waiting — enough for at least one page flush to complete.
+const MAX_ALLOC_RETRIES: u32 = 32;
+
 /// Allocate a new record at the log tail, handling page-boundary
-/// crossing (advance to next page + single retry).
+/// crossing (advance to next page + bounded retry).
 ///
 /// On success returns `(LogicalAddress, MutableRecordAccessor)`.
+///
+/// When the buffer is full (SF-10), the function calls `on_alloc_failure`
+/// (typically [`FasterKv::maintenance`]) in a bounded retry loop with
+/// [`std::thread::yield_now`] between attempts, giving I/O worker threads
+/// CPU time to complete flushes and free pages.
 pub(crate) fn allocate_at_tail<K: Key, V: Value>(
     allocator: &HybridLogAllocator,
     key: &K,
@@ -223,17 +235,23 @@ pub(crate) fn allocate_at_tail<K: Key, V: Value>(
         }
     }
 
-    // SF-10 blocked: buffer is full. Call maintenance to flush/evict and retry.
-    if let Some(maint_fn) = on_alloc_failure {
+    // SF-10 blocked: buffer is full. Run a bounded retry loop calling
+    // maintenance + yield to drain the flush/eviction pipeline.
+    let maint_fn = on_alloc_failure?;
+    for _ in 0..MAX_ALLOC_RETRIES {
         maint_fn();
+        std::thread::yield_now();
+
         if let Some(result) = writer.allocate_record(key, value) {
             return Some(result);
         }
-        allocator.advance_to_next_page()?;
-        writer.allocate_record(key, value)
-    } else {
-        None
+        if allocator.advance_to_next_page().is_some() {
+            if let Some(result) = writer.allocate_record(key, value) {
+                return Some(result);
+            }
+        }
     }
+    None
 }
 
 // ── Read ────────────────────────────────────────────────────────────
