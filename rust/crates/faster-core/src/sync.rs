@@ -35,7 +35,7 @@
 // ============================================================
 #[cfg(loom)]
 pub(crate) use loom::sync::atomic::{
-    AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering, fence,
+    AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence,
 };
 #[cfg(loom)]
 pub(crate) use loom::sync::{Arc, Mutex};
@@ -51,7 +51,7 @@ pub(crate) use std::sync::{RwLock, RwLockReadGuard};
 // ============================================================
 #[cfg(all(not(loom), feature = "simulation"))]
 pub(crate) use std::sync::atomic::{
-    AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering, fence,
+    AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence,
 };
 #[cfg(all(not(loom), feature = "simulation"))]
 pub(crate) use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
@@ -63,7 +63,7 @@ pub(crate) use std::thread;
 // ============================================================
 #[cfg(all(not(loom), not(feature = "simulation")))]
 pub(crate) use std::sync::atomic::{
-    AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering, fence,
+    AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence,
 };
 #[cfg(all(not(loom), not(feature = "simulation")))]
 pub(crate) use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
