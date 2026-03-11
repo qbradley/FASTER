@@ -777,7 +777,7 @@ fn concurrent_compaction_and_checkpoint() {
         barrier_c.wait();
         // Compaction may fail with EmptyRegion if checkpoint already moved
         // the data — that's fine.
-        let _ = store_c.compact();
+        let _result = store_c.compact();
     });
 
     // Thread 2: checkpoint.
@@ -787,7 +787,9 @@ fn concurrent_compaction_and_checkpoint() {
     let checkpointer = thread::spawn(move || {
         barrier_k.wait();
         // Second checkpoint concurrent with compaction.
-        let _ = store_k.checkpoint(&dir_path, CheckpointType::FoldOver);
+        store_k
+            .checkpoint(&dir_path, CheckpointType::FoldOver)
+            .expect("checkpoint should succeed");
     });
 
     compactor.join().expect("compactor panicked");
