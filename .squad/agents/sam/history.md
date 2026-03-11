@@ -113,3 +113,6 @@ Implemented all three fixes from Aragorn's design to close the multi-writer flus
 **Files:** `flush.rs`, `mod.rs` (export), `device.rs`, `sync_file_device.rs`, `operations.rs`, `kv.rs`.
 **Results:** 1728 tests pass. 6 previously-ignored deadlock tests now pass (including `multi_writer_forward_progress` with 3 writers + SlowDevice). Clippy clean.
 **Branch:** `sam/deadlock-fix`, **Commits:** `5b50d994`, `a35b7846`, `75cba9ea`
+- The Device trait already has a default `poll_completions()` method (returns 0) added during the deadlock fix. All Device implementations (NullDevice, InMemoryDevice, SyncFileDevice, SimulatedDevice) either use the default or have their own implementation. No additional work needed.
+- Recovery code was tightly coupled to the hardcoded "log." prefix for log segment filenames. Added `log_prefix` parameter to `recover_fold_over()` and `recover_snapshot()` methods, and threaded it through all validation functions (`validate_log_file`, `validate_log_file_for_head`, `validate_page_checksums`).
+- The simplest correct approach for the prefix fix is to pass the prefix as a parameter to recovery functions, rather than storing it in checkpoint metadata or trying to auto-discover it. This makes recovery explicit and predictable.
