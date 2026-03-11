@@ -29,3 +29,5 @@ fuzz/artifacts/
 
 # Mutation testing output
 mutants.out/
+
+release-gate-report.md
