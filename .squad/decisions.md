@@ -1837,3 +1837,9 @@ Expand miri test coverage to include ALL testable unsafe modules in faster-core.
 
 - New unsafe code MUST include corresponding miri test
 - Keep miri tests small and focused (one unsafe pattern per test)
+
+### 2026-03-11: PR-based development workflow
+**Status:** Active
+**By:** qbradley
+**Decision:** All work now goes through pull requests targeting the `rust` branch. Agents use `git worktree` for parallel development. Branch naming: `squad/{agent}/{feature-slug}`. No direct commits to `rust`.
+**Rationale:** Production workflow for code review and quality gating.

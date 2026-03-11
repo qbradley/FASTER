@@ -23,7 +23,7 @@
 
 use std::cell::Cell;
 
-use faster_core::store::{DeleteInfo, Functions, ReadInfo, RmwInfo, RmwInPlaceResult, UpsertInfo};
+use faster_core::store::{DeleteInfo, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo};
 
 // ── Minimum buffer capacity ─────────────────────────────────────────
 
@@ -148,7 +148,6 @@ pub(crate) struct RmwCallbackSet {
 
 /// Upsert callback set installed per-operation.
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
 pub(crate) struct UpsertCallbackSet {
     pub put: Option<FasterUpsertPutFn>,
     pub _put_atomic: Option<FasterUpsertPutAtomicFn>,
@@ -156,7 +155,6 @@ pub(crate) struct UpsertCallbackSet {
 
 /// Read callback set installed per-operation.
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
 pub(crate) struct ReadCallbackSet {
     pub get: Option<FasterReadGetFn>,
     pub _get_atomic: Option<FasterReadGetAtomicFn>,
@@ -428,14 +426,20 @@ mod tests {
     use faster_core::address::LogicalAddress;
     use faster_core::record::RecordInfo;
 
-    fn dummy_read_info() -> ReadInfo { ReadInfo::new(0, LogicalAddress::INVALID, RecordInfo::default()) }
-    fn dummy_upsert_info() -> UpsertInfo { UpsertInfo::new(0, LogicalAddress::INVALID, RecordInfo::default()) }
-    fn dummy_rmw_info() -> RmwInfo { RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::default(), false) }
+    fn dummy_rmw_info() -> RmwInfo {
+        RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::default(), false)
+    }
+
+    fn dummy_read_info() -> ReadInfo {
+        ReadInfo::new(0, LogicalAddress::INVALID, RecordInfo::default())
+    }
+
+    fn dummy_upsert_info() -> UpsertInfo {
+        UpsertInfo::new(0, LogicalAddress::INVALID, RecordInfo::default())
+    }
 
     // ── RMW callback tests ──────────────────────────────────────────
 
-    /// Sum-store pattern: value is a little-endian u64 counter,
-    /// input is the delta to add.
     extern "C" fn sum_initial(
         _key_ptr: *const u8,
         _key_len: usize,
@@ -508,27 +512,24 @@ mod tests {
         let f = CallbackFunctions;
         let key = vec![1u8, 2, 3];
         let input = 42u64.to_le_bytes().to_vec();
+        let info = dummy_rmw_info();
 
-        // Install callbacks
         let _guard = RmwCallbackGuard::install(RmwCallbackSet {
             initial: Some(sum_initial),
             copy_update: Some(sum_copy),
             in_place: Some(sum_atomic),
         });
 
-        // Test initial
         let mut value = Vec::new();
         let mut output = None;
-        f.rmw_initial(&key, &input, &mut value, &mut output, &dummy_rmw_info());
+        f.rmw_initial(&key, &input, &mut value, &mut output, &info);
         assert_eq!(u64::from_le_bytes(value[..8].try_into().unwrap()), 42);
 
-        // Test in-place (add 10)
         let input2 = 10u64.to_le_bytes().to_vec();
-        let result = f.rmw_in_place(&key, &input2, &mut value, &mut output, &dummy_rmw_info());
+        let result = f.rmw_in_place(&key, &input2, &mut value, &mut output, &info);
         assert_eq!(result, RmwInPlaceResult::InPlaceOk);
         assert_eq!(u64::from_le_bytes(value[..8].try_into().unwrap()), 52);
 
-        // Test copy-update (add 8)
         let input3 = 8u64.to_le_bytes().to_vec();
         let old_value = value.clone();
         let mut new_value = Vec::new();
@@ -548,21 +549,20 @@ mod tests {
         let f = CallbackFunctions;
         let key = vec![1u8];
         let input = vec![10u8, 20];
+        let info = dummy_rmw_info();
 
-        // No callbacks installed — should do byte-slice replacement
         let mut value = Vec::new();
         let mut output = None;
-        f.rmw_initial(&key, &input, &mut value, &mut output, &dummy_rmw_info());
+        f.rmw_initial(&key, &input, &mut value, &mut output, &info);
         assert_eq!(value, vec![10, 20]);
 
         let input2 = vec![30u8, 40];
-        let result = f.rmw_in_place(&key, &input2, &mut value, &mut output, &dummy_rmw_info());
+        let result = f.rmw_in_place(&key, &input2, &mut value, &mut output, &info);
         assert_eq!(result, RmwInPlaceResult::InPlaceOk);
         assert_eq!(value, vec![30, 40]);
 
-        // Different length → NeedsNewRecord
         let input3 = vec![50u8, 60, 70];
-        let result = f.rmw_in_place(&key, &input3, &mut value, &mut output, &dummy_rmw_info());
+        let result = f.rmw_in_place(&key, &input3, &mut value, &mut output, &info);
         assert_eq!(result, RmwInPlaceResult::NeedsNewRecord);
     }
 
@@ -576,11 +576,8 @@ mod tests {
             });
             assert!(RMW_CALLBACKS.with(|c| c.get()).is_some());
         }
-        // After guard drops, should be None
         assert!(RMW_CALLBACKS.with(|c| c.get()).is_none());
     }
-
-    // ── Read callback tests ─────────────────────────────────────────
 
     extern "C" fn read_double(
         _key_ptr: *const u8,
@@ -610,6 +607,7 @@ mod tests {
         let key = vec![1u8];
         let value = vec![0xAA, 0xBB];
         let input = Vec::new();
+        let info = dummy_read_info();
 
         let _guard = ReadCallbackGuard::install(ReadCallbackSet {
             get: Some(read_double),
@@ -617,7 +615,7 @@ mod tests {
         });
 
         let mut output = None;
-        f.read(&key, &value, &input, &mut output, &dummy_read_info());
+        f.read(&key, &value, &input, &mut output, &info);
         assert_eq!(output, Some(vec![0xAA, 0xBB, 0xAA, 0xBB]));
     }
 
@@ -628,11 +626,10 @@ mod tests {
         let value = vec![0xDE, 0xAD];
         let input = Vec::new();
         let mut output = None;
-        f.read(&key, &value, &input, &mut output, &dummy_read_info());
+        let info = dummy_read_info();
+        f.read(&key, &value, &input, &mut output, &info);
         assert_eq!(output, Some(vec![0xDE, 0xAD]));
     }
-
-    // ── Upsert callback tests ───────────────────────────────────────
 
     extern "C" fn upsert_uppercase(
         _key_ptr: *const u8,
@@ -659,6 +656,7 @@ mod tests {
         let f = CallbackFunctions;
         let key = vec![1u8];
         let input = b"hello".to_vec();
+        let info = dummy_upsert_info();
 
         let _guard = UpsertCallbackGuard::install(UpsertCallbackSet {
             put: Some(upsert_uppercase),
@@ -667,7 +665,7 @@ mod tests {
 
         let mut value = Vec::new();
         let mut output = None;
-        f.upsert(&key, &mut value, &input, None, &mut output, &dummy_upsert_info());
+        f.upsert(&key, &mut value, &input, None, &mut output, &info);
         assert_eq!(value, b"HELLO");
     }
 
@@ -678,7 +676,8 @@ mod tests {
         let input = vec![42u8, 43];
         let mut value = vec![1u8, 2, 3];
         let mut output = None;
-        f.upsert(&key, &mut value, &input, None, &mut output, &dummy_upsert_info());
+        let info = dummy_upsert_info();
+        f.upsert(&key, &mut value, &input, None, &mut output, &info);
         assert_eq!(value, vec![42, 43]);
     }
 }

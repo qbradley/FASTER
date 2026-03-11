@@ -1,24 +1,16 @@
-//! Batch operation API with two-level prefetch pipeline for FASTER sessions.
+//! Batch operation API for FASTER sessions.
 //!
 //! This module provides high-throughput batch operations that amortize
 //! per-operation overhead. A batch:
 //!
 //! 1. Enters epoch protection **once** for the entire batch (not per-op).
-//! 2. Uses a **two-level prefetch pipeline** to overlap memory fetches:
-//!    - **L1**: Hash bucket prefetch — issued `L1_WINDOW` operations ahead.
-//!    - **L2**: Record data prefetch — issued `L2_WINDOW` operations ahead,
-//!      after L1 has resolved the hash entry.
+//! 2. Issues hash-bucket **prefetches** for all keys up front so that
+//!    the CPU's memory subsystem can overlap DRAM latency with useful work.
 //! 3. Processes all operations in sequence under a single epoch region.
-//! 4. Dispatches any pending I/O and refreshes the epoch at configurable
-//!    intervals.
-//!
-//! This can improve throughput by 30–50% compared to individual calls,
-//! especially for larger datasets that exceed L3 cache where the
-//! pointer chase (hash bucket → record) causes two serial cache misses.
+//! 4. Refreshes the epoch every [`BATCH_REFRESH_INTERVAL`] operations to
+//!    avoid stalling safe-epoch advancement.
 //!
 //! # API Styles
-//!
-//! Two styles are provided:
 //!
 //! - **Homogeneous batches** — `batch_read`, `batch_upsert`, `batch_rmw`,
 //!   `batch_delete` on [`UnsafeContext`] accept parallel slices of keys/values.
@@ -31,13 +23,9 @@
 //! goes pending, or returns not-found. The [`BatchResult`] struct reports
 //! per-operation [`OperationStatus`] values and aggregate counts.
 //!
-//! [`UnsafeContext`]: super::UnsafeContext
-//! [`HashIndex::prefetch()`]: crate::hash::index::HashIndex::prefetch
+//! [`UnsafeContext`]: super::session::UnsafeContext
 
-use crate::address::LogicalAddress;
 use crate::hash::Hashable;
-use crate::hash::KeyHash;
-use crate::hash::bucket::HashBucketEntry;
 use crate::status::OperationStatus;
 
 use super::Functions;
@@ -48,20 +36,9 @@ use super::operations::{
 use super::session::UnsafeContext;
 
 /// Number of operations between epoch refreshes within a batch.
-///
-/// Holding epoch protection too long stalls the safe-epoch from advancing.
-/// This constant balances throughput (fewer refreshes) against epoch
-/// responsiveness (more refreshes). 256 is a good default — each refresh
-/// costs ~50 ns, amortized over 256 ops that's < 0.2 ns per op.
-pub(crate) const BATCH_REFRESH_INTERVAL: usize = 256;
+const BATCH_REFRESH_INTERVAL: usize = 256;
 
-/// Returns the epoch refresh interval for batch operations.
-#[inline]
-pub(crate) const fn refresh_interval() -> usize {
-    BATCH_REFRESH_INTERVAL
-}
-
-// ── BatchResult ─────────────────────────────────────────────────────
+// -- BatchResult --
 
 /// Per-operation results from a batch execution.
 ///
@@ -74,7 +51,6 @@ pub struct BatchResult {
 }
 
 impl BatchResult {
-    /// Creates an empty `BatchResult` with pre-allocated capacity.
     #[inline]
     fn filled(n: usize, status: OperationStatus) -> Self {
         Self {
@@ -88,7 +64,7 @@ impl BatchResult {
         self.statuses.len()
     }
 
-    /// Number of operations that completed successfully (non-pending, non-error).
+    /// Number of operations that completed successfully.
     #[inline]
     pub fn succeeded_count(&self) -> usize {
         self.statuses.iter().filter(|s| s.is_success()).count()
@@ -112,8 +88,7 @@ impl BatchResult {
             .count()
     }
 
-    /// Returns `true` if every operation completed successfully
-    /// (no pending, no not-found, no aborted).
+    /// Returns `true` if every operation succeeded.
     #[inline]
     pub fn all_succeeded(&self) -> bool {
         self.statuses.iter().all(|s| s.is_success())
@@ -125,20 +100,16 @@ impl BatchResult {
         self.statuses.contains(&OperationStatus::Pending)
     }
 
-    /// Returns `true` if the batch was empty (zero operations).
+    /// Returns `true` if the batch was empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.statuses.is_empty()
     }
 }
 
-// ── BatchOp ─────────────────────────────────────────────────────────
+// -- BatchOp --
 
 /// A single operation within a mixed batch.
-///
-/// Used with `UnsafeContext::batch_execute` to submit heterogeneous
-/// operations (reads, upserts, RMWs, deletes) in a single
-/// prefetch-optimized batch.
 #[derive(Debug, Clone)]
 pub enum BatchOp<K, I> {
     /// Read the value for `key`.
@@ -148,7 +119,6 @@ pub enum BatchOp<K, I> {
         /// Input passed to the `Functions::read` callback.
         input: I,
     },
-
     /// Insert or update `key` with `input`.
     Upsert {
         /// The key to insert or update.
@@ -156,15 +126,13 @@ pub enum BatchOp<K, I> {
         /// Input passed to the `Functions::upsert` callback.
         input: I,
     },
-
     /// Read-modify-write `key` with `input`.
     Rmw {
         /// The key to modify.
         key: K,
-        /// Modification input (e.g., delta for counters).
+        /// Modification input.
         input: I,
     },
-
     /// Delete `key`.
     Delete {
         /// The key to delete.
@@ -177,21 +145,15 @@ impl<K: Hashable, I> BatchOp<K, I> {
     #[inline]
     pub fn key(&self) -> &K {
         match self {
-            BatchOp::Read { key, .. } => key,
-            BatchOp::Upsert { key, .. } => key,
-            BatchOp::Rmw { key, .. } => key,
-            BatchOp::Delete { key } => key,
+            BatchOp::Read { key, .. }
+            | BatchOp::Upsert { key, .. }
+            | BatchOp::Rmw { key, .. }
+            | BatchOp::Delete { key } => key,
         }
-    }
-
-    /// Computes the [`KeyHash`] for this operation's key.
-    #[inline]
-    pub fn key_hash(&self) -> KeyHash {
-        self.key().hash()
     }
 }
 
-// ── Hash-and-prefetch helpers ───────────────────────────────────────
+// -- Batch methods on UnsafeContext --
 
 #[allow(clippy::needless_range_loop)]
 impl<'a, F: Functions> UnsafeContext<'a, F> {
@@ -220,11 +182,8 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
                 statuses: Vec::new(),
             };
         }
-        Self {
-            hashes: Vec::with_capacity(n),
-            resolved,
-            l1_window,
-            l2_window,
+        for key in keys {
+            store.hash_index.prefetch(key.hash());
         }
         let ctx = InternalContext {
             hash_index: &store.hash_index,
@@ -253,9 +212,11 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         result
     }
 
-    /// L1 stage: hash the key and prefetch the bucket.
-    #[inline]
-    pub fn issue_l1<K: Hashable>(
+    /// Execute a batch of upserts under single-epoch protection.
+    ///
+    /// # Panics
+    /// Panics if `keys.len() != inputs.len()`.
+    pub fn batch_upsert(
         &mut self,
         store: &FasterKv<F>,
         keys: &[F::Key],
@@ -304,9 +265,11 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         result
     }
 
-    /// L2 stage: resolve the hash entry and prefetch the record.
-    #[inline]
-    pub fn issue_l2(
+    /// Execute a batch of read-modify-write operations.
+    ///
+    /// # Panics
+    /// Panics if lengths of `keys`, `inputs`, and `outputs` differ.
+    pub fn batch_rmw(
         &mut self,
         store: &FasterKv<F>,
         keys: &[F::Key],
@@ -358,8 +321,8 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
             if (i + 1) % BATCH_REFRESH_INTERVAL == 0 {
                 self.refresh();
             }
-            self.resolved[idx] = ResolvedEntry { entry, addr };
         }
+        result
     }
 
     /// Execute a batch of deletes under single-epoch protection.
@@ -401,8 +364,11 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         result
     }
 
-    /// Prime the pipeline by issuing L2 prefetches for the first L2 window.
-    pub fn prime_l2(
+    /// Execute a mixed batch of heterogeneous operations.
+    ///
+    /// # Panics
+    /// Panics if `ops.len() != outputs.len()`.
+    pub fn batch_execute(
         &mut self,
         store: &FasterKv<F>,
         ops: &[BatchOp<F::Key, F::Input>],
@@ -502,7 +468,7 @@ mod tests {
         };
         assert!(result.is_empty());
         assert_eq!(result.total(), 0);
-        assert!(result.all_succeeded()); // vacuously true
+        assert!(result.all_succeeded());
         assert!(!result.has_pending());
     }
 
@@ -545,7 +511,6 @@ mod tests {
             input: 100,
         };
         assert_eq!(*op.key(), 99);
-
         let op: BatchOp<u64, u64> = BatchOp::Delete { key: 13 };
         assert_eq!(*op.key(), 13);
     }

@@ -153,6 +153,7 @@ fn default_threads() -> usize {
 ///
 /// This must match the page size used by `faster_core`. All memory
 /// accounting is in units of these pages.
+#[allow(dead_code)]
 const FASTER_PAGE_SIZE: usize = 1 << 25;
 
 // ── Async Stats Reporter ────────────────────────────────────────────────
