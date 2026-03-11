@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use super::CheckpointToken;
 use crate::error::FasterError;
 use crate::state::{AtomicSystemState, Phase, SystemState};
+use crate::sync::Mutex;
 
 // ---------------------------------------------------------------------------
 // CheckpointPhase
@@ -145,7 +146,7 @@ pub struct CheckpointStateMachine {
     /// Packed (phase, version) state word (EPVS).
     state: AtomicSystemState,
     /// Token of the currently-active checkpoint.
-    token: std::sync::Mutex<Option<CheckpointToken>>,
+    token: Mutex<Option<CheckpointToken>>,
 }
 
 impl CheckpointStateMachine {
@@ -154,7 +155,7 @@ impl CheckpointStateMachine {
     pub fn new() -> Self {
         Self {
             state: AtomicSystemState::new(SystemState::INITIAL),
-            token: std::sync::Mutex::new(None),
+            token: Mutex::new(None),
         }
     }
 
@@ -164,7 +165,7 @@ impl CheckpointStateMachine {
     pub fn with_state(initial: SystemState) -> Self {
         Self {
             state: AtomicSystemState::new(initial),
-            token: std::sync::Mutex::new(None),
+            token: Mutex::new(None),
         }
     }
 

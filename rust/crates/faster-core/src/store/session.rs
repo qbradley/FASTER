@@ -39,7 +39,7 @@
 
 use std::marker::PhantomData;
 
-use crate::sync::Arc;
+use crate::sync::{Arc, Ordering, thread};
 
 use crate::address::LogicalAddress;
 use crate::epoch::EpochTable;
@@ -339,7 +339,7 @@ impl<F: Functions> FasterSession<F> {
                         break;
                     }
                     Err(ctx) => {
-                        std::thread::yield_now();
+                        thread::yield_now();
                         pending_ctx = ctx;
                     }
                 }
@@ -668,10 +668,10 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
             .session
             .epoch_table
             .current_epoch
-            .load(std::sync::atomic::Ordering::Relaxed);
+            .load(Ordering::Relaxed);
         entry
             .local_current_epoch
-            .store(epoch, std::sync::atomic::Ordering::Release);
+            .store(epoch, Ordering::Release);
         self.session.epoch_table.try_drain();
     }
 
