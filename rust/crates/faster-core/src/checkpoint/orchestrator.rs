@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 
 use crate::sync::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::address::LogicalAddress;
 use crate::checkpoint::index_writer::IndexCheckpointWriter;
 use crate::checkpoint::log_writer::LogCheckpointWriter;
 use crate::checkpoint::metadata_store::CheckpointMetadataStore;
@@ -109,6 +110,25 @@ impl CheckpointOrchestrator {
         sessions: &[SessionCheckpointState],
         base_dir: &Path,
     ) -> Result<CheckpointToken, CheckpointError> {
+        self.take_checkpoint_with_tail(checkpoint_type, index, log, sessions, base_dir, None)
+    }
+
+    /// Like [`take_checkpoint`](Self::take_checkpoint) but accepts a
+    /// pre-flushed tail address for fold-over mode.
+    ///
+    /// When the caller has already flushed all pages up to a known tail
+    /// address, passing it here avoids a race where concurrent writes
+    /// advance the allocator's tail past the flushed point, causing
+    /// `wait_for_flush` to stall or time out.
+    pub fn take_checkpoint_with_tail(
+        &self,
+        checkpoint_type: CheckpointType,
+        index: &HashIndex,
+        log: &HybridLogAllocator,
+        sessions: &[SessionCheckpointState],
+        base_dir: &Path,
+        pre_flushed_tail: Option<LogicalAddress>,
+    ) -> Result<CheckpointToken, CheckpointError> {
         trace_span!("take_checkpoint", checkpoint_type = ?checkpoint_type);
         // 1. Prepare — generate token, Rest → Prepare
         let token = CheckpointToken::new(random_token_value());
@@ -118,7 +138,15 @@ impl CheckpointOrchestrator {
         })?;
 
         // From here on, any failure must reset the state machine.
-        match self.run_checkpoint(checkpoint_type, &token, index, log, sessions, base_dir) {
+        match self.run_checkpoint(
+            checkpoint_type,
+            &token,
+            index,
+            log,
+            sessions,
+            base_dir,
+            pre_flushed_tail,
+        ) {
             Ok(()) => Ok(token),
             Err(e) => {
                 // Best-effort abort: walk the state machine forward to
@@ -151,6 +179,7 @@ impl CheckpointOrchestrator {
         log: &HybridLogAllocator,
         sessions: &[SessionCheckpointState],
         base_dir: &Path,
+        pre_flushed_tail: Option<LogicalAddress>,
     ) -> Result<(), CheckpointError> {
         // Prepare → InProgress
         self.advance(CheckpointPhase::Prepare, CheckpointPhase::InProgress)?;
@@ -161,7 +190,8 @@ impl CheckpointOrchestrator {
         crash_point!("checkpoint_index_written");
 
         // 3. Write log checkpoint
-        let log_info = self.write_log_checkpoint(checkpoint_type, token, log)?;
+        let (log_info, checkpoint_tail) =
+            self.write_log_checkpoint(checkpoint_type, token, log, pre_flushed_tail)?;
 
         // InProgress → WaitFlush
         self.advance(CheckpointPhase::InProgress, CheckpointPhase::WaitFlush)?;
@@ -169,7 +199,7 @@ impl CheckpointOrchestrator {
 
         // 4. Wait for flush (fold-over) — snapshot mode completes immediately
         if checkpoint_type == CheckpointType::FoldOver {
-            self.wait_for_flush(token, log)?;
+            self.wait_for_flush(checkpoint_tail, log)?;
         }
 
         // WaitFlush → WaitCompletion
@@ -246,23 +276,28 @@ impl CheckpointOrchestrator {
     }
 
     /// Write the log checkpoint (fold-over or snapshot) and return the
-    /// recovery info.
+    /// recovery info along with the captured checkpoint tail address.
     fn write_log_checkpoint(
         &self,
         checkpoint_type: CheckpointType,
         token: &CheckpointToken,
         log: &HybridLogAllocator,
-    ) -> Result<LogRecoveryInfo, CheckpointError> {
+        pre_flushed_tail: Option<LogicalAddress>,
+    ) -> Result<(LogRecoveryInfo, LogicalAddress), CheckpointError> {
         let writer = LogCheckpointWriter::new(checkpoint_type);
 
         match checkpoint_type {
             CheckpointType::FoldOver => {
-                let ctx = writer.begin_checkpoint(log, token)?;
-                writer.complete(ctx)
+                let ctx = writer.begin_checkpoint_at(log, token, pre_flushed_tail)?;
+                let checkpoint_tail = ctx.start_tail;
+                let info = writer.complete(ctx)?;
+                Ok((info, checkpoint_tail))
             }
             CheckpointType::Snapshot => {
                 let ctx = writer.begin_snapshot_checkpoint(log, token)?;
-                writer.complete_snapshot(ctx)
+                let checkpoint_tail = ctx.snapshot_tail;
+                let info = writer.complete_snapshot(ctx)?;
+                Ok((info, checkpoint_tail))
             }
         }
     }
@@ -271,15 +306,13 @@ impl CheckpointOrchestrator {
     /// tail, or we exceed [`CheckpointConfig::max_wait_flush`].
     fn wait_for_flush(
         &self,
-        token: &CheckpointToken,
+        checkpoint_tail: LogicalAddress,
         log: &HybridLogAllocator,
     ) -> Result<(), CheckpointError> {
-        let writer = LogCheckpointWriter::new(CheckpointType::FoldOver);
-        let ctx = writer.begin_checkpoint(log, token)?;
-
         let deadline = Instant::now() + self.config.max_wait_flush;
         loop {
-            if writer.wait_flush_complete(&ctx, log).is_ok() {
+            let flushed = log.flushed_until_address();
+            if flushed >= checkpoint_tail {
                 return Ok(());
             }
             if Instant::now() >= deadline {
