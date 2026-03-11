@@ -529,7 +529,6 @@ fn queue_full_device_returns_queue_full_after_threshold() {
 /// This test is written against the NEW `flush_sealed_pages` signature
 /// from Fix A in the design doc.
 #[test]
-#[ignore = "requires deadlock fix: FlushBatchResult return type (Fix A)"]
 fn flush_batch_aborts_on_queue_full() {
     // QueueFull after 1 successful page flush — the second page triggers abort.
     let device = QueueFullDevice::queue_full_after(1);
@@ -651,7 +650,7 @@ fn slow_device_simulates_io_latency() {
 /// After the fix (batch abort + poll_completions + retry loop), writers
 /// drain I/O completions and eventually make progress.
 #[test]
-#[ignore = "requires deadlock fix: poll_completions + retry loop (Fix A+B)"]
+#[ignore = "tier-2: 10s multi-writer stress test"]
 fn multi_writer_forward_progress() {
     let device = SlowDevice::new(Duration::from_millis(10));
     let config = multi_writer_config();
@@ -759,7 +758,6 @@ fn multi_writer_forward_progress() {
 /// Post-fix: the retry loop in allocate_at_tail should recover from
 /// transient buffer-full conditions.
 #[test]
-#[ignore = "requires deadlock fix: allocate_at_tail retry loop (Fix B)"]
 fn multi_writer_progress_with_sync_device() {
     let config = deadlock_config();
     let store = Arc::new(FasterKv::new(
@@ -870,7 +868,6 @@ fn queue_full_then_succeed_device_works() {
 /// the retry loop should eventually succeed. This verifies Fix B's
 /// bounded retry with poll_completions draining.
 #[test]
-#[ignore = "requires deadlock fix: allocate_at_tail retry loop (Fix B)"]
 fn retry_loop_eventually_succeeds_after_queue_full_clears() {
     // QueueFull for first 5 page flushes, then succeeds.
     let device = QueueFullThenSucceedDevice::new(5);
@@ -951,7 +948,6 @@ fn persistent_queue_full_eventually_gives_up() {
 /// - InMemoryDevice: returns 0 (all I/O is sync)
 /// - Default trait impl: returns 0 (backward-compatible no-op)
 #[test]
-#[ignore = "requires deadlock fix: poll_completions trait method (Fix B)"]
 fn poll_completions_default_returns_zero() {
     let null_device = NullDevice::new();
     assert_eq!(
@@ -972,7 +968,6 @@ fn poll_completions_default_returns_zero() {
 /// SlowDevice doesn't implement poll_completions (uses trait default),
 /// so it should also return 0.
 #[test]
-#[ignore = "requires deadlock fix: poll_completions trait method (Fix B)"]
 fn slow_device_poll_completions_returns_zero() {
     let slow_device = SlowDevice::new(Duration::from_millis(10));
     assert_eq!(
