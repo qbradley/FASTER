@@ -333,6 +333,8 @@ impl SlowDevice {
 /// remain valid for the lifetime of the I/O operation (guaranteed by the
 /// Device trait contract, same as SyncFileDevice).
 unsafe impl Send for SlowDevice {}
+// SAFETY: All mutable state in SlowDevice (counters, inner device) is behind
+// Arc/Atomic types, so concurrent &-ref access from multiple threads is safe.
 unsafe impl Sync for SlowDevice {}
 
 impl Device for SlowDevice {
@@ -375,6 +377,9 @@ impl Device for SlowDevice {
         // Copy data into the inner device synchronously (so it's available
         // for later reads), but delay the callback.
         {
+            // SAFETY: `source` is a valid pointer to `len` bytes provided by the
+            // caller (Device trait contract guarantees the buffer is live for the
+            // duration of the synchronous copy).
             let src_slice = unsafe { std::slice::from_raw_parts(source, len as usize) };
             let _ = self.inner.write_sync(offset, src_slice);
         }
@@ -482,6 +487,8 @@ fn queue_full_device_returns_queue_full_after_threshold() {
 
     // First 3 writes succeed (write indices 0, 1, 2 — all < 3).
     for i in 0..3 {
+        // SAFETY: `data` is a valid stack buffer that outlives the synchronous
+        // write, `noop_callback` is a safe no-op, and context is null.
         let result = unsafe {
             device.write_async(
                 data.as_ptr(),
@@ -498,6 +505,7 @@ fn queue_full_device_returns_queue_full_after_threshold() {
     }
 
     // Fourth write should return QueueFull (write index 3 >= 3).
+    // SAFETY: Same as above — valid buffer, no-op callback, null context.
     let result = unsafe {
         device.write_async(
             data.as_ptr(),
@@ -577,6 +585,9 @@ fn slow_device_simulates_io_latency() {
     let data = [0xCDu8; 512];
 
     let start = Instant::now();
+    // SAFETY: `data` is a valid stack buffer, `test_callback` correctly
+    // interprets `context` as `*const AtomicBool`, and `completed` lives on
+    // the stack until the callback fires (verified by the wait loop below).
     let result = unsafe {
         device.write_async(
             data.as_ptr(),
@@ -820,6 +831,8 @@ fn queue_full_then_succeed_device_works() {
 
     // First 3 writes (count 0, 1, 2) should return QueueFull.
     for i in 0..3 {
+        // SAFETY: `data` is a valid stack buffer that outlives the synchronous
+        // call, `noop_callback` is a safe no-op, and context is null.
         let result = unsafe {
             device.write_async(
                 data.as_ptr(),
@@ -836,6 +849,7 @@ fn queue_full_then_succeed_device_works() {
     }
 
     // Write 3 (count == fail_count) should succeed.
+    // SAFETY: Same as above — valid buffer, no-op callback, null context.
     let result = unsafe {
         device.write_async(
             data.as_ptr(),
@@ -1019,6 +1033,8 @@ fn queue_full_device_toggle() {
     let data = [0xFFu8; 512];
 
     // Initially disabled — writes succeed.
+    // SAFETY: `data` is a valid stack buffer, `noop_callback` is a safe no-op,
+    // and context is null.
     let result =
         unsafe { device.write_async(data.as_ptr(), 0, 512, noop_callback, std::ptr::null_mut()) };
     assert!(matches!(result, IoRequestResult::CompletedSync));
@@ -1026,6 +1042,7 @@ fn queue_full_device_toggle() {
     // Enable QueueFull.
     toggle.store(true, Ordering::Release);
 
+    // SAFETY: Same guarantees — valid buffer, no-op callback, null context.
     let result =
         unsafe { device.write_async(data.as_ptr(), 512, 512, noop_callback, std::ptr::null_mut()) };
     assert!(matches!(result, IoRequestResult::QueueFull));
@@ -1033,6 +1050,7 @@ fn queue_full_device_toggle() {
     // Disable QueueFull.
     toggle.store(false, Ordering::Release);
 
+    // SAFETY: Same guarantees — valid buffer, no-op callback, null context.
     let result = unsafe {
         device.write_async(
             data.as_ptr(),
