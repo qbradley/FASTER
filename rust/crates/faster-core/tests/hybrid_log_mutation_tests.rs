@@ -1297,11 +1297,11 @@ fn mutation_evict_and_truncate_offset_calculation() {
     for p in 0..3 {
         if let Some(frame) = page_table.get_frame(Page(p)) {
             let state = frame.state().load(Ordering::Acquire);
-            if state == PageState::Sealed {
-                if frame.state().try_transition(PageState::Sealed, PageState::Flushing) {
-                    frame.state().try_transition(PageState::Flushing, PageState::Flushed);
-                    flushed_count += 1;
-                }
+            if state == PageState::Sealed
+                && frame.state().try_transition(PageState::Sealed, PageState::Flushing)
+            {
+                frame.state().try_transition(PageState::Flushing, PageState::Flushed);
+                flushed_count += 1;
             }
         }
     }
@@ -1331,22 +1331,19 @@ fn mutation_evict_and_truncate_offset_calculation() {
 // flush.rs gaps (4)
 // ---------------------------------------------------------------------------
 
-/// Kills mutation: flush.rs flush_page_sync line 316, || → &&
-///
-/// Already covered by existing test `flush_page_sync_already_flushing_returns_ok_false`
-/// which tests the `current == Flushing || current == Flushed` check.
-/// No additional test needed — existing test already catches this.
-
-/// Kills mutation: flush.rs flush_page_sync line 316, == → != (first occurrence)
-///
-/// Already covered by existing tests `flush_page_sync_already_flushing_returns_ok_false`
-/// and `flush_page_sync_open_page_returns_error` which verify correct state comparisons.
-/// No additional test needed.
-
-/// Kills mutation: flush.rs flush_page_sync line 316, == → != (second occurrence)
-///
-/// Already covered by existing test `flush_page_sync_already_flushed_returns_ok_false`.
-/// No additional test needed.
+// Kills mutation: flush.rs flush_page_sync line 316, || → &&
+// Already covered by existing test `flush_page_sync_already_flushing_returns_ok_false`
+// which tests the `current == Flushing || current == Flushed` check.
+// No additional test needed — existing test already catches this.
+//
+// Kills mutation: flush.rs flush_page_sync line 316, == → != (first occurrence)
+// Already covered by existing tests `flush_page_sync_already_flushing_returns_ok_false`
+// and `flush_page_sync_open_page_returns_error` which verify correct state comparisons.
+// No additional test needed.
+//
+// Kills mutation: flush.rs flush_page_sync line 316, == → != (second occurrence)
+// Already covered by existing test `flush_page_sync_already_flushed_returns_ok_false`.
+// No additional test needed.
 
 /// Kills mutation: flush.rs flush_sealed_pages line 377, += → *=
 ///
@@ -1482,6 +1479,8 @@ fn mutation_load_pages_device_offset_calculation() {
     let page_table = alloc.page_table();
     for p in 0..3u32 {
         let frame = page_table.get_frame(Page(p)).expect("page loaded");
+        // SAFETY: frame.as_ptr() returns a valid pointer to the page's memory buffer,
+        // which was allocated and written to above. We only read the first byte.
         let first_byte = unsafe { *frame.as_ptr() };
         // With correct * offset, each page has its marker.
         // With / mutation, offsets would be wrong and markers wouldn't match.
