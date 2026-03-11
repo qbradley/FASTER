@@ -18,6 +18,10 @@
 
 ## Learnings
 <!-- Append new learnings -->
+- **Multi-writer deadlock root cause:** The 3-point deadlock is a timing gap, not a logic error. `maintenance()` submits async I/O (Sealed→Flushing) then immediately runs eviction — but callbacks (Flushing→Flushed) fire on worker threads and haven't landed yet. All pages are still Flushing, head can't advance, buffer stays full. The `continue` on QueueFull in flush.rs:379 makes it worse by leaving individual pages Sealed (blocking head advancement), but even without QueueFull the timing gap alone causes stalls.
+- **SyncFileDevice never returns QueueFull:** It uses an unbounded mpsc channel. `max_outstanding: 1024` is declared but never enforced. The deadlock on SyncFileDevice is purely from the timing gap. UringDevice with its real queue depth DOES trigger QueueFull, compounding the issue.
+- **Device trait has no completion polling:** No `try_complete()` or `poll_completions()` exists. Writers cannot help drain I/O. The C++ `disk->TryComplete()` in `NewPage()` has no Rust equivalent. This is the key missing piece.
+- **`allocate_at_tail` retries only once:** After `maintenance()` fails to free buffer space, it tries exactly one more `advance_to_next_page` and gives up. With async I/O, one retry is never enough — completions need time to land. A bounded retry loop with yields is needed.
 - **Shared workspace branch switching:** Other agents (Legolas, Boromir) switch branches in the shared working tree. Always verify `git branch --show-current` immediately before `git commit`. Cherry-picks across diverged branches cause conflicts — prefer re-applying changes directly.
 - **Property test case cost:** HashIndex proptest cases cost ~240ms each in isolation (epoch framework + allocator setup). Even 8 cases = ~2s. For <1s gate, use 2 cases in tier-1, full counts in tier-2.
 - **Page-fill tests are fundamentally slow:** With 32MB pages and 24-byte records, filling 1 page = 1.4M records ≈ 1-2s minimum. Tests requiring eviction (6+ pages) need 40s+. Only #[ignore] works.

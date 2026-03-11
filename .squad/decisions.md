@@ -967,3 +967,750 @@ Tiers can be run independently (`--tier N`), from a starting point (`--from N`),
 - All team members should know about `--tier 1` as a `precheckin` superset.
 - CI pipeline could be wired to run `release-gate --tier 2` on PRs.
 - Release process should include `release-gate all` on a clean checkout.
+# Decision: Multi-Writer Deadlock Fix — Flush/Eviction Pipeline
+
+**Author:** Aragorn (Rust Expert)  
+**Date:** 2026-03-11  
+**Status:** Proposed  
+**Priority:** P0 — Structural deadlock  
+**Branch:** TBD (`aragorn/deadlock-fix`)
+
+## Problem Statement
+
+With 2+ writers using linear key distribution and small buffers, the system
+enters a permanent stall. All writer threads block on the SF-10 buffer-full
+check and never recover because the flush/eviction pipeline cannot make
+forward progress.
+
+### The 3-Point Deadlock Chain
+
+```
+Writer blocked (SF-10: buffer full)
+    ↓ calls maintenance()
+    ├─ flush_sealed_pages() submits async I/O (Sealed→Flushing)
+    │   └─ if QueueFull → `continue` (SKIP the page → reverts to Sealed)
+    ├─ evict_pages() runs IMMEDIATELY after flush
+    │   └─ pages are Flushing (not Flushed yet) → no evictions
+    │   └─ advance_head() hits Sealed/Flushing page → STOPS
+    └─ allocate_at_tail() retries once → still blocked → returns None → Aborted
+```
+
+The C++ implementation avoids this via three mechanisms we lack:
+
+1. **Batch-abort on QueueFull** — entire flush exits, not per-page skip
+2. **Writer-side I/O draining** — blocked writers call `disk->TryComplete()`
+3. **I/O throttling** — spin-wait with `yield()` when pending I/O is high
+
+## Root Cause Analysis
+
+### Why the current Rust code deadlocks
+
+The core issue is a **timing gap**: `maintenance()` calls `flush_sealed_pages()`
+then immediately calls `evict_pages()`. But async I/O completions (which
+transition Flushing→Flushed) run on device worker threads, not on the caller.
+Between the flush submission and the eviction check, no completions have
+fired yet — so every page is still `Flushing`, the head cannot advance, and
+the buffer remains full.
+
+The `allocate_at_tail` function gets one maintenance retry (line 227-233 in
+`operations.rs`), then gives up and returns `None` → `Aborted`. The writer's
+retry loop (page-cache sample line 326-351) calls `maintenance()` + `yield()`
+but this is a hot loop where N writers all stampede on the same pipeline,
+none of them waiting for I/O to actually complete.
+
+### SyncFileDevice vs UringDevice
+
+- **SyncFileDevice**: Never returns `QueueFull` (unbounded channel). The
+  deadlock is purely from timing — async callbacks fire on worker threads,
+  but maintenance doesn't wait for them.
+- **UringDevice**: Has real queue depth limits (`queue_depth: 256`). CAN
+  return `QueueFull`, triggering the page-skip path that makes things worse.
+
+Both devices hit the deadlock, but through slightly different paths.
+
+## Fix Design
+
+### Fix A: No Page Skipping on QueueFull (Batch Abort)
+
+**Current behavior** (`flush.rs:379`):
+```rust
+Err(FlushError::QueueFull(_)) => continue, // Skip, retry next cycle
+```
+
+**New behavior**: When any page flush returns `QueueFull`, stop the entire
+batch. Return a new `FlushResult` that indicates partial progress so the
+caller knows flushing was interrupted by back-pressure.
+
+```rust
+// flush.rs — flush_sealed_pages
+Err(FlushError::QueueFull(page)) => {
+    // Back-pressure: device cannot accept more I/O right now.
+    // Stop the batch — do NOT skip individual pages.
+    // The caller should drain completions and retry.
+    return Ok(FlushBatchResult {
+        flushed: flushed_count,
+        queue_full: true,
+    });
+}
+```
+
+**Return type change**: `flush_sealed_pages` currently returns
+`Result<u32, FlushError>`. Change to `Result<FlushBatchResult, FlushError>`
+where:
+
+```rust
+pub struct FlushBatchResult {
+    /// Number of pages successfully submitted for flushing.
+    pub flushed: u32,
+    /// If true, at least one page was skipped due to device back-pressure.
+    /// The caller should poll for I/O completions and retry.
+    pub queue_full: bool,
+}
+```
+
+This aligns with C++ where `RETURN_NOT_OK(WriteAsync)` exits the entire
+flush function on any failure.
+
+**Files changed:**
+- `hybrid_log/flush.rs`: New `FlushBatchResult`, change `flush_sealed_pages`
+  return type and QueueFull handling
+
+### Fix B: Writer-Side I/O Draining
+
+**The gap**: When a writer is blocked on SF-10, calling `maintenance()` only
+*submits* I/O — it doesn't *wait* for completions. We need writers to
+actively poll for I/O completions when they're blocked.
+
+**New `Device` trait method**:
+
+```rust
+pub trait Device: Send + Sync + 'static {
+    // ... existing methods ...
+
+    /// Poll for completed I/O operations without blocking.
+    ///
+    /// Returns the number of completions processed. Implementations that
+    /// run callbacks synchronously (NullDevice, InMemoryDevice) return 0.
+    /// Implementations with background threads (SyncFileDevice) yield the
+    /// current thread. UringDevice drains its completion queue.
+    fn poll_completions(&self) -> u32 {
+        0 // Default: no-op for synchronous devices
+    }
+}
+```
+
+**Implementation per device**:
+
+| Device | `poll_completions()` behavior |
+|--------|------------------------------|
+| `NullDevice` | Returns 0 (all I/O is sync) |
+| `InMemoryDevice` | Returns 0 (all I/O is sync) |
+| `SyncFileDevice` | Calls `thread::yield_now()` + returns 0. The worker threads are completing I/O independently; yielding gives them CPU time. |
+| `UringDevice` | Sends a `PollCompletions` command to the I/O thread and waits for the count. Or exposes a `try_complete()` that non-blocking drains the CQ. |
+
+**Integration into `allocate_at_tail`** (`operations.rs`):
+
+The `on_alloc_failure` callback currently just calls `maintenance()`. Change
+it to a richer callback that also drains I/O:
+
+```rust
+// In allocate_at_tail, after first maintenance() fails:
+// Spin-drain loop: call maintenance + poll device completions
+// with bounded retries + yield between attempts.
+let mut drain_attempts = 0u32;
+const MAX_DRAIN_ATTEMPTS: u32 = 64;
+
+while drain_attempts < MAX_DRAIN_ATTEMPTS {
+    maint_fn();
+    device.poll_completions();
+
+    // Check if buffer is still full
+    if allocator.advance_to_next_page().is_some() {
+        if let Some(result) = writer.allocate_record(key, value) {
+            return Some(result);
+        }
+    }
+    drain_attempts += 1;
+    thread::yield_now();
+}
+```
+
+To pass the device reference into `allocate_at_tail`, we change the
+`on_alloc_failure` callback type:
+
+**Option 1 (preferred)**: Widen the closure to capture both `maintenance()`
+and `device.poll_completions()`:
+
+```rust
+pub on_alloc_failure: Option<&'a dyn Fn()>,
+```
+
+Since `on_alloc_failure` is already a closure, we simply make `maintenance()`
+call `poll_completions()` internally:
+
+```rust
+// In kv.rs maintenance():
+pub fn maintenance(&self) {
+    // ... existing flush/evict logic ...
+
+    // NEW: Poll the device for completed I/O so callbacks fire.
+    self.device.poll_completions();
+}
+```
+
+This is the cleanest approach — no signature changes to `allocate_at_tail`
+or `InternalContext`.
+
+**But we also need a retry loop in `allocate_at_tail`**: The current code
+tries maintenance once and gives up. We need bounded retries with yielding:
+
+```rust
+// operations.rs — allocate_at_tail
+// After first maintenance + retry fails:
+const MAX_ALLOC_RETRIES: u32 = 32;
+for _ in 0..MAX_ALLOC_RETRIES {
+    maint_fn(); // calls maintenance() which now also polls completions
+    thread::yield_now();
+    if let Some(result) = writer.allocate_record(key, value) {
+        return Some(result);
+    }
+    if allocator.advance_to_next_page().is_some() {
+        return writer.allocate_record(key, value);
+    }
+}
+None // Give up after MAX_ALLOC_RETRIES
+```
+
+**Files changed:**
+- `device.rs`: Add `poll_completions()` default method to `Device` trait
+- `sync_file_device.rs`: Implement `poll_completions()` (yield)
+- `faster-uring/src/device.rs`: Implement `poll_completions()` (drain CQ)
+- `store/kv.rs`: Add `device.poll_completions()` call in `maintenance()`
+- `hybrid_log/log_allocator.rs` or `store/operations.rs`: Retry loop in
+  `allocate_at_tail`
+
+### Fix C: I/O Throttling (Back-pressure Before Queue Overflow)
+
+**Why throttling matters**: Without it, N writers can fill the entire buffer
+before ANY flush has completed. By the time maintenance kicks in, we're
+already in crisis mode. Throttling prevents the stampede.
+
+**Design**: Add a lightweight check in the allocation hot path that yields
+when the pipeline is under pressure:
+
+```rust
+// In allocate_at_tail or advance_to_next_page:
+// If in-memory pages are above 75% of buffer capacity, yield
+// to give the flush pipeline breathing room.
+fn maybe_throttle(allocator: &HybridLogAllocator) {
+    let snapshot = allocator.snapshot();
+    let buffer_size = allocator.page_table().buffer_size() as u32;
+    if snapshot.in_memory_pages() * 4 >= buffer_size * 3 {
+        // 75% threshold — yield to let flush/evict threads run.
+        std::thread::yield_now();
+    }
+}
+```
+
+This is NOT a spin-lock — it's a single `yield_now()` hint. Writers
+continue immediately; the OS just gets a chance to schedule I/O threads.
+
+**Where**: Inside `maintenance()`, at the beginning, when `eager_flush` is
+true. This already exists implicitly but we should make the yield explicit:
+
+```rust
+// kv.rs — maintenance(), after detecting buffer_pressure:
+if buffer_pressure {
+    // Actively poll device to help drain completions.
+    self.device.poll_completions();
+    std::thread::yield_now();
+}
+```
+
+**Files changed:**
+- `store/kv.rs`: Add throttling yield in `maintenance()` under pressure
+
+### Summary of Changes
+
+| File | Change | Risk |
+|------|--------|------|
+| `device.rs` | Add `poll_completions() -> u32` default method | Low — default returns 0, backward compatible |
+| `sync_file_device.rs` | Implement `poll_completions` (yield) | Low — yield is a hint, no semantic change |
+| `faster-uring/src/device.rs` | Implement `poll_completions` (drain CQ) | Medium — must be thread-safe for uring I/O thread |
+| `hybrid_log/flush.rs` | New `FlushBatchResult`, batch-abort on QueueFull | Low — callers already ignore the count |
+| `store/operations.rs` | Bounded retry loop in `allocate_at_tail` | Medium — must bound retries to prevent livelock |
+| `store/kv.rs` | Poll completions in `maintenance()`, throttle yield | Low — additive |
+
+### What Does NOT Change
+
+- The `Device` trait remains backward-compatible (default impl for `poll_completions`)
+- `HybridLogAllocator::advance_to_next_page` is untouched
+- `PageEvictor::advance_head` is untouched (its contiguous-head invariant is correct)
+- No new synchronization primitives needed
+- No async runtime dependency
+- Lossy mode continues to work — the fixes are in the shared pipeline
+
+## Risk Assessment
+
+| Risk | Likelihood | Mitigation |
+|------|-----------|------------|
+| Retry loop burns CPU under sustained pressure | Medium | Bounded retries (MAX=32) + `yield_now()` between attempts. Beyond the bound, return `Aborted` (existing behavior) |
+| `poll_completions` for UringDevice is non-trivial | Medium | The uring I/O thread already handles a command channel; add a `PollCompletions` command variant |
+| Changing `flush_sealed_pages` return type breaks callers | Low | Only one caller (`maintenance()`), internal API |
+| `poll_completions` adds latency to happy path | Negligible | Only called inside `maintenance()`, which is already the slow path. Happy path (no buffer pressure) never calls it |
+| Livelock if I/O is genuinely stuck (device error) | Low | MAX_ALLOC_RETRIES bounds the loop. True I/O errors propagate via `FlushError::IoError` |
+
+## Lossy Mode Considerations
+
+Lossy mode (`config.lossy = true`) adds `evict_and_truncate` + hash
+invalidation. The deadlock affects lossy mode identically — the same
+Sealed→Flushed timing gap applies. All three fixes (A, B, C) help lossy
+mode without any special handling.
+
+The one difference: in lossy mode, we aggressively evict and invalidate. The
+retry loop in `allocate_at_tail` gives eviction more chances to complete,
+which directly benefits lossy mode.
+
+## Test Plan
+
+### 1. Reproduction Test (Existing)
+
+```bash
+# This should stall before the fix, run to completion after:
+cargo run -p page-cache -- \
+    --writers 2 --distribution linear \
+    --duration 30 --in-memory-mb 64 --log-size-mb 256
+```
+
+### 2. Targeted Unit Tests
+
+**`flush_batch_abort_test`** (`flush.rs`):
+- Create a mock device that returns `QueueFull` after N submissions
+- Verify `flush_sealed_pages` returns `FlushBatchResult { flushed: N, queue_full: true }`
+- Verify no pages are left in `Flushing` state (reverted to Sealed)
+
+**`poll_completions_default_test`** (`device.rs`):
+- Verify `NullDevice.poll_completions() == 0`
+- Verify `InMemoryDevice.poll_completions() == 0`
+
+**`allocate_retry_under_pressure_test`** (`operations.rs`):
+- Set up a 4-page buffer, fill to SF-10 threshold
+- Spawn a background thread that completes one flush after 50ms
+- Verify `allocate_at_tail` succeeds within the retry window
+
+### 3. Multi-Writer Stress Test
+
+**`multi_writer_no_stall_test`** (integration):
+- 4 writer threads, 4-page buffer, lossy mode
+- Linear keys, 60-second deadline
+- Assert: all writers make progress (writes > 0 per second)
+- Assert: no thread is blocked for > 5 seconds
+
+### 4. Performance Regression
+
+- Run YCSB benchmark (single-writer) before and after
+- The happy path should be unaffected (no extra branches in the fast path)
+- Multi-writer throughput should improve (no more stalls)
+
+## Implementation Order
+
+1. **Fix A** (flush batch abort) — smallest, safest change
+2. **Fix B** (poll_completions + retry loop) — the main fix
+3. **Fix C** (throttle yield) — polish, prevents the cliff edge
+4. **Tests** — reproduction + unit + stress
+
+Fixes A+B are the critical pair. Fix C is a quality-of-life improvement
+that reduces the severity of buffer pressure events.
+
+## C++ Reference Alignment
+
+| C++ Mechanism | Rust Equivalent |
+|---------------|----------------|
+| `RETURN_NOT_OK(WriteAsync)` exits flush loop | Fix A: batch-abort FlushBatchResult |
+| `disk->TryComplete()` in `NewPage()` | Fix B: `device.poll_completions()` in maintenance |
+| `DoThrottling()` spin-wait + yield | Fix C: yield in maintenance under buffer pressure |
+| `num_pending_ios_ > kMaxPendingIOs` | Fix C: `in_memory_pages * 4 >= buffer_size * 3` threshold |
+
+---
+
+**Aragorn** — *The sword that was broken is reforged. The pipeline that was
+broken shall flow again.*
+# Decision: Deadlock Test Harness — Device Wrapper Strategy
+
+**Author:** Boromir (QA Engineer)  
+**Date:** 2026-03-11  
+**Status:** Implemented  
+**Branch:** `sam/deadlock-fix`
+
+## Context
+
+The multi-writer deadlock fix (Aragorn's design doc) introduces new behavior
+in `flush_sealed_pages` (Fix A: batch abort on QueueFull) and `allocate_at_tail`
+(Fix B: retry loop with `poll_completions`). We need test devices that can
+trigger these paths deterministically.
+
+## Decision
+
+Created three new test device wrappers in `deadlock_tests.rs` instead of
+extending `FaultInjectingDevice`:
+
+1. **`QueueFullDevice`** — returns `IoRequestResult::QueueFull` from
+   `write_async()` directly. This is fundamentally different from
+   `FaultInjectingDevice`'s callback-level error injection. QueueFull
+   is a submission-level rejection (no callback fires), while
+   `FaultInjectingDevice` fires the callback with `IoStatus::Error`.
+
+2. **`QueueFullThenSucceedDevice`** — separate device for the "transient
+   QueueFull" scenario (retry loop testing). Simpler than making
+   `QueueFullDevice` track two phases.
+
+3. **`SlowDevice`** — background-thread callback delay. Returns `Submitted`
+   (not `CompletedSync`), matching `SyncFileDevice`'s async behavior.
+   Critical for reproducing the timing-dependent deadlock.
+
+## Why Not Extend FaultInjectingDevice?
+
+`FaultInjectingDevice` injects faults via the callback path — it always
+returns `CompletedSync` and fires the callback with `IoStatus::Error`.
+QueueFull is a completely different code path: `write_async()` returns
+`QueueFull` **without** firing any callback. Mixing both patterns in one
+device would make the fault policy confusing and error-prone.
+
+## Test Strategy
+
+- **7 tests run now** (device-level correctness, no dependency on Sam's changes)
+- **6 tests ignored** with descriptive reasons (`#[ignore = "requires deadlock fix: ..."]`)
+- Tests will compile immediately once Sam's changes land (written against expected API)
+- The multi-writer forward progress test is the definitive regression test
+
+## Risk
+
+The ignored tests are written against the **expected** new API (`FlushBatchResult`,
+`poll_completions()`). If Sam's implementation differs from the design doc,
+the tests will need adjustment. The device wrappers themselves are stable.
+# Decision: Multi-Writer Deadlock Fix — Implementation
+
+**Author:** Sam (Systems & Storage Expert)  
+**Date:** 2026-03-11  
+**Status:** Implemented  
+**Branch:** `sam/deadlock-fix`  
+**Commits:** `5b50d994` (Fix A), `a35b7846` (Fix B), `75cba9ea` (Fix C)
+
+## Summary
+
+Implemented three coordinated fixes to close the multi-writer flush pipeline deadlock, following Aragorn's design.
+
+## Changes
+
+### Fix A: Flush Batch Abort on QueueFull
+- New `FlushBatchResult { flushed: u32, queue_full: bool }` struct
+- `flush_sealed_pages` breaks on QueueFull (was: `continue`)
+- `maintenance()` now captures the `queue_full` flag (was: `let _ =`)
+
+### Fix B: Writer-Side I/O Draining + Retry Loop
+- `Device::poll_completions(&self) -> u32` with default returning 0
+- `SyncFileDevice::poll_completions()` calls `thread::yield_now()`
+- `allocate_at_tail` bounded retry loop (32 iterations) with yield between attempts
+
+### Fix C: Yield Under Buffer Pressure
+- `maintenance()` calls `poll_completions()` after every flush batch
+- Under `queue_full` or `buffer_pressure`, yields + polls again before returning
+
+## Verification
+
+- **1728 tests pass** (cargo nextest, no regressions)
+- **6 previously-ignored deadlock tests now pass**, including:
+  - `multi_writer_forward_progress` (3 writers, SlowDevice, 10s runtime)
+  - `flush_batch_aborts_on_queue_full`
+  - `retry_loop_eventually_succeeds_after_queue_full_clears`
+  - `poll_completions_default_returns_zero`
+- Clippy clean (lib)
+
+## Backward Compatibility
+
+- `Device` trait: `poll_completions()` has default impl → existing custom devices don't break
+- `flush_sealed_pages` return type changed from `Result<u32, FlushError>` to `Result<FlushBatchResult, FlushError>` → internal API, only 2 callers (both updated)
+- `allocate_at_tail` behavior: now retries up to 32× instead of 1× → strictly more resilient, same Aborted outcome on permanent failure
+
+## Open Items
+
+- The `#[ignore]` annotations on the 6 deadlock tests can now be removed
+- `SyncFileDevice::max_outstanding` remains dead code (not part of this fix scope)
+- UringDevice (if added later) should implement `poll_completions()` to drain its completion queue
+# Preparatory Analysis: Multi-Writer Deadlock Fix
+
+**Author:** Sam (Systems & Storage Expert)
+**Date:** 2026-03-10
+**Status:** Analysis complete — ready for implementation
+
+---
+
+## 1. Root Cause Analysis
+
+The "deadlock" is actually a **livelock/starvation** in the circular buffer pipeline. Here's the exact mechanism:
+
+### The 3-Point Structural Problem
+
+**Point 1 — `flush.rs:379` — `continue` on QueueFull skips remaining sealed pages**
+
+```rust
+// flush.rs:359-387 — flush_sealed_pages()
+for p in head_page..ro_page {
+    // ...
+    match self.flush_page(page, page_table, device, self.page_size) {
+        Ok(true) => flushed_count += 1,
+        Ok(false) => {},
+        Err(FlushError::QueueFull(_)) => continue,  // ← PROBLEM: skips to next page
+        Err(e) => return Err(e),
+    }
+}
+```
+
+When the device returns QueueFull, the loop `continue`s to the next sealed page — which will ALSO get QueueFull. The entire scan completes with **zero flushes initiated**, and maintenance returns having done nothing useful. C++ returns the error for the entire batch so the caller knows to drain I/O.
+
+**Point 2 — `log_allocator.rs:120-137` — Writers get `None` with no recovery path**
+
+```rust
+// log_allocator.rs:105-174 — try_allocate()
+if new_offset > self.page_size { return None; }  // page boundary
+// ...
+if (next_page.wrapping_sub(head_page) as usize) >= self.page_table.buffer_size() {
+    return None;  // ← SF-10: buffer full, just returns None
+}
+```
+
+Then `allocate_at_tail()` (operations.rs:206-237) calls `on_alloc_failure` (= `maintenance()`) **once**, retries **once**, and if it still fails, returns `None` → `OperationStatus::Aborted`. The writer's only recourse is an external retry loop.
+
+C++ calls `TryComplete()` from the writer thread to help drain pending I/O completions before returning. Our writers don't help drain — they just call `maintenance()` which calls `flush_sealed_pages()` which hits QueueFull and does nothing.
+
+**Point 3 — No I/O throttling to prevent queue overflow**
+
+`SyncFileDevice` uses `std::sync::mpsc::channel()` — an **unbounded** channel. The `max_outstanding: 1024` field is **dead code** — never checked in `submit()`. So `QueueFull` is never returned by `SyncFileDevice` in practice.
+
+The real bottleneck: the flush pipeline can issue writes faster than I/O threads can complete them, and there's no feedback mechanism. When the I/O threads are saturated:
+- Pages stay in `Flushing` state
+- Eviction can't advance head (needs `Flushed` pages)
+- Allocator hits SF-10 (tail would lap head)
+- All writers block
+
+### Critical Insight: The Real Deadlock Pattern
+
+With SyncFileDevice (unbounded channel), QueueFull never fires. But the deadlock still happens because:
+
+1. Writers fill pages faster than I/O threads can write them
+2. Pages transition `Sealed → Flushing` quickly (submit to unbounded channel)
+3. I/O threads are slow, so callbacks (Flushing → Flushed) are delayed
+4. Evictor needs `Flushed` pages to advance head — but I/O hasn't completed
+5. Head doesn't advance → buffer full → SF-10 blocks all allocations
+6. `maintenance()` calls `flush_sealed_pages()` — all pages already `Flushing`, nothing new to flush
+7. `maintenance()` calls `evict_pages()` — all pages are `Flushing`, can't evict
+8. Writer retry loop spins calling maintenance() which does nothing useful
+9. **Only the I/O worker threads can break the cycle**, but they're in a different thread pool with no prioritization
+
+This is why the 5ms maintenance thread is critical — without it, the I/O callbacks fire (from the I/O threads), transitioning pages to `Flushed`, but nobody calls `evict_pages()` to advance head.
+
+---
+
+## 2. Complete Code Map
+
+### Files That Need Changes
+
+| File | Line(s) | What | Change Needed |
+|------|---------|------|---------------|
+| `flush.rs` | 359-387 | `flush_sealed_pages()` | On QueueFull: break (not continue), return a signal indicating I/O queue pressure so caller can drain |
+| `flush.rs` | 54-69 | `FlushError` enum | Add `Backpressure` variant or return count + pressure signal |
+| `operations.rs` | 206-237 | `allocate_at_tail()` | Add retry loop with I/O drain between attempts (not just one shot) |
+| `kv.rs` | 1668-1731 | `maintenance()` | Add I/O completion polling step before flush/evict. Consider returning status. |
+| `kv.rs` | 946,1002,1054 | `on_alloc_failure` callbacks | Wire up multi-retry with drain |
+| `eviction.rs` | 89-120 | `evict_pages()` | No structural changes needed — already correct |
+| `device.rs` | 221-279 | `Device` trait | Consider adding `fn try_complete_io(&self) -> u32` (optional, default no-op) |
+| `sync_file_device.rs` | 377-393 | `submit()` | Either enforce `max_outstanding` with bounded channel, or add completion polling |
+
+### Files That Are Fine As-Is
+
+| File | Why |
+|------|-----|
+| `eviction.rs` advance_head | Correctly stops at non-Flushed pages, handles all states properly |
+| `page.rs` PageState | State machine is correct (Free→Open→Sealed→Flushing→Flushed→Evicted) |
+| `log_allocator.rs` try_allocate | SF-10 check is correct — the issue is what happens AFTER it returns None |
+
+---
+
+## 3. Device I/O Interface Capabilities
+
+### Current State
+
+```
+Device trait (device.rs:221-279):
+├── sector_size() → u32
+├── segment_size() → u64
+├── max_outstanding_io() → u32          ← exists but unused by callers
+├── read_async(...)  → IoRequestResult  ← callback-driven
+├── write_async(...) → IoRequestResult  ← callback-driven, can return QueueFull
+├── read_sync(...)   → io::Result<u32>
+├── write_sync(...)  → io::Result<u32>
+├── truncate_until(offset)
+├── size() → u64
+└── close()
+```
+
+### What's Missing
+
+1. **No `try_complete_io()` or `poll_completions()`** — Device trait is fire-and-forget. Completions happen asynchronously via raw function pointer callbacks. There's no way for a caller to say "block until at least one I/O completes."
+
+2. **Store-level completion exists but at wrong layer:**
+   - `PendingIoContext::try_complete()` (pending_io.rs:366) — polls individual read contexts
+   - `FasterKv::complete_pending()` (kv.rs:1118) — drains completed reads for a session
+   - But these are for **pending reads** (on-disk record access), NOT for flush I/O completions
+
+3. **Flush callbacks fire asynchronously** from I/O worker threads (flush.rs:138-173). The callback transitions `Flushing → Flushed` via the page table's atomic state. There's no synchronization primitive to wait on.
+
+### Key Design Constraint
+
+Flush I/O completions happen via raw `unsafe fn` callbacks that run on I/O worker threads. Adding a condvar or similar signaling mechanism requires:
+- A shared `Arc<(Mutex<()>, Condvar)>` or similar
+- The callback notifies it
+- `maintenance()` or writer threads can wait on it
+
+This is safe because `FlushCallbackContext` already carries a `*const PageTable` raw pointer — adding an `Arc` pointer is no more dangerous.
+
+### SyncFileDevice Queue Reality
+
+```
+SyncFileDevice (sync_file_device.rs:311-375):
+├── sender: Mutex<Option<Sender<IoRequest>>>  ← std::sync::mpsc (UNBOUNDED)
+├── max_outstanding: u32 = 1024               ← DEAD CODE, never enforced
+├── high_water: AtomicU64                     ← DEAD CODE
+└── threads: Vec<JoinHandle>                  ← N worker threads
+```
+
+The `submit()` method (line 378-393) simply calls `tx.send(request)` — never checks outstanding count, never returns QueueFull. A bounded channel or explicit count tracking would enable real backpressure.
+
+---
+
+## 4. Test Harness Options
+
+### Option A: QueueFull-Injecting Device (Recommended for unit tests)
+
+Extend `FaultInjectingDevice` (tests/io_error_injection.rs:82) to support a `QueueFull` fault mode:
+
+```rust
+enum FaultMode {
+    Error(i32),          // existing: return Error via callback
+    QueueFull,           // NEW: return IoRequestResult::QueueFull from write_async
+    TornWrite(f64),      // existing: partial write
+}
+```
+
+Current `FaultInjectingDevice` only injects errors via the **callback** (fires callback with `IoStatus::Error`). For QueueFull, we need to return `IoRequestResult::QueueFull` from `write_async()` itself (before callback), which is a different code path.
+
+**Advantage:** Deterministic, no I/O, fast. Can trigger after exactly N writes.
+**Location:** Add to existing `io_error_injection.rs` or create `tests/deadlock_tests.rs`.
+
+### Option B: Slow Device Wrapper (For integration tests)
+
+```rust
+struct SlowDevice {
+    inner: InMemoryDevice,
+    write_delay: Duration,  // artificial delay per write
+}
+```
+
+Insert a `thread::sleep()` before invoking the callback. This simulates real I/O latency and triggers the timing-dependent buffer-full condition.
+
+**Advantage:** Tests the real timing-based deadlock.
+**Disadvantage:** Non-deterministic, slower.
+
+### Option C: Bounded-Channel SyncFileDevice (For reproducing the exact production scenario)
+
+Make `SyncFileDevice::submit()` actually enforce `max_outstanding` by using `sync_channel(capacity)` instead of `channel()`. With capacity=2 and 4 fast writers, QueueFull fires immediately.
+
+**Advantage:** Tests the actual production code path.
+**Disadvantage:** Requires changing production code (which we're going to do anyway).
+
+### Existing Test Infrastructure
+
+- **`FaultInjectingDevice`** (io_error_injection.rs:82): Wraps InMemoryDevice, runtime-configurable via `Arc<AtomicBool>`. Only supports Error injection and torn writes — NOT QueueFull. Easy to extend.
+- **`NullDevice`** (device.rs:291): Completes synchronously. `max_outstanding_io() = u32::MAX`.
+- **`InMemoryDevice`** (device.rs:394): Completes synchronously. `max_outstanding_io() = u32::MAX`.
+- **No existing deadlock/backpressure tests.**
+- **`memory_pressure_tests.rs`**: 25 tests with small buffer configs (buffer_size_pages=4, max_in_memory_pages=3). Tests allocation pressure but not flush pipeline stalls.
+- **`hybrid_log_mutation_tests.rs`**: Tests `FlushError::QueueFull` formatting (line 287) but not the actual QueueFull → retry flow.
+
+### Recommended Test Strategy
+
+1. **Unit test:** `QueueFullDevice` that returns QueueFull after N writes, verifying `flush_sealed_pages` handles it correctly (currently: continues past all pages doing nothing useful).
+
+2. **Integration test:** 2+ writer threads with `SlowDevice` (50ms delay), small buffer (4 pages), verify writers make forward progress (not stuck). Add timeout assertion.
+
+3. **Regression test:** The exact page-cache scenario (`buffer_size_pages=8`, `max_in_memory_pages=4`, 2 writers, linear distribution) with `InMemoryDevice` + artificial delay.
+
+---
+
+## 5. Risks and Gotchas
+
+### R1: Callback Thread Safety
+Flush callbacks run on I/O worker threads. Any new signaling mechanism (condvar, channel) added to the callback path must be `Send + Sync`. The `FlushCallbackContext` already uses `*const PageTable` (raw pointer) — adding an `Arc` is strictly safer.
+
+### R2: Ordering of Eviction vs. Flush
+`advance_head()` (eviction.rs:153-209) stops at the first non-Flushed page. If pages flush out of order (page 3 completes before page 2), head can't advance past page 2 even though page 3 is Flushed. This is correct behavior but means I/O latency spikes on any single page block the entire pipeline.
+
+**Mitigation:** The C++ implementation also has this constraint. Non-contiguous eviction would require major changes to the address boundary model and is NOT recommended for this fix.
+
+### R3: Single Maintenance() Retry is Insufficient
+`allocate_at_tail()` calls `on_alloc_failure()` once, retries once. If the flush pipeline needs multiple maintenance cycles to drain (pages in Flushing state waiting for I/O completion), a single retry won't help. The writer needs to either:
+- Loop with backoff (what page-cache does externally)
+- Block until I/O completes (new capability needed)
+
+### R4: Dead Code in SyncFileDevice
+`max_outstanding` and `high_water` are dead fields. The fix should either:
+- Wire them up (bounded channel + QueueFull on overflow)
+- Remove them to avoid confusion
+
+### R5: `flush_sealed_pages` Result Is Discarded
+`maintenance()` at kv.rs:1708 does `let _ = self.flusher.flush_sealed_pages(...)`. If the flush returns QueueFull for every page, maintenance has no way to know it made zero progress. The return value should be checked and used to trigger I/O drain.
+
+### R6: Callback Lifetime
+`FlushCallbackContext.page_table` is a raw `*const PageTable`. If we add a condvar/waker to the callback context, it needs the same lifetime guarantee. Since `FasterKv::Drop` drains pending I/O before dropping the allocator (documented at flush.rs:114-118), an `Arc` pointer is safe.
+
+---
+
+## 6. Proposed Fix Architecture (for Aragorn's design)
+
+### Minimum Viable Fix (3 changes)
+
+1. **`flush_sealed_pages` → break on QueueFull** (not continue)
+   - Return `(flushed_count, had_queue_pressure: bool)` instead of just count
+   - `maintenance()` checks `had_queue_pressure` and if true, adds a small sleep/yield to let I/O complete
+
+2. **`allocate_at_tail` → multi-retry with yield**
+   - Instead of one maintenance + one retry, loop up to N times with `thread::yield_now()` between attempts
+   - This gives I/O worker threads CPU time to run callbacks
+
+3. **`maintenance()` → add thread::yield_now() when no progress**
+   - If `flush_sealed_pages` returned 0 and `evict_pages` returned 0, yield before returning
+   - This prevents the maintenance-loop-doing-nothing spin
+
+### Full Fix (adds I/O drain capability)
+
+4. **Add `Device::try_drain_completions()` (default no-op)**
+   - `SyncFileDevice`: enforce bounded channel, return QueueFull on overflow
+   - Or add a completion counter that `maintenance()` can poll
+
+5. **Add flush completion signaling**
+   - `Arc<AtomicU32>` flush-completion counter shared between callback and maintenance
+   - When maintenance needs to wait, it spins on the counter with yield
+
+---
+
+## 7. C++ Reference Comparison
+
+| Aspect | C++ FASTER | Rust FASTER | Gap |
+|--------|-----------|-------------|-----|
+| QueueFull handling | Returns error for entire batch | `continue` skips page, scans rest | **Critical** |
+| Writer I/O drain | `TryComplete()` in writer path | Not present | **Critical** |
+| I/O throttling | `DoThrottling()` | None (unbounded channel) | **Important** |
+| Completion polling | `IOCompletionLoop` | Callback-only, no polling | **Important** |
+| Maintenance frequency | Epoch-based | Timer-based (5ms/50ms) | Adequate |
+| Allocation retry | Built-in retry loop | Single retry + external loop | **Moderate** |
+
