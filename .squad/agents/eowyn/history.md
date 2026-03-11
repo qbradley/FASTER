@@ -185,3 +185,57 @@ Production types use `std::sync::atomic` directly — the `crate::sync` loom shi
 - **Éowyn:** `all_expanded_scenarios()` returns 1003 templates. The expansion engine uses `HashSet`-based deduplication for triple crashes.
 - **Frodo:** The `campaign_expanded_full` test (CI Tier 3, ignored) runs 1003 × 10 = 10,030 test cases.
 - **All agents:** Branch `eowyn/extended-dst-campaign` ready for merge to squad.
+
+### 2026-03-11: DST Smoke Tests Integrated into Release-Gate and CI
+
+**What:** Integrated DST (Deterministic Simulation Testing) into the release-gate validation pipeline and GitHub Actions CI with optimized test selection for fast feedback loops.
+
+**Problem:** The DST test suite was complete (134 tests), but the `campaign_expanded_smoke` test alone took ~220 seconds (3.7 minutes), making it too slow for fast CI feedback. The release-gate script ran all DST tests in Tier 2, which exceeded the 5-minute target for the correctness gate.
+
+**Solution:**
+
+1. **Two-tier DST strategy:**
+   - **Tier 2 (Fast Correctness Gate):** 133 core scenarios in ~19s
+     - Command: `cargo nextest run -p faster-dst -E 'not test(campaign_expanded)'`
+     - Covers: crash recovery, fault injection, basic workload validation
+   - **Tier 3 (Deep Validation):** Extended campaign in ~220s
+     - Command: `cargo nextest run -p faster-dst -E 'test(campaign_expanded_smoke)'`
+     - 1003 scenarios × 3 seeds = 3009 test cases
+     - Comprehensive coverage across all 44 scenario categories
+
+2. **CI Workflow Integration:**
+   - Added dedicated DST job to `.github/workflows/rust-ci.yml`
+   - Runs on every PR/push touching `rust/**` paths
+   - 10-minute timeout
+   - Uses nextest for parallel execution
+   - Runs core scenarios only (extended campaign deferred to nightly)
+
+**Files Modified:**
+- `rust/scripts/release-gate` — Updated Tier 2 DST check, added Tier 3 extended campaign
+- `.github/workflows/rust-ci.yml` — Added DST smoke test job
+
+**Test Breakdown:**
+- **Core scenarios (133 tests, ~19s):**
+  - 75 unit tests (campaign, scheduler, invariants, device, fault, crash)
+  - 58 integration tests (crash_recovery, crash_injection, crud_simulation, checksum, seed_exploration)
+  - Critical paths: checkpoint crash, recovery crash, torn writes, I/O errors
+  
+- **Extended campaign (1 test, ~220s):**
+  - `campaign_expanded_smoke`: 1003 scenarios × 3 seeds
+  - Parameterized coverage: checkpoint (6 phases × 3 sizes), compaction (6 phases × 3 sizes), recovery (6 phases × 3 sizes), cross-subsystem (concurrent, dual, triple), fault injection (torn writes, I/O errors, graduated faults), boundary conditions
+
+**What This Means:**
+- **Frodo (CI/CD):** DST now has dedicated visibility in CI status checks. Core scenarios must pass for PR merge.
+- **All agents:** Release-gate Tier 2 stays under 5min target. Deep DST validation runs in Tier 3 alongside mutation testing and extended fuzz.
+- **Éowyn:** The backlog item "Add DST smoke to CI" is now complete. Future work: consider adding ultra-fast smoke subset (33 tests in ~12s) to Tier 1 if faster feedback is needed.
+
+**Performance Impact:**
+- Tier 2: +19s (was running all 134 tests in ~220s, now 133 in ~19s)
+- Tier 3: +220s (extended campaign moved here)
+- CI: +20s per PR (dedicated DST job runs in parallel with other jobs)
+
+**Trade-offs:**
+- Extended campaign (1003 scenarios) deferred to Tier 3/nightly for speed
+- Core scenarios provide sufficient crash recovery coverage for PR feedback
+- Full campaign coverage maintained in deep validation tier
+
