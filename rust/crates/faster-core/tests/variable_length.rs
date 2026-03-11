@@ -873,12 +873,12 @@ fn concurrent_maintenance_with_varlen() {
         })
         .collect();
 
-    // Maintenance thread.
+    // Maintenance thread — runs until writers finish (no cycle cap).
     let store_m = Arc::clone(&store);
     let done_m = Arc::clone(&done);
     let maint = thread::spawn(move || {
         let mut cycles = 0u32;
-        while !done_m.load(std::sync::atomic::Ordering::Relaxed) && cycles < 50 {
+        while !done_m.load(std::sync::atomic::Ordering::Relaxed) {
             store_m.maintenance();
             cycles += 1;
             thread::yield_now();
