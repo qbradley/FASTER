@@ -173,7 +173,8 @@ fn run_scenario(scenario: &ScenarioTemplate, seed: u64) -> Result<(), ScenarioFa
         let _schedule_ref = install_schedule(schedule);
         let crash_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
             let mut store = harness.create_file_store();
-            let _ = store.recover(harness.checkpoint_dir(), Some(token));
+            // Crash injection may interrupt recovery.
+            let _result = store.recover(harness.checkpoint_dir(), Some(token));
         }));
         remove_schedule();
         // Distinguish SimulatedCrash (expected) from real panics (bugs).

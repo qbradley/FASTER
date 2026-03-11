@@ -172,7 +172,8 @@ fn compact_during_concurrent_writes() {
     });
 
     // Compact on the main thread (concurrent with writes).
-    let _ = store.compact();
+    // May fail with EmptyRegion if read-only region is empty during concurrent writes.
+    let _result = store.compact();
 
     writer.join().expect("writer thread panicked");
 
@@ -648,7 +649,8 @@ fn compact_variable_length_concurrent_reads() {
     });
 
     // Compact on main thread.
-    let _ = store.compact();
+    // May fail with EmptyRegion if data hasn't moved to read-only during concurrent reads.
+    let _result = store.compact();
 
     reader.join().expect("reader thread panicked");
 
@@ -746,7 +748,9 @@ fn inmemory_u64_store() -> FasterKv<SimpleFunctions<u64, u64>> {
 /// synchronously — but does NOT evict, so the scanner can still read them.
 fn force_read_only_u64(store: &FasterKv<SimpleFunctions<u64, u64>>) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let _ = store.checkpoint(dir.path(), CheckpointType::FoldOver);
+    store
+        .checkpoint(dir.path(), CheckpointType::FoldOver)
+        .expect("checkpoint should succeed");
 }
 
 /// Helper: compact and assert success (not EmptyRegion).
@@ -1106,7 +1110,7 @@ fn compact_three_rounds_with_deletes() {
         store.dispose_session(session);
     }
     force_read_only_u64(&store);
-    let _ = store.compact();
+    store.compact().expect("compact should succeed");
 
     {
         let mut session = store.new_session();
@@ -1116,7 +1120,7 @@ fn compact_three_rounds_with_deletes() {
         store.dispose_session(session);
     }
     force_read_only_u64(&store);
-    let _ = store.compact();
+    store.compact().expect("compact should succeed");
 
     {
         let mut session = store.new_session();
@@ -1126,7 +1130,7 @@ fn compact_three_rounds_with_deletes() {
         store.dispose_session(session);
     }
     force_read_only_u64(&store);
-    let _ = store.compact();
+    store.compact().expect("compact should succeed");
 
     let mut session = store.new_session();
     for i in 0u64..150 {
@@ -1207,7 +1211,8 @@ fn compact_concurrent_readers_writers_during_compaction() {
     });
 
     barrier.wait();
-    let _ = store.compact();
+    // May fail with EmptyRegion during concurrent writes/deletes.
+    let _result = store.compact();
     done.store(true, Ordering::Relaxed);
 
     writer.join().expect("writer panicked");

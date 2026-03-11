@@ -61,7 +61,8 @@ fn checkpoint_crash_and_recover(seed: u64, count: u64, point: CrashPoint) -> Opt
         for i in 10_000..10_020u64 {
             let _ = store.upsert(&mut s, &i, &(i * 100), ());
         }
-        let _ = store.checkpoint(harness.checkpoint_dir(), CheckpointType::FoldOver);
+        // Crash injection may interrupt this checkpoint.
+        let _result = store.checkpoint(harness.checkpoint_dir(), CheckpointType::FoldOver);
         store.dispose_session(s);
     }));
     remove_schedule();
@@ -154,7 +155,8 @@ fn crash_at_compaction_pointer_swing_schedule_works() {
         for i in 10_000..10_020u64 {
             let _ = store.upsert(&mut s, &i, &(i * 10), ());
         }
-        let _ = store.checkpoint(harness.checkpoint_dir(), CheckpointType::FoldOver);
+        // Crash injection may interrupt this checkpoint.
+        let _result = store.checkpoint(harness.checkpoint_dir(), CheckpointType::FoldOver);
         store.dispose_session(s);
     }));
     remove_schedule();
@@ -248,7 +250,8 @@ fn crash_during_first_checkpoint() {
         for i in 0..20u64 {
             let _ = store.upsert(&mut s, &i, &(i * 10), ());
         }
-        let _ = store.checkpoint(harness.checkpoint_dir(), CheckpointType::FoldOver);
+        // Crash injection may interrupt this checkpoint.
+        let _result = store.checkpoint(harness.checkpoint_dir(), CheckpointType::FoldOver);
         store.dispose_session(s);
     }));
     remove_schedule();
@@ -390,7 +393,8 @@ fn empty_store_checkpoint_crash_recovers() {
         for i in 0..5u64 {
             let _ = store.upsert(&mut s, &i, &(i * 10), ());
         }
-        let _ = store.checkpoint(harness.checkpoint_dir(), CheckpointType::FoldOver);
+        // Crash injection may interrupt this checkpoint.
+        let _result = store.checkpoint(harness.checkpoint_dir(), CheckpointType::FoldOver);
         store.dispose_session(s);
     }));
     remove_schedule();
@@ -470,7 +474,8 @@ fn no_phantom_reads_after_checkpoint_crash() {
         for i in 1000..1050u64 {
             let _ = store.upsert(&mut s, &i, &(i * 100), ());
         }
-        let _ = store.checkpoint(harness.checkpoint_dir(), CheckpointType::FoldOver);
+        // Crash injection may interrupt this checkpoint.
+        let _result = store.checkpoint(harness.checkpoint_dir(), CheckpointType::FoldOver);
         store.dispose_session(s);
     }));
     remove_schedule();

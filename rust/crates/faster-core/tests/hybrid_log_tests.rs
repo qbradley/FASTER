@@ -745,7 +745,9 @@ fn checkpoint_shifts_read_only_boundary() {
     let tail_before = store.tail_address().raw();
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let _ = store.checkpoint(dir.path(), CheckpointType::FoldOver);
+    store
+        .checkpoint(dir.path(), CheckpointType::FoldOver)
+        .expect("checkpoint should succeed");
 
     // After checkpoint, data should still be readable.
     let mut session = store.new_session();
@@ -774,7 +776,9 @@ fn writes_after_checkpoint_go_to_mutable_region() {
     store.dispose_session(session);
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let _ = store.checkpoint(dir.path(), CheckpointType::FoldOver);
+    store
+        .checkpoint(dir.path(), CheckpointType::FoldOver)
+        .expect("checkpoint should succeed");
 
     let tail_after_cp = store.tail_address().raw();
 

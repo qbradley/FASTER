@@ -828,7 +828,7 @@ fn concurrent_upserts_during_checkpoint() {
     let ckpt_result = ckpt_handle.join().expect("checkpoint thread panicked");
     // Checkpoint may or may not succeed depending on timing; the key
     // invariant is no panics and no data corruption.
-    let _ = ckpt_result;
+    let _result = ckpt_result;
 
     assert_eq!(
         panic_count.load(Ordering::Relaxed),
@@ -908,7 +908,8 @@ fn concurrent_reads_during_checkpoint() {
     let barrier_ckpt = Arc::clone(&barrier);
     let ckpt_handle = thread::spawn(move || {
         barrier_ckpt.wait();
-        let _ = store_ckpt.checkpoint(&dir_path, faster_core::checkpoint::CheckpointType::FoldOver);
+        store_ckpt.checkpoint(&dir_path, faster_core::checkpoint::CheckpointType::FoldOver)
+            .expect("checkpoint should succeed");
     });
 
     for h in reader_handles {
@@ -992,7 +993,8 @@ fn concurrent_rmw_during_checkpoint() {
     let ckpt_handle = thread::spawn(move || {
         barrier_ckpt.wait();
         thread::yield_now();
-        let _ = store_ckpt.checkpoint(&dir_path, faster_core::checkpoint::CheckpointType::FoldOver);
+        store_ckpt.checkpoint(&dir_path, faster_core::checkpoint::CheckpointType::FoldOver)
+            .expect("checkpoint should succeed");
     });
 
     for h in rmw_handles {
@@ -1075,7 +1077,7 @@ fn concurrent_upserts_during_grow() {
         barrier_grow.wait();
         // Give writers time to fill the index, then trigger grow.
         thread::yield_now();
-        let _ = store_grow.grow_index();
+        store_grow.grow_index().expect("grow_index should succeed");
     });
 
     for h in writer_handles {
@@ -1191,8 +1193,9 @@ fn stress_operations_with_checkpoints(
                     }
 
                     // Thread 0 triggers periodic checkpoints.
+                    // May fail during concurrent operations — acceptable in stress test.
                     if t == 0 && i > 0 && i % checkpoint_interval == 0 {
-                        let _ = store.checkpoint(
+                        let _result = store.checkpoint(
                             &dir_path,
                             faster_core::checkpoint::CheckpointType::FoldOver,
                         );

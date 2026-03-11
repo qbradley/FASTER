@@ -150,10 +150,12 @@ fn flush_sealed_pages_returns_exact_count() {
 
     // Use checkpoint to force pages to read-only and trigger flush.
     let dir = tempfile::tempdir().unwrap();
-    let _ = store.checkpoint(
-        dir.path(),
-        faster_core::checkpoint::CheckpointType::FoldOver,
-    );
+    store
+        .checkpoint(
+            dir.path(),
+            faster_core::checkpoint::CheckpointType::FoldOver,
+        )
+        .expect("checkpoint should succeed");
 
     // After checkpoint, maintenance should have flushed sealed pages.
     // The key is that the count returned is accurate.
