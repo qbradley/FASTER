@@ -480,6 +480,7 @@ mod tests {
 
     // 7. evict_and_truncate_with_device
     #[test]
+    #[ignore = "tier-2: fills + flushes pages then evicts with device I/O"]
     fn evict_and_truncate_with_device() {
         let alloc = fill_pages(4);
         let page_table = alloc.page_table();

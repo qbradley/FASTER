@@ -726,9 +726,9 @@ mod tests {
 
     #[test]
     fn new_creates_correct_size() {
-        // Test up to 2^14 (16K buckets, ~1MB) to keep test fast.
-        // Larger sizes are functionally identical — just more memory.
-        for log2 in HashTable::MIN_LOG2_SIZE..=14 {
+        // Test up to 2^12 (4K buckets, ~256KB) to keep test under 1s in
+        // debug builds. Larger sizes are functionally identical.
+        for log2 in HashTable::MIN_LOG2_SIZE..=12 {
             let table = HashTable::new(log2);
             assert_eq!(table.num_buckets(), 1u64 << log2);
             assert_eq!(table.log2_buckets(), log2);
@@ -1357,6 +1357,7 @@ mod proptests {
 
         /// Insert N unique keys → find all N.
         #[test]
+        #[ignore = "tier-2: hash table alloc per case"]
         fn insert_n_find_all(keys in proptest::collection::vec(1u64..=u64::MAX, 1..100)) {
             let table = HashTable::new(8); // 256 buckets — sufficient for up to 100 keys
             let mut committed_hashes = Vec::new();
@@ -1383,6 +1384,7 @@ mod proptests {
 
         /// Create → commit → find round-trip for single keys.
         #[test]
+        #[ignore = "tier-2: hash table alloc per case"]
         fn create_commit_find_round_trip(
             hash_val in 1u64..=u64::MAX,
             page in 0u32..100,
@@ -1410,6 +1412,7 @@ mod proptests {
 
         /// Abort tentative entry → entry not found.
         #[test]
+        #[ignore = "tier-2: hash table alloc per case"]
         fn abort_tentative_not_found(hash_val in 1u64..=u64::MAX) {
             let table = HashTable::new(8); // 256 buckets
             let hash = KeyHash::new(hash_val);

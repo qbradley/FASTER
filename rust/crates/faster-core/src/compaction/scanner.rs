@@ -857,6 +857,7 @@ mod tests {
             /// equal the number of keys that are currently in the store
             /// (i.e., upserted but not deleted).
             #[test]
+            #[ignore = "tier-2: store creation + scan per case"]
             fn scanner_live_count_matches_index(
                 ops in proptest::collection::vec(
                     (0u64..50, prop_oneof![Just(true), Just(false)]),

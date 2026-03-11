@@ -1380,6 +1380,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "tier-2: snapshot file I/O with 6-page recovery"]
     fn recover_snapshot_only_snapshot_pages() {
         let dir = tempfile::tempdir().unwrap();
         let token = sample_token();
@@ -1663,6 +1664,7 @@ mod tests {
     // -- Tests: address restoration correctness -----------------------------
 
     #[test]
+    #[ignore = "tier-2: snapshot + main log file I/O recovery"]
     fn recover_snapshot_restores_correct_addresses() {
         let dir = tempfile::tempdir().unwrap();
         let token = sample_token();
@@ -1699,6 +1701,7 @@ mod tests {
     // -- Tests: page content verification after snapshot recovery -----------
 
     #[test]
+    #[ignore = "tier-2: snapshot file I/O with content verification"]
     fn recover_snapshot_page_content_verification() {
         let dir = tempfile::tempdir().unwrap();
         let token = sample_token();

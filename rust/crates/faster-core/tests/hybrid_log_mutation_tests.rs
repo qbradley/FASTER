@@ -615,14 +615,16 @@ fn concurrent_page_advancement_correctness() {
     ));
 
     // Multiple threads writing concurrently will trigger CAS contention
-    // on advance_to_next_page.
+    // on advance_to_next_page. 50K per thread is enough to fill several
+    // pages and force contention without taking >1s in debug builds.
+    let ops_per_thread = 50_000u64;
     let handles: Vec<_> = (0..4)
         .map(|t| {
             let store = store.clone();
             thread::spawn(move || {
                 let mut session = store.new_session();
-                let base = t * 250_000u64;
-                for i in 0..250_000u64 {
+                let base = t * ops_per_thread;
+                for i in 0..ops_per_thread {
                     let key = base + i;
                     let _ = store.upsert(&mut session, &key, &key, ());
                 }
@@ -638,9 +640,9 @@ fn concurrent_page_advancement_correctness() {
     // Verify a sample of keys from each thread's range
     let mut session = store.new_session();
     for t in 0..4u64 {
-        let base = t * 250_000;
+        let base = t * ops_per_thread;
         let mut found = 0;
-        for i in (0..250_000u64).step_by(1000) {
+        for i in (0..ops_per_thread).step_by(200) {
             let key = base + i;
             let mut output = None;
             let _status = store.read(&mut session, &key, &0u64, &mut output, ());
@@ -1483,6 +1485,7 @@ fn mutation_advance_to_next_page_retry_logic() {
 /// The code calculates `device_offset = p as u64 * page_size`. With `/`,
 /// offsets would be completely wrong. This test verifies correct offset calc.
 #[test]
+#[ignore = "tier-2: 32MB page allocation per case in debug builds"]
 fn mutation_load_pages_device_offset_calculation() {
     use faster_core::address::{LogicalAddress, OFFSET_BITS, Offset, Page};
     use faster_core::device::InMemoryDevice;
