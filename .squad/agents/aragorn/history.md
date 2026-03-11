@@ -152,3 +152,38 @@
 - 1 quickstart_example_2_persistent_storage (SyncFileDevice disk I/O, ~3.6s)
 
 **Results:** 1628 tests pass (<1s each), 22 ignored (pass with --run-ignored). Total count unchanged (1645→1628+17).
+- **Loom shim integration:** All production code must use `crate::sync` module instead of direct `std::sync` or `std::thread` imports. Test code (inside `#[cfg(test)]` blocks) is exempt and uses std directly. The sync.rs module exports AtomicU8, RwLockReadGuard, and all standard types under `#[cfg(loom)]`, `#[cfg(simulation)]`, and standard builds. Fully-qualified paths like `std::sync::atomic::Ordering::Acquire` must be replaced with imported `Ordering::Acquire`.
+
+## 2026-03-11: Backlog Sprint — Loom Shim Integration
+
+**Timestamp:** 2026-03-11T19:33:26Z  
+**Collaboration:** Quadrant sprint (Aragorn, Sam, Éowyn, Galadriel)
+
+### What Happened
+
+Wired all 9 production files to use `crate::sync` shim for loom testing integration. This allows loom's mock sync primitives to patch the entire codebase at once.
+
+### Key Changes
+
+- Replaced direct `std::sync` imports with shim module indirection
+- Exported `AtomicU8` and `RwLockReadGuard` from sync module
+- No API changes; full backward compatibility
+
+### Team Coordination
+
+- **Sam:** Log prefix coupling fix (recovery API parameterization) — SUCCESS
+- **Éowyn:** DST smoke test integration (Tier 2/3 split) — SUCCESS
+- **Galadriel:** Miri coverage expansion (71→78 tests) — SUCCESS
+
+**Commits:**
+- 229f0890: Wire loom shim to production code
+- fc0d3da9 (Sam): Add log_prefix parameter
+- 33fb44cf (Sam): Update test callsites
+- 4fca1523 (Coordinator): Fix missed callsites
+- a4525cb5 (Éowyn): Split DST tiers
+- 62acd905 (Éowyn): Add CI DST job
+- 9a7190d0 (Galadriel): Expand miri coverage
+
+### Verification
+
+All 1719 existing tests pass. Loom framework ready for coordinated sync primitive mocking.

@@ -239,3 +239,55 @@ Production types use `std::sync::atomic` directly — the `crate::sync` loom shi
 - Core scenarios provide sufficient crash recovery coverage for PR feedback
 - Full campaign coverage maintained in deep validation tier
 
+
+## 2026-03-11: Backlog Sprint — DST Smoke Test Integration
+
+**Timestamp:** 2026-03-11T19:33:26Z  
+**Collaboration:** Quadrant sprint (Aragorn, Sam, Éowyn, Galadriel)
+
+### What Happened
+
+Implemented two-tier DST strategy to balance fast PR feedback with comprehensive validation. Split the test suite into Tier 2 (core, ~19s) and Tier 3 (extended, ~220s). Integrated Tier 2 smoke tests into CI workflow.
+
+### Key Changes
+
+1. **Two-Tier DST Strategy**
+   - **Tier 2 (Fast Correctness Gate):** 133 core tests in ~19s
+     - 75 unit tests (framework correctness)
+     - 58 integration tests (crash recovery, fault injection, workload validation)
+   - **Tier 3 (Deep Validation):** 3009 test cases in ~220s
+     - 1003 scenarios × 3 seeds
+
+2. **CI Integration**
+   - New DST smoke test job in `.github/workflows/rust-ci.yml`
+   - Runs Tier 2 subset on every PR/push
+   - 10-minute timeout; blocks on failure
+
+3. **Release-Gate Updates**
+   - Tier 2: `cargo nextest run -p faster-dst -E 'not test(campaign_expanded)'`
+   - Tier 3: Dedicated section with extended campaign
+
+### Decision Generated
+
+- **DST Smoke Test Integration Strategy:** Two-tier approach documented with rationale, coverage breakdown, and team impacts
+
+### Team Coordination
+
+- **Aragorn:** Loom shim integration — SUCCESS
+- **Sam:** Log prefix coupling + tier-2 test criteria — SUCCESS
+- **Galadriel:** Miri coverage expansion — SUCCESS
+
+**Commits:**
+- a4525cb5: Split DST into Tier 2 core + Tier 3 extended
+- 62acd905: Add DST smoke test job to CI workflow
+
+### Verification
+
+- Tier 2: 133 tests in ~19s (under 30s target)
+- Tier 3: 3009 cases in ~220s (under 5min target)
+- CI job correctly filters test sets
+- No regressions in existing suite
+
+### Next Steps
+
+Extended campaign runs in release-gate before tagging. Nightly CI workflow optional for continuous validation.

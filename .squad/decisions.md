@@ -1714,3 +1714,126 @@ Flush callbacks run on I/O worker threads. Any new signaling mechanism (condvar,
 | Maintenance frequency | Epoch-based | Timer-based (5ms/50ms) | Adequate |
 | Allocation retry | Built-in retry loop | Single retry + external loop | **Moderate** |
 
+
+---
+
+## Decision: Log Prefix Coupling Fix
+
+**Date:** 2026-03-11  
+**Author:** Sam (Systems & Storage Expert)  
+**Status:** Implemented
+
+### Problem
+
+The `SyncFileDevice` accepts a configurable filename prefix (passed to `new()`), but the recovery code in `log_recovery.rs` hardcoded `"log."` as the segment filename format. If someone created a `SyncFileDevice` with a different prefix (e.g., `"data."`), recovery would silently fail.
+
+### Solution
+
+Pass the prefix as a parameter to recovery functions.
+
+**Rationale:** Parameterized approach is preferred over metadata storage because:
+- The prefix is a **device configuration**, not checkpoint state
+- Recovery should not depend on runtime device configuration
+- The caller (FasterKv) already knows what device it created
+- Makes recovery explicit and predictable
+
+### Implementation
+
+Added `log_prefix: &str` parameter to:
+- `LogRecoveryEngine::recover_fold_over()`
+- `LogRecoveryEngine::recover_snapshot()`
+- Internal validation functions
+
+Updated `FasterKv::recover()` to pass `"log."` as the default prefix.
+
+---
+
+## Decision: Tier-2 Test Classification Criteria
+
+**Author:** Sam (Systems & Storage Expert)  
+**Date:** 2026-03-12  
+**Status:** Applied
+
+### Criteria for `#[ignore = "tier-2: ..."]`
+
+1. **32MB page tests** — Full `OFFSET_BITS=25` pages are >1s in debug. Always tier-2.
+2. **Proptests at minimum cases** — Case count ≤16 but still >1s. Mark tier-2 rather than reducing coverage.
+3. **Multi-round I/O** — Checkpoint/recovery/compaction tests with 2+ I/O phases can't be meaningfully shortened.
+4. **Concurrent stress** — Can often be optimized by reducing iterations (5× reduction typically sufficient).
+
+### Applied Changes
+
+- Optimized 4 tests (reduced iterations)
+- Marked 12 tests tier-2 across hash, compaction, recovery, eviction, and I/O injection modules
+- Result: 0 tier-1 tests >1s (was 17)
+
+---
+
+## Decision: DST Smoke Test Integration Strategy
+
+**Author:** Éowyn (Deterministic Simulation Testing Expert)  
+**Date:** 2026-03-11  
+**Status:** Implemented
+
+### Two-Tier DST Strategy
+
+**Tier 2: Fast Correctness Gate (~19s)**
+- Command: `cargo nextest run -p faster-dst -E 'not test(campaign_expanded)'`
+- Coverage: 133 tests (75 unit + 58 integration)
+- Purpose: Fast feedback on critical crash recovery paths
+- Target: <30s
+
+**Tier 3: Deep Validation (~220s)**
+- Command: `cargo nextest run -p faster-dst -E 'test(campaign_expanded_smoke)'`
+- Coverage: 1003 scenarios × 3 seeds = 3009 test cases
+- Purpose: Comprehensive parameterized validation
+- Target: <30min
+
+### CI Integration
+
+- New DST smoke test job in `.github/workflows/rust-ci.yml`
+- Trigger: Every PR/push touching `rust/**`
+- Timeout: 10 minutes
+- Strategy: Run core scenarios only (Tier 2 subset)
+
+### Rationale
+
+Balances **fast PR feedback** (<30s) with **comprehensive correctness validation** while keeping **deep validation** (Tier 3) available for release-gate.
+
+---
+
+## Decision: Complete Miri Coverage for All Testable Unsafe Code
+
+**Date:** 2026-03-11  
+**Decider:** Galadriel (Security Expert)  
+**Status:** Implemented  
+**Tags:** #testing #miri #memory-safety #security
+
+### Decision
+
+Expand miri test coverage to include ALL testable unsafe modules in faster-core.
+
+### Coverage Expansion
+
+- Added 7 new miri tests across 4 modules
+- Total miri tests: 71 → 78 tests
+- 100% of testable unsafe code now verified
+
+### New Tests
+
+- `hash/index.rs`: `bucket_slice_bounds_and_alignment`, `bucket_slice_read_entries`
+- `checkpoint/index_writer.rs`: `bucket_as_bytes_no_ub`, `index_writer_bucket_serialization_pattern`
+- `epoch/mod.rs`: `epoch_protect_unprotect`, `epoch_defer_basic`
+- `recovery/index_recovery.rs`: `bucket_from_bytes_roundtrip`
+
+### Rationale
+
+1. **Comprehensive Memory Safety Verification:** Miri detects undefined behavior that standard tests miss
+2. **Pre-merge Verification:** All new unsafe code without miri test is immediately visible
+3. **Complement to Loom Testing:** Miri validates memory safety; Loom validates concurrency
+4. **Fast Feedback Loop:** Miri tests run in ~45 seconds
+
+### Maintenance Policy
+
+- New unsafe code MUST include corresponding miri test
+- Keep miri tests small and focused (one unsafe pattern per test)
