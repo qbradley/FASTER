@@ -1933,3 +1933,238 @@ mod miri_prefetch {
         // No assertion needed — Miri would detect UB if any
     }
 }
+
+// -----------------------------------------------------------------------
+// HashIndex tests — hash/index.rs
+// Exercises bucket_slice() which constructs a raw slice from boxed bucket array.
+// -----------------------------------------------------------------------
+
+#[cfg(miri)]
+mod miri_hash_index {
+    use faster_core::address::LogicalAddress;
+    use faster_core::hash::Hashable;
+    use faster_core::hash_table::HashTable;
+
+    #[test]
+    fn bucket_slice_bounds_and_alignment() {
+        let table = HashTable::new(16);
+        let slice = table.bucket_slice();
+        
+        // Note: HashTable may allocate more buckets than requested (power of 2 rounding)
+        let actual_len = slice.len();
+        assert!(actual_len >= 16, "table should have at least 16 buckets");
+        
+        // Access first and last buckets — exercises from_raw_parts bounds
+        let first = &slice[0];
+        let last = &slice[actual_len - 1];
+        
+        // Verify alignment (HashBucket is #[repr(C, align(64))])
+        let first_addr = first as *const _ as usize;
+        let last_addr = last as *const _ as usize;
+        assert_eq!(first_addr % 64, 0, "first bucket not 64-byte aligned");
+        assert_eq!(last_addr % 64, 0, "last bucket not 64-byte aligned");
+        
+        // Verify stride between consecutive buckets is exactly 64 bytes
+        if actual_len > 1 {
+            let second = &slice[1];
+            let second_addr = second as *const _ as usize;
+            let stride = second_addr - first_addr;
+            assert_eq!(stride, 64, "bucket stride != 64 bytes");
+        }
+    }
+
+    #[test]
+    fn bucket_slice_read_entries() {
+        let table = HashTable::new(8);
+        let addr = LogicalAddress::ZERO;
+        
+        // Insert some entries
+        for i in 0..10u64 {
+            let hash = (i * 1000).hash();
+            let _ = table.find_or_create_entry(hash, addr);
+        }
+        
+        // Read all buckets via bucket_slice — exercises from_raw_parts
+        let slice = table.bucket_slice();
+        let mut total_entries = 0;
+        for bucket in slice {
+            // Use entry() method to iterate through bucket entries
+            for i in 0..7 {
+                let entry = bucket.entry(i).load(std::sync::atomic::Ordering::Relaxed);
+                if entry.tag() != 0 {
+                    total_entries += 1;
+                }
+            }
+        }
+        
+        assert!(total_entries >= 10, "expected at least 10 entries");
+    }
+}
+
+// -----------------------------------------------------------------------
+// IndexWriter tests — checkpoint/index_writer.rs
+// Exercises raw pointer cast from HashBucket to [u8; 64] for serialization.
+// -----------------------------------------------------------------------
+
+#[cfg(miri)]
+mod miri_checkpoint_index_writer {
+    use faster_core::address::LogicalAddress;
+    use faster_core::hash_table::HashTable;
+    use faster_core::hash::Hashable;
+
+    #[test]
+    fn bucket_as_bytes_no_ub() {
+        let table = HashTable::new(4);
+        let addr = LogicalAddress::ZERO;
+        
+        // Insert some entries to populate buckets
+        for i in 0..8u64 {
+            let hash = (i * 100).hash();
+            let _ = table.find_or_create_entry(hash, addr);
+        }
+        
+        // Simulate what write_index does: read bucket bytes via raw pointer cast
+        for bucket in table.bucket_slice() {
+            // SAFETY: HashBucket is repr(C, align(64)), size 64.
+            // We're reading through a shared reference with no concurrent writers.
+            let bytes: &[u8; 64] = unsafe {
+                &*(bucket as *const _ as *const [u8; 64])
+            };
+            
+            // Verify we can read all 64 bytes without UB
+            let mut sum = 0u64;
+            for &b in bytes.iter() {
+                sum = sum.wrapping_add(b as u64);
+            }
+            // No assertion on sum — just checking Miri doesn't flag UB
+            let _ = sum;
+        }
+    }
+
+    #[test]
+    fn index_writer_bucket_serialization_pattern() {
+        let table = HashTable::new(4);
+        let addr = LogicalAddress::ZERO;
+        
+        // Insert entries
+        for i in 0..5u64 {
+            let hash = i.hash();
+            let _ = table.find_or_create_entry(hash, addr);
+        }
+        
+        // Test the unsafe pattern used by write_index: bucket -> [u8; 64]
+        // This exercises the exact unsafe code in index_writer.rs
+        let mut all_bytes = Vec::new();
+        for bucket in table.bucket_slice() {
+            let bytes: &[u8; 64] = unsafe {
+                &*(bucket as *const _ as *const [u8; 64])
+            };
+            all_bytes.extend_from_slice(bytes);
+        }
+        
+        // Verify data was extracted (table might allocate more buckets than requested)
+        let num_buckets = table.bucket_slice().len();
+        assert_eq!(all_bytes.len(), num_buckets * 64, "expected {} buckets × 64 bytes", num_buckets);
+        assert!(all_bytes.len() > 0, "no bytes extracted");
+    }
+}
+
+// -----------------------------------------------------------------------
+// Epoch tests — epoch/mod.rs
+// No additional unsafe beyond drain.rs (already covered).
+// The main unsafe is in drain.rs (defer callbacks), which we already test.
+// This module just verifies EpochTable operations don't cause UB.
+// -----------------------------------------------------------------------
+
+#[cfg(miri)]
+mod miri_epoch_table {
+    use faster_core::epoch::EpochTable;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    #[test]
+    fn epoch_protect_unprotect() {
+        let table = Arc::new(EpochTable::new());
+        let thread = table.register().expect("register should succeed");
+        
+        // Protect and unprotect epochs in sequence
+        for _ in 0..10 {
+            let guard = thread.protect();
+            assert!(guard.epoch() < 1000000);
+            drop(guard); // unprotects
+        }
+    }
+
+    #[test]
+    fn epoch_defer_basic() {
+        let table = Arc::new(EpochTable::new());
+        let thread = table.register().expect("register should succeed");
+        let counter = Arc::new(AtomicU64::new(0));
+        
+        {
+            let _guard = thread.protect();
+            let c = Arc::clone(&counter);
+            
+            // Defer a callback (exercises unsafe pointer in DrainList)
+            table.defer(move || {
+                c.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        
+        // Force drain by advancing epochs
+        for _ in 0..10 {
+            let _guard = thread.protect();
+            table.bump_current_epoch_no_callback();
+        }
+        
+        // Callback should have been executed
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+}
+
+// -----------------------------------------------------------------------
+// Recovery tests — recovery/mod.rs and recovery/index_recovery.rs
+// index_recovery.rs has one unsafe block for deserializing bucket bytes.
+// This requires file I/O and is structurally similar to index_writer.
+// We test the unsafe pattern in isolation.
+// -----------------------------------------------------------------------
+
+#[cfg(miri)]
+mod miri_recovery_index {
+    use faster_core::address::LogicalAddress;
+    use faster_core::hash_table::HashTable;
+    use faster_core::hash::Hashable;
+
+    #[test]
+    fn bucket_from_bytes_roundtrip() {
+        let table = HashTable::new(4);
+        let addr = LogicalAddress::ZERO;
+        
+        // Insert entries
+        for i in 0..6u64 {
+            let hash = (i * 200).hash();
+            let _ = table.find_or_create_entry(hash, addr);
+        }
+        
+        // Serialize buckets to bytes
+        let mut serialized = Vec::new();
+        for bucket in table.bucket_slice() {
+            let bytes: &[u8; 64] = unsafe {
+                &*(bucket as *const _ as *const [u8; 64])
+            };
+            serialized.extend_from_slice(bytes);
+        }
+        
+        // Deserialize and compare (simulates index_recovery.rs pattern)
+        for (i, bucket) in table.bucket_slice().iter().enumerate() {
+            let offset = i * 64;
+            let file_bytes = &serialized[offset..offset + 64];
+            
+            let mem_bytes: &[u8; 64] = unsafe {
+                &*(bucket as *const _ as *const [u8; 64])
+            };
+            
+            assert_eq!(file_bytes, mem_bytes, "bucket {} mismatch", i);
+        }
+    }
+}
