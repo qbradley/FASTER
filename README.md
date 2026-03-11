@@ -15,7 +15,7 @@ problems in the cloud today. The FASTER project offers two artifacts to help tac
 reader library in C#. It supports very frequent commit operations at low latency, and can quickly saturate 
 disk bandwidth. It supports both sync and async interfaces, handles disk errors, and supports checksums.
 
-* **FASTER KV** is a concurrent key-value store + cache (available in C# and C++) that is designed for point 
+* **FASTER KV** is a concurrent key-value store + cache (available in C#, C++ and [Rust](rust/README.md)) that is designed for point 
 lookups and heavy updates. FASTER supports data larger than memory, by leveraging fast external 
 storage (local or cloud). It also supports consistent recovery using a fast non-blocking checkpointing technique 
 that lets applications trade-off performance for commit latency.
