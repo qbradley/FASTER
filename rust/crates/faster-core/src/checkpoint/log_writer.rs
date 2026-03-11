@@ -111,6 +111,27 @@ impl LogCheckpointWriter {
         log: &HybridLogAllocator,
         token: &CheckpointToken,
     ) -> Result<LogCheckpointContext, CheckpointError> {
+        self.begin_checkpoint_at(log, token, None)
+    }
+
+    /// Begin a fold-over checkpoint, optionally using a pre-flushed tail.
+    ///
+    /// When `pre_flushed_tail` is `Some(addr)`, the checkpoint records that
+    /// address as its fold-over point instead of capturing a fresh snapshot
+    /// of the allocator's tail. This avoids a race where concurrent writes
+    /// (e.g. from compaction) advance the tail past what the caller has
+    /// already flushed, causing `wait_for_flush` to stall.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CheckpointError::InvalidState`] if the checkpoint type is
+    /// not [`CheckpointType::FoldOver`].
+    pub fn begin_checkpoint_at(
+        &self,
+        log: &HybridLogAllocator,
+        token: &CheckpointToken,
+        pre_flushed_tail: Option<LogicalAddress>,
+    ) -> Result<LogCheckpointContext, CheckpointError> {
         if self.checkpoint_type != CheckpointType::FoldOver {
             return Err(CheckpointError::InvalidState(
                 "use begin_snapshot_checkpoint() for Snapshot mode".into(),
@@ -118,14 +139,15 @@ impl LogCheckpointWriter {
         }
 
         let snap = log.snapshot();
+        let tail = pre_flushed_tail.unwrap_or(snap.tail_address);
 
         Ok(LogCheckpointContext {
             token: *token,
             checkpoint_type: self.checkpoint_type,
-            start_tail: snap.tail_address,
+            start_tail: tail,
             start_head: snap.head_address,
             start_begin: snap.begin_address,
-            flushed_until: snap.tail_address,
+            flushed_until: tail,
             started_at: Instant::now(),
         })
     }

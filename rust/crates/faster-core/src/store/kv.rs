@@ -765,12 +765,13 @@ impl<F: Functions> FasterKv<F> {
 
         let config = CheckpointConfig::new(checkpoint_dir.to_path_buf());
         let orchestrator = CheckpointOrchestrator::new(config);
-        let token = orchestrator.take_checkpoint(
+        let token = orchestrator.take_checkpoint_with_tail(
             checkpoint_type,
             &self.hash_index,
             &self.allocator,
             &[],
             checkpoint_dir,
+            Some(tail),
         )?;
 
         // The orchestrator writes the index file to `{dir}/{token}.index`,
