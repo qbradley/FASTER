@@ -1465,10 +1465,14 @@ impl<F: Functions> FasterKv<F> {
     /// Returns the number of pages flushed.
     pub fn flush(&self) -> u32 {
         trace_span!("store_flush");
-        let count = self
+        let result = self
             .flusher
             .flush_sealed_pages(&self.allocator, self.device.as_ref())
-            .unwrap_or_default();
+            .unwrap_or(crate::hybrid_log::FlushBatchResult {
+                flushed: 0,
+                queue_full: false,
+            });
+        let count = result.flushed;
         #[cfg(feature = "metrics")]
         self.metrics
             .flush_count
@@ -1705,9 +1709,14 @@ impl<F: Functions> FasterKv<F> {
         }
 
         // 2. Flush sealed pages to the device.
-        let _ = self
+        let flush_result = self
             .flusher
             .flush_sealed_pages(&self.allocator, self.device.as_ref());
+        let queue_full = flush_result.as_ref().is_ok_and(|r| r.queue_full);
+
+        // 2b. Poll the device for completed I/O so callbacks can fire,
+        // transitioning pages from Flushing → Flushed.
+        self.device.poll_completions();
 
         // 3. Evict if the in-memory footprint exceeds the policy threshold,
         //    the buffer is under pressure, or we've hit the eager flush watermark.
@@ -1727,6 +1736,14 @@ impl<F: Functions> FasterKv<F> {
             } else {
                 self.evictor.evict_pages(&self.allocator);
             }
+        }
+
+        // 4. If the device is under back-pressure or eviction made no progress
+        //    under buffer pressure, yield to let I/O worker threads run and
+        //    poll completions again.
+        if queue_full || buffer_pressure {
+            std::thread::yield_now();
+            self.device.poll_completions();
         }
     }
 
