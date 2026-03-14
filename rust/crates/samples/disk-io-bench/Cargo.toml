@@ -8,10 +8,14 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+default = []
+io_uring = ["faster-uring/io_uring"]
+
 [dependencies]
 faster-core = { path = "../../faster-core" }
 faster-tokio = { path = "../../faster-tokio" }
-faster-uring = { path = "../../faster-uring" }
+faster-uring = { path = "../../faster-uring", optional = true }
 clap = { version = "4", features = ["derive"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

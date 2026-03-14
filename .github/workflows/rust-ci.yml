@@ -45,6 +45,13 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            extra_features: "--features io_uring"
+          - os: windows-latest
+            extra_features: ""
+          - os: macos-latest
+            extra_features: ""
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -57,16 +64,16 @@ jobs:
           shared-key: ci-${{ matrix.os }}
 
       - name: Compile check
-        run: cargo check --workspace
+        run: cargo check --workspace ${{ matrix.extra_features }}
 
       - name: Clippy lints
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace ${{ matrix.extra_features }} -- -D warnings
 
       - name: Tests (debug)
-        run: cargo test --workspace
+        run: cargo test --workspace ${{ matrix.extra_features }}
 
       - name: Tests (release)
-        run: cargo test --workspace --release
+        run: cargo test --workspace --release ${{ matrix.extra_features }}
 
   # ── Loom Concurrency Tests ───────────────────────────────────────
   loom:
@@ -143,7 +150,7 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate coverage
-        run: cargo llvm-cov --all --lcov --output-path lcov.info
+        run: cargo llvm-cov --all --features io_uring --lcov --output-path lcov.info
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
@@ -165,7 +172,7 @@ jobs:
           shared-key: bench
 
       - name: Run benchmarks
-        run: cargo bench --workspace --no-fail-fast -- --save-baseline main
+        run: cargo bench --workspace --features io_uring --no-fail-fast -- --save-baseline main
 
   # ── Semver Compatibility Checks (informational pre-1.0) ──────────
   semver-checks:
@@ -195,7 +202,7 @@ jobs:
       - name: Check semver (faster-tokio)
         run: cargo semver-checks -p faster-tokio || echo "⚠️ semver issue in faster-tokio (informational pre-1.0)"
       - name: Check semver (faster-uring)
-        run: cargo semver-checks -p faster-uring || echo "⚠️ semver issue in faster-uring (informational pre-1.0)"
+        run: cargo semver-checks -p faster-uring --features io_uring || echo "⚠️ semver issue in faster-uring (informational pre-1.0)"
       - name: Check semver (faster-ffi)
         run: cargo semver-checks -p faster-ffi || echo "⚠️ semver issue in faster-ffi (informational pre-1.0)"
 

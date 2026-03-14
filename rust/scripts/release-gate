@@ -112,8 +112,8 @@ declare -a CHECK_TIMES=()
 declare -a CHECK_TIERS=()
 declare -a CHECK_DETAILS=()
 
-declare -A TIER_RESULTS=()    # pass, fail, warn
-declare -A TIER_TIMES=()
+declare -a TIER_RESULTS=()    # pass, fail, warn
+declare -a TIER_TIMES=()
 
 TOTAL_PASS=0
 TOTAL_FAIL=0
@@ -121,6 +121,12 @@ TOTAL_SKIP=0
 TOTAL_WARN=0
 
 SCRIPT_START=$(date +%s)
+
+# Enable io_uring feature on Linux
+URING_FEATURE=""
+if [[ "$(uname -s)" == "Linux" ]]; then
+    URING_FEATURE="--features io_uring"
+fi
 
 # ── Output helpers ──────────────────────────────────────────────────────────
 REPORT_BUFFER=""
@@ -306,7 +312,7 @@ run_tier_1() {
     fi
 
     run_check $tier "cargo clippy (workspace)" \
-        cargo clippy --workspace --all-targets -- -D warnings || tier_failed=true
+        cargo clippy --workspace --all-targets $URING_FEATURE -- -D warnings || tier_failed=true
 
     if [[ "$tier_failed" == true && "$CONTINUE_ON_FAIL" == false ]]; then
         TIER_RESULTS[$tier]="fail"
@@ -315,7 +321,7 @@ run_tier_1() {
     fi
 
     run_check $tier "cargo test --doc (workspace)" \
-        cargo test --doc --workspace || tier_failed=true
+        cargo test --doc --workspace $URING_FEATURE || tier_failed=true
 
     if [[ "$tier_failed" == true && "$CONTINUE_ON_FAIL" == false ]]; then
         TIER_RESULTS[$tier]="fail"
@@ -326,11 +332,11 @@ run_tier_1() {
     # nextest with fallback
     if has_tool cargo-nextest || cargo nextest --version &>/dev/null 2>&1; then
         run_check $tier "cargo nextest run (workspace)" \
-            cargo nextest run --workspace --all-targets || tier_failed=true
+            cargo nextest run --workspace --all-targets $URING_FEATURE || tier_failed=true
     else
         log "  ${YELLOW}⚠ nextest not found — falling back to cargo test${RESET}"
         run_check $tier "cargo test (workspace)" \
-            cargo test --workspace || tier_failed=true
+            cargo test --workspace $URING_FEATURE || tier_failed=true
     fi
 
     if [[ "$tier_failed" == true && "$CONTINUE_ON_FAIL" == false ]]; then
@@ -340,7 +346,7 @@ run_tier_1() {
     fi
 
     run_check $tier "cargo doc (workspace, no-deps)" \
-        cargo doc --workspace --no-deps || tier_failed=true
+        cargo doc --workspace --no-deps $URING_FEATURE || tier_failed=true
 
     local tier_end
     tier_end=$(date +%s)
