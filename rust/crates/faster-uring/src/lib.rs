@@ -25,16 +25,16 @@
 #![warn(missing_docs)]
 #![forbid(clippy::undocumented_unsafe_blocks)]
 
-#[cfg(target_os = "linux")]
+#[cfg(feature = "io_uring")]
 mod buffer;
-#[cfg(target_os = "linux")]
+#[cfg(feature = "io_uring")]
 mod device;
-#[cfg(target_os = "linux")]
+#[cfg(feature = "io_uring")]
 mod ring;
 
-#[cfg(target_os = "linux")]
+#[cfg(feature = "io_uring")]
 pub use buffer::{BufferPool, RegisteredBuffer, SECTOR_ALIGNMENT};
-#[cfg(target_os = "linux")]
+#[cfg(feature = "io_uring")]
 pub use device::{BatchPolicy, UringDevice, UringDeviceConfig};
-#[cfg(target_os = "linux")]
+#[cfg(feature = "io_uring")]
 pub use ring::{Ring, UringConfig};

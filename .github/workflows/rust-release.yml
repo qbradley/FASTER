@@ -72,7 +72,7 @@ jobs:
           cargo +nightly fmt --all -- --check
 
       - name: Clippy lints
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --features io_uring -- -D warnings
         env:
           RUSTFLAGS: "-D warnings"
 
@@ -96,13 +96,13 @@ jobs:
         uses: taiki-e/install-action@nextest
 
       - name: Run tests (debug)
-        run: cargo nextest run --workspace
+        run: cargo nextest run --workspace --features io_uring
 
       - name: Run tests (release)
-        run: cargo nextest run --workspace --release
+        run: cargo nextest run --workspace --release --features io_uring
 
       - name: Run doc tests
-        run: cargo test --workspace --doc
+        run: cargo test --workspace --doc --features io_uring
 
   # ── Semver compatibility check ─────────────────────────────────────
   semver-checks:
@@ -135,7 +135,7 @@ jobs:
         run: cargo semver-checks -p faster-tokio || echo "⚠️ semver issue detected (informational pre-1.0)"
 
       - name: Check semver (faster-uring)
-        run: cargo semver-checks -p faster-uring || echo "⚠️ semver issue detected (informational pre-1.0)"
+        run: cargo semver-checks -p faster-uring --features io_uring || echo "⚠️ semver issue detected (informational pre-1.0)"
 
       - name: Check semver (faster-ffi)
         run: cargo semver-checks -p faster-ffi || echo "⚠️ semver issue detected (informational pre-1.0)"

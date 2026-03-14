@@ -18,6 +18,7 @@ use faster_core::status::OperationStatus;
 use faster_core::store::{
     FasterKv, FasterKvConfig, Functions, ReadInfo, RmwInPlaceResult, RmwInfo, UpsertInfo,
 };
+#[cfg(feature = "io_uring")]
 use faster_uring::{BatchPolicy, UringConfig, UringDevice, UringDeviceConfig};
 use rand::Rng;
 
@@ -40,6 +41,7 @@ enum DeviceBackend {
     /// Blocking I/O via thread pool.
     Sync,
     /// Linux io_uring kernel-async I/O.
+    #[cfg(feature = "io_uring")]
     Uring,
 }
 
@@ -99,6 +101,7 @@ struct Args {
     device: DeviceBackend,
 
     /// io_uring queue depth (only with --device uring).
+    #[cfg(feature = "io_uring")]
     #[arg(long, default_value_t = 256)]
     uring_queue_depth: u32,
 }
@@ -461,6 +464,7 @@ fn main() {
 
     let device_name = match args.device {
         DeviceBackend::Sync => "sync",
+        #[cfg(feature = "io_uring")]
         DeviceBackend::Uring => "uring",
     };
     let dist_name = match args.distribution {
@@ -483,6 +487,7 @@ fn main() {
                 .expect("failed to create sync storage device");
             Arc::new(FasterKv::new(config, PageFunctions, device))
         }
+        #[cfg(feature = "io_uring")]
         DeviceBackend::Uring => {
             let device = UringDevice::new(UringDeviceConfig {
                 base_path: args.storage_dir.clone(),

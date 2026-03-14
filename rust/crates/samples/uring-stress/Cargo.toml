@@ -8,8 +8,12 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+default = []
+io_uring = ["faster-uring/io_uring"]
+
 [dependencies]
 faster-core = { path = "../../faster-core" }
-faster-uring = { path = "../../faster-uring" }
+faster-uring = { path = "../../faster-uring", optional = true }
 clap = { version = "4", features = ["derive"] }
 rand = "0.9"

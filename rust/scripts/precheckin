@@ -62,9 +62,18 @@ run_gate() {
 # ── Run gates ───────────────────────────────────────────────────────────────
 cd "$RUST_DIR"
 
+# Enable io_uring feature on Linux
+URING_FEATURE=""
+if [[ "$(uname -s)" == "Linux" ]]; then
+    URING_FEATURE="--features io_uring"
+fi
+
 echo -e "${BOLD}═══ FASTER Rust Pre-Checkin ═══${RESET}"
 if [[ "$SKIP_TESTS" == true ]]; then
     echo -e "${YELLOW}⚡ --skip-tests: running fmt + clippy only${RESET}"
+fi
+if [[ -n "$URING_FEATURE" ]]; then
+    echo -e "${YELLOW}🐧 Linux detected — enabling io_uring feature${RESET}"
 fi
 
 run_gate "cargo fmt (check)" \
@@ -74,28 +83,28 @@ run_gate "cargo fmt (check)" \
 }
 
 run_gate "cargo clippy (workspace)" \
-    cargo clippy --workspace --all-targets -- -D warnings || {
+    cargo clippy --workspace --all-targets $URING_FEATURE -- -D warnings || {
     echo -e "\n${RED}💡 Fix: address the clippy warnings above then retry.${RESET}" >&2
     exit 1
 }
 
 if [[ "$SKIP_TESTS" == false ]]; then
     run_gate "cargo test --doc (workspace)" \
-        cargo test --doc --workspace || {
+        cargo test --doc --workspace $URING_FEATURE || {
         echo -e "\n${RED}💡 Fix: repair the failing doctests above then retry.${RESET}" >&2
         exit 1
     }
 
     if command -v cargo-nextest &>/dev/null || cargo nextest --version &>/dev/null 2>&1; then
         run_gate "cargo nextest run (workspace)" \
-            cargo nextest run --workspace --all-targets || {
+            cargo nextest run --workspace --all-targets $URING_FEATURE || {
             echo -e "\n${RED}💡 Fix: repair the failing tests above then retry.${RESET}" >&2
             exit 1
         }
     else
         echo -e "${YELLOW}  ⚠ nextest not found — falling back to cargo test${RESET}"
         run_gate "cargo test (workspace)" \
-            cargo test --workspace || {
+            cargo test --workspace $URING_FEATURE || {
             echo -e "\n${RED}💡 Fix: repair the failing tests above then retry.${RESET}" >&2
             exit 1
         }

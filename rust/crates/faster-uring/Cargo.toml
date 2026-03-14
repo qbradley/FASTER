@@ -10,10 +10,14 @@ homepage.workspace = true
 keywords = ["io", "io-uring", "storage", "async", "completion"]
 categories.workspace = true
 
+[features]
+default = []
+io_uring = ["dep:io-uring", "dep:libc"]
+
 [dependencies]
 faster-core = { version = "0.1.0", path = "../faster-core" }
-io-uring = "0.7"
-libc = "0.2"
+io-uring = { version = "0.7", optional = true }
+libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

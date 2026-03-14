@@ -375,7 +375,7 @@ fn make_sync_device(data_dir: &std::path::Path, io_threads: usize) -> SyncFileDe
         .expect("failed to create SyncFileDevice")
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(feature = "io_uring")]
 fn make_uring_device(
     data_dir: &std::path::Path,
     queue_depth: u32,
@@ -891,7 +891,7 @@ fn run_single_iteration(spec: &BenchSpec) -> SingleRunResults {
                 spec.latency_sample_rate,
             )
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(feature = "io_uring")]
         (DeviceType::Uring, ClientType::Sync) => {
             let device = make_uring_device(&bench_dir, spec.queue_depth, spec.direct_io);
             let store = Arc::new(FasterKv::new(config, BenchFunctions, device));
@@ -908,7 +908,7 @@ fn run_single_iteration(spec: &BenchSpec) -> SingleRunResults {
                 spec.latency_sample_rate,
             )
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(feature = "io_uring")]
         (DeviceType::Uring, ClientType::Tokio) => {
             let device = make_uring_device(&bench_dir, spec.queue_depth, spec.direct_io);
             let store = Arc::new(FasterKv::new(config, BenchFunctions, device));
@@ -925,9 +925,11 @@ fn run_single_iteration(spec: &BenchSpec) -> SingleRunResults {
                 spec.latency_sample_rate,
             )
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(feature = "io_uring"))]
         (DeviceType::Uring, _) => {
-            eprintln!("  Warning: UringDevice requires Linux -- skipping");
+            eprintln!(
+                "  Warning: UringDevice requires the io_uring feature (Linux only) -- skipping"
+            );
             return SingleRunResults {
                 ops_per_sec: 0.0,
                 throughput_mb_s: 0.0,
@@ -1124,7 +1126,9 @@ struct BenchSpec {
     latency_sample_rate: u64,
     data_dir: PathBuf,
     io_threads: usize,
+    #[cfg_attr(not(feature = "io_uring"), allow(dead_code))]
     queue_depth: u32,
+    #[cfg_attr(not(feature = "io_uring"), allow(dead_code))]
     direct_io: bool,
     iterations: usize,
     force_disk: bool,
