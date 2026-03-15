@@ -907,6 +907,8 @@ mod tests {
 
                 // Fill entire page with a deterministic but seed-varied pattern.
                 // Using wrapping_add avoids trivial zero-fill.
+                // SAFETY: `frame.as_mut_ptr()` returns a valid pointer to the
+                // page-sized allocation and we write exactly PT_PAGE_SIZE bytes.
                 unsafe {
                     let ptr = frame.as_mut_ptr();
                     for i in 0..PT_PAGE_SIZE {
@@ -945,10 +947,10 @@ mod tests {
                 dev.read_sync(offset, &mut readback).unwrap();
 
                 // Assert: every valid byte is intact.
-                for i in 0..(valid_bytes as usize) {
+                for (i, &actual) in readback.iter().enumerate().take(valid_bytes as usize) {
                     let expected = (i as u8).wrapping_add(seed);
                     prop_assert_eq!(
-                        readback[i], expected,
+                        actual, expected,
                         "byte {} corrupted (valid_bytes={}, page_size={}, seed={})",
                         i, valid_bytes, PT_PAGE_SIZE, seed,
                     );
@@ -974,6 +976,7 @@ mod tests {
                     // Trailer was skipped — the last 8 bytes of the page
                     // should still hold the original pattern, not a trailer.
                     let flushed = frame.as_slice();
+                    #[allow(clippy::needless_range_loop)]
                     for i in (PT_PAGE_SIZE - PageTrailer::SIZE)..PT_PAGE_SIZE {
                         if i < valid_bytes as usize {
                             let expected = (i as u8).wrapping_add(seed);
