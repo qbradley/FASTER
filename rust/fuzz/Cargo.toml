@@ -15,6 +15,10 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+tempfile = "3"
+crc32fast = "1"
 
 [dependencies.faster-core]
 path = "../crates/faster-core"
@@ -44,4 +48,19 @@ doc = false
 [[bin]]
 name = "fuzz_store_ops"
 path = "fuzz_targets/fuzz_store_ops.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_page_trailer"
+path = "fuzz_targets/fuzz_page_trailer.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_checkpoint_recovery"
+path = "fuzz_targets/fuzz_checkpoint_recovery.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_log_recovery"
+path = "fuzz_targets/fuzz_log_recovery.rs"
 doc = false
