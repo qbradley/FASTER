@@ -12,6 +12,35 @@
 
 ---
 
+## 2026-03-11: Fuzz Targets for Recovery/Checkpoint Paths (A9)
+
+**What:** Added 3 new cargo-fuzz targets covering the previously unfuzzed recovery and checkpoint deserialization attack surface. Closes action item A9.
+
+**New Fuzz Targets (3):**
+- `fuzz_page_trailer` — PageTrailer CRC parsing, roundtrip, write_size/crc_range computation
+- `fuzz_checkpoint_recovery` — Binary index checkpoint file (IndexCheckpointReader) + JSON metadata deserialization (all recovery info types)
+- `fuzz_log_recovery` — Full LogRecoveryEngine::recover_fold_over() pipeline with arbitrary segment data
+
+**Key Technical Learnings:**
+1. `PageTrailer::from_slice()` asserts on preconditions (write_size >= 8 and <= data.len()) — fuzz targets must guard these
+2. Index checkpoint files use a 28-byte header (magic "FXIX" + version + metadata) + CRC-32 footer — `IndexCheckpointReader::open()` validates magic+version, `verify()` does full CRC
+3. `LogRecoveryEngine::recover_fold_over()` requires: (a) segment files named `{prefix}{segment_idx}` on disk, (b) a RecoveryPlan with matching addresses. Segment index = address / 1 GiB
+4. File-based fuzz targets need `tempfile` crate for temp directories — existing targets were all in-memory
+5. CRC validation in log recovery only activates for format_version >= 3; the fuzzer varies this to cover both code paths
+6. Remote has a directory/file conflict on `squad/galadriel/` namespace — pushed as `galadriel/fuzz-recovery-paths` instead
+
+**Dependencies Added (fuzz crate only):** serde_json, serde, tempfile, crc32fast
+
+**Branch:** `galadriel/fuzz-recovery-paths` → base `rust`
+**Build verified:** All 8 fuzz targets compile (5 existing + 3 new)
+
+**What This Means:**
+- **Frodo (CI):** Wire up `cargo +nightly fuzz run fuzz_{page_trailer,checkpoint_recovery,log_recovery} -- -max_total_time=200` (~10 min total)
+- **Éowyn (DST):** The log recovery fuzz target exercises the same validate_page_checksums path as DST crash-recovery, but with unconstrained byte mutations — complementary coverage
+- **Boromir (QA):** Fuzz corpus from these targets can seed DST campaign scenarios
+
+---
+
 ## 2026-03-08: Miri Test Expansion — Full Unsafe Coverage
 
 **What:** Expanded Miri test suite from 757 LOC (26 tests) to 1935 LOC (71 tests), covering all testable unsafe modules in faster-core.

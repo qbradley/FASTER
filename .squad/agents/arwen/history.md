@@ -137,3 +137,48 @@
 - **Gandalf (agent-148):** Added semver-checks to CI — new public API on publishable crates will be flagged on PRs.
 - **Legolas (agent-149):** `bench-record-baseline.sh`, `bench-release-compare.sh`, `bench-ci-smoke.sh` now available for release benchmarking.
 - **Boromir (agent-150):** `rust/scripts/release-gate` with `--tier 1` is a superset of `precheckin`; use it as a pre-commit check.
+
+---
+
+## 2026-03-14: Sample Crate READMEs Completed (Backlog Item 3e)
+
+**What:** Wrote comprehensive READMEs for all 8 sample crates missing documentation:
+1. **cross-impl-bench** — YCSB benchmark suite for cross-implementation comparison
+2. **disk-io-bench** — Device implementation benchmark (sync, io_uring, Tokio)
+3. **event-counter-tokio** — Async event aggregation with Tokio integration
+4. **page-cache** — Lossy cache workload with configurable eviction
+5. **page-store** — Durable store with explicit delete-based retention
+6. **read-cache-sim** — Fixed working set cache (sync version)
+7. **read-cache-sim-tokio** — Fixed working set cache (async version)
+8. **torture-stress** — Correctness torture-test with oracle verification
+
+**README Structure (established pattern):**
+- **Title** — crate name
+- **One-line description** — what it demonstrates
+- **What It Demonstrates** — 2–3 sentences explaining purpose
+- **Key Concepts** — bullet list of FASTER features shown
+- **Usage** — cargo run examples with common flags
+- **CLI Options** — reference table of all command-line flags
+- **Example Output** — realistic sample output/results
+- **Notes** — platform requirements, caveats, use cases
+
+**Style References:**
+- Adapted from existing `tokio-kv-server/README.md` and `uring-stress/README.md`
+- Tone: Clear, direct, 10-minute decision-maker focus
+- Code examples: Realistic, copy-paste ready
+
+**Key Content Decisions:**
+- **cross-impl-bench:** Emphasized YCSB standardization and cross-platform comparison
+- **disk-io-bench:** Explained memory budgeting calculation (why dataset > buffer matters)
+- **event-counter-tokio:** Showed async/sync bridge pattern with ASCII architecture diagram
+- **page-cache vs. page-store:** Clearly contrasted lossy eviction vs. durable retention
+- **read-cache-sim/-tokio:** Included side-by-side comparison table
+- **torture-stress:** Detailed thread roles, wave functions, oracle mechanics with ASCII art
+
+**Branch:** `arwen/sample-readmes` (push to origin succeeded)
+**Commit:** 1880da1a — 8 files, 1052 insertions
+
+**Total Documentation Added:** ~30 KB (1052 lines)
+- Best for: New users deciding which sample to study first
+- Solves: Documentation audit gap (5 samples missing READMEs identified in Wave 3)
+
