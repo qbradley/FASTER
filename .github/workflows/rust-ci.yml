@@ -9,8 +9,8 @@ on:
   pull_request:
     paths: ["rust/**"]
   schedule:
-    - cron: "0 6 * * 0"   # Every Sunday at 06:00 UTC (for Miri)
-  workflow_dispatch:        # Manual trigger (for Miri / benchmarks)
+    - cron: "0 6 * * 0"   # Every Sunday at 06:00 UTC (Miri + DST extended campaign)
+  workflow_dispatch:        # Manual trigger (for Miri / DST extended / benchmarks)
 
 permissions:
   contents: read
@@ -113,7 +113,30 @@ jobs:
       - name: Run DST core scenarios
         run: cargo nextest run -p faster-dst -E 'not test(campaign_expanded)'
         # Runs 133 tests in ~20s: crash recovery, fault injection, workload validation
-        # Extended campaign (1000+ scenarios) runs in nightly/deep validation
+        # Extended campaign (1000+ scenarios) runs in dst-extended job on schedule
+
+  # ── DST Extended Campaign (scheduled + manual) ─────────────────
+  dst-extended:
+    name: DST Extended Campaign
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+      - name: Run DST extended campaign
+        run: cargo nextest run -p faster-dst -E 'test(campaign_expanded)'
+        # 1003 scenarios × 3 seeds = 3009 test cases (~4 min)
+        # Covers all 44 scenario categories: checkpoint, compaction, recovery,
+        # cross-subsystem, and fault injection crash paths
 
   # ── Miri UB Detection ─────────────────────────────────────────────
   miri:
