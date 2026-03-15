@@ -866,4 +866,162 @@ mod tests {
             );
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Property test (A5): roundtrip write-read for arbitrary valid_bytes
+    // -----------------------------------------------------------------------
+    //
+    // Verifies every byte of valid data survives a flush+readback cycle for
+    // all possible fill levels, targeting the MF-1 class of bugs where the
+    // CRC trailer could overwrite live record data near page boundaries.
+
+    mod proptests {
+        use super::*;
+        use crate::hybrid_log::page::PageTrailer;
+        use proptest::prelude::*;
+
+        /// Page and sector sizes used by the property tests.
+        /// 4 KiB pages / 512 B sectors keep memory reasonable while exercising
+        /// every interesting boundary (sector-aligned, near-full, full).
+        const PT_PAGE_SIZE: usize = 4096;
+        const PT_SECTOR_SIZE: usize = 512;
+        const PT_BUFFER_PAGES: usize = 4;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(512))]
+
+            /// A5 — Roundtrip write-read assertion: every byte of valid data
+            /// survives a flush+readback regardless of how full the page is.
+            #[test]
+            fn flush_roundtrip_preserves_all_valid_bytes(
+                valid_bytes in 0u32..=(PT_PAGE_SIZE as u32),
+                seed in any::<u8>(),
+            ) {
+                let page = Page(0);
+                let pt = PageTable::new(
+                    PT_BUFFER_PAGES,
+                    PT_PAGE_SIZE,
+                    PT_SECTOR_SIZE,
+                );
+                let frame = pt.get_or_allocate_frame(page);
+
+                // Fill entire page with a deterministic but seed-varied pattern.
+                // Using wrapping_add avoids trivial zero-fill.
+                unsafe {
+                    let ptr = frame.as_mut_ptr();
+                    for i in 0..PT_PAGE_SIZE {
+                        *ptr.add(i) = (i as u8).wrapping_add(seed);
+                    }
+                }
+
+                frame
+                    .state()
+                    .try_transition(PageState::Open, PageState::Sealed);
+
+                let dev = InMemoryDevice::with_sizes(
+                    PT_SECTOR_SIZE as u32,
+                    1 << 30,
+                );
+                let flusher = PageFlusher::new(
+                    PT_SECTOR_SIZE as u32,
+                    PT_PAGE_SIZE as u32,
+                );
+
+                // Flush with the generated valid_bytes.
+                let result = flusher.flush_page_sync(
+                    page, &pt, &dev, valid_bytes,
+                );
+                prop_assert!(result.is_ok(), "flush failed: {:?}", result);
+
+                // Read back from device.
+                let write_size = PageTrailer::write_size(
+                    valid_bytes,
+                    PT_SECTOR_SIZE as u32,
+                    PT_PAGE_SIZE as u32,
+                );
+                let ws = core::cmp::max(write_size as usize, PageTrailer::SIZE);
+                let mut readback = vec![0u8; ws];
+                let offset = flusher.device_offset(page);
+                dev.read_sync(offset, &mut readback).unwrap();
+
+                // Assert: every valid byte is intact.
+                for i in 0..(valid_bytes as usize) {
+                    let expected = (i as u8).wrapping_add(seed);
+                    prop_assert_eq!(
+                        readback[i], expected,
+                        "byte {} corrupted (valid_bytes={}, page_size={}, seed={})",
+                        i, valid_bytes, PT_PAGE_SIZE, seed,
+                    );
+                }
+
+                // When there's room for a trailer, verify it round-trips.
+                let trailer_offset = write_size as usize - PageTrailer::SIZE;
+                if (trailer_offset as u32) >= valid_bytes {
+                    let trailer = PageTrailer::from_slice(&readback, ws);
+                    let crc_range = PageTrailer::crc_range(valid_bytes, write_size);
+                    let expected_crc =
+                        crc32fast::hash(&readback[..crc_range as usize]);
+                    prop_assert_eq!(
+                        trailer.crc32, expected_crc,
+                        "CRC mismatch (valid_bytes={}, write_size={})",
+                        valid_bytes, write_size,
+                    );
+                    prop_assert_eq!(
+                        trailer.valid_bytes, crc_range,
+                        "trailer valid_bytes mismatch",
+                    );
+                } else {
+                    // Trailer was skipped — the last 8 bytes of the page
+                    // should still hold the original pattern, not a trailer.
+                    let flushed = frame.as_slice();
+                    for i in (PT_PAGE_SIZE - PageTrailer::SIZE)..PT_PAGE_SIZE {
+                        if i < valid_bytes as usize {
+                            let expected = (i as u8).wrapping_add(seed);
+                            prop_assert_eq!(
+                                flushed[i], expected,
+                                "trailer-region byte {} corrupted when trailer \
+                                 should have been skipped (valid_bytes={})",
+                                i, valid_bytes,
+                            );
+                        }
+                    }
+                }
+            }
+
+            /// Verify write_size never exceeds page_size (overflow guard).
+            #[test]
+            fn write_size_never_exceeds_page_size(
+                valid_bytes in 0u32..=(PT_PAGE_SIZE as u32),
+            ) {
+                let ws = PageTrailer::write_size(
+                    valid_bytes,
+                    PT_SECTOR_SIZE as u32,
+                    PT_PAGE_SIZE as u32,
+                );
+                prop_assert!(
+                    ws <= PT_PAGE_SIZE as u32,
+                    "write_size {} > page_size {} for valid_bytes={}",
+                    ws, PT_PAGE_SIZE, valid_bytes,
+                );
+            }
+
+            /// When trailer fits, crc_range must not exceed valid_bytes.
+            #[test]
+            fn crc_range_bounded_by_valid_bytes(
+                valid_bytes in 0u32..=(PT_PAGE_SIZE as u32),
+            ) {
+                let ws = PageTrailer::write_size(
+                    valid_bytes,
+                    PT_SECTOR_SIZE as u32,
+                    PT_PAGE_SIZE as u32,
+                );
+                let cr = PageTrailer::crc_range(valid_bytes, ws);
+                prop_assert!(
+                    cr <= valid_bytes,
+                    "crc_range {} > valid_bytes {} (write_size={})",
+                    cr, valid_bytes, ws,
+                );
+            }
+        }
+    }
 }
