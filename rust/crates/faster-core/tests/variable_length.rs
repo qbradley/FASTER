@@ -874,13 +874,20 @@ fn concurrent_maintenance_with_varlen() {
         .collect();
 
     // Maintenance thread — runs until writers finish (no cycle cap).
+    // `maint_started` ensures the maintenance thread completes at least one
+    // cycle before we signal `done`.  On resource-constrained CI runners the
+    // maintenance thread can be starved by 4 writer threads + the main thread,
+    // causing it to never run before `done` is set.
+    let maint_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let store_m = Arc::clone(&store);
     let done_m = Arc::clone(&done);
+    let started_m = Arc::clone(&maint_started);
     let maint = thread::spawn(move || {
         let mut cycles = 0u32;
         while !done_m.load(std::sync::atomic::Ordering::Relaxed) {
             store_m.maintenance();
             cycles += 1;
+            started_m.store(true, std::sync::atomic::Ordering::Release);
             thread::yield_now();
         }
         cycles
@@ -891,6 +898,13 @@ fn concurrent_maintenance_with_varlen() {
         total_ops += w.join().expect("worker panicked");
     }
 
+    // Wait until the maintenance thread has completed at least one cycle.
+    // After workers are joined the CPU is freed, so this spins briefly at most.
+    // If maintenance is truly deadlocked this will hang — which is the failure
+    // mode we *want* to detect.
+    while !maint_started.load(std::sync::atomic::Ordering::Acquire) {
+        thread::yield_now();
+    }
     done.store(true, std::sync::atomic::Ordering::Relaxed);
     let cycles = maint.join().expect("maintenance panicked");
 
