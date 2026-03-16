@@ -121,6 +121,7 @@ pub mod workload;
 pub use campaign::SeedCampaign;
 pub use channel::SimChannel;
 pub use clock::SimulatedClock;
+pub use concurrency::{DstRunner, RunOutcome, RunnerConfig};
 pub use crash::{
     CrashRecoveryResult, CrashRecoveryRunner, CrashScenario, CrashSchedule, CrashScheduleRef,
     CrashTrigger,

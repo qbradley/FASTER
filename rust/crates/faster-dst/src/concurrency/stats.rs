@@ -70,6 +70,16 @@ impl StatsCollector {
         }
     }
 
+    /// Number of writer slots.
+    pub fn num_writers(&self) -> usize {
+        self.per_writer_ops.len()
+    }
+
+    /// Current ops count for a single writer (relaxed read).
+    pub fn writer_ops(&self, writer_id: usize) -> u64 {
+        self.per_writer_ops[writer_id].load(Ordering::Relaxed)
+    }
+
     /// Record a successful operation for a writer at the given sim-time.
     pub fn record_op(&self, writer_id: usize, sim_time_ns: u64) {
         self.total_ops.fetch_add(1, Ordering::Relaxed);
