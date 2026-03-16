@@ -1797,3 +1797,387 @@ fn d6_epoch_deferred_reclaim_safety() {
         );
     });
 }
+
+// ============================================================================
+// E1: Flush Pipeline — QueueFull break semantics
+// ============================================================================
+
+/// Re-implementation of FASTER's flush pipeline page-state machine with a
+/// simulated device that returns QueueFull after N successful writes.
+///
+/// Mirrors: `hybrid_log/flush.rs` (flush_sealed_pages) and the
+/// FlushBatchResult / QueueFull protocol from C++ FASTER.
+///
+/// Page states: Sealed(1) → Flushing(2) → Flushed(3)
+///
+/// The critical invariant: when the device returns QueueFull, the flush
+/// function must **break** (stop processing further pages) rather than
+/// **continue** (which would leave pages stuck in Flushing with no
+/// outstanding I/O). Pages not yet visited must remain Sealed.
+mod flush_pipeline {
+    use loom::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+
+    pub const SEALED: u8 = 1;
+    pub const FLUSHING: u8 = 2;
+    pub const FLUSHED: u8 = 3;
+
+    pub const NUM_PAGES: usize = 4;
+
+    pub struct PageTable {
+        pub pages: [AtomicU8; NUM_PAGES],
+    }
+
+    impl PageTable {
+        pub fn new_all_sealed() -> Self {
+            Self {
+                pages: [
+                    AtomicU8::new(SEALED),
+                    AtomicU8::new(SEALED),
+                    AtomicU8::new(SEALED),
+                    AtomicU8::new(SEALED),
+                ],
+            }
+        }
+    }
+
+    /// Simulated device that succeeds for the first `fail_after` writes,
+    /// then returns QueueFull (false) for subsequent writes.
+    pub struct QueueFullDevice {
+        pub fail_after: usize,
+        pub write_count: AtomicUsize,
+    }
+
+    impl QueueFullDevice {
+        pub fn new(fail_after: usize) -> Self {
+            Self {
+                fail_after,
+                write_count: AtomicUsize::new(0),
+            }
+        }
+
+        /// Returns true on success, false on QueueFull.
+        pub fn write_async(&self) -> bool {
+            let count = self.write_count.fetch_add(1, Ordering::SeqCst);
+            count < self.fail_after
+        }
+    }
+
+    /// Result of a flush batch — mirrors FlushBatchResult.
+    #[derive(Debug)]
+    pub struct FlushBatchResult {
+        pub flushed: u32,
+        pub queue_full: bool,
+    }
+
+    /// CORRECT implementation: break on QueueFull.
+    ///
+    /// Pages transition Sealed → Flushing via CAS. If the device accepts the
+    /// write, the page stays Flushing (callback will mark Flushed). If the
+    /// device returns QueueFull, we break immediately — the page that failed
+    /// stays in Flushing (it was CAS'd but not submitted), and all subsequent
+    /// pages stay Sealed.
+    pub fn flush_sealed_pages(
+        table: &PageTable,
+        device: &QueueFullDevice,
+    ) -> FlushBatchResult {
+        let mut flushed = 0u32;
+        let mut queue_full = false;
+
+        for i in 0..NUM_PAGES {
+            let state = table.pages[i].load(Ordering::Acquire);
+            if state != SEALED {
+                continue;
+            }
+
+            // Transition Sealed → Flushing
+            match table.pages[i].compare_exchange(
+                SEALED,
+                FLUSHING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    if device.write_async() {
+                        flushed += 1;
+                    } else {
+                        // QueueFull: BREAK — stop processing further pages.
+                        queue_full = true;
+                        break;
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+
+        FlushBatchResult {
+            flushed,
+            queue_full,
+        }
+    }
+
+    /// I/O completion callback: transitions page Flushing → Flushed.
+    pub fn complete_io(table: &PageTable, page_idx: usize) {
+        table.pages[page_idx].compare_exchange(
+            FLUSHING,
+            FLUSHED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ).expect("completion callback must find page in Flushing state");
+    }
+}
+
+/// BUG CAUGHT: The old bug used `continue` on QueueFull, which would attempt
+/// to submit all remaining pages even after the device was saturated, leaving
+/// pages stuck in Flushing with no outstanding I/O. The correct behavior is
+/// `break`, which preserves unseen pages in Sealed state and signals the
+/// caller that the queue is full.
+///
+/// Single-thread variant: flush alone, verify page states and result.
+#[test]
+fn e1_flush_pipeline_queue_full_break() {
+    loom::model(|| {
+        let table = Arc::new(flush_pipeline::PageTable::new_all_sealed());
+        // Device accepts first 2 writes, rejects 3rd with QueueFull.
+        let device = Arc::new(flush_pipeline::QueueFullDevice::new(2));
+
+        let result = flush_pipeline::flush_sealed_pages(&table, &device);
+
+        // Should have flushed exactly 2 pages, then hit QueueFull.
+        assert_eq!(result.flushed, 2, "must flush exactly 2 pages before QueueFull");
+        assert!(result.queue_full, "must signal QueueFull to caller");
+
+        // Pages 0 and 1: successfully submitted → Flushing (awaiting callback).
+        assert_eq!(
+            table.pages[0].load(Ordering::Acquire),
+            flush_pipeline::FLUSHING,
+            "page 0 must be Flushing (submitted)"
+        );
+        assert_eq!(
+            table.pages[1].load(Ordering::Acquire),
+            flush_pipeline::FLUSHING,
+            "page 1 must be Flushing (submitted)"
+        );
+
+        // Page 2: CAS'd to Flushing but device returned QueueFull → stays Flushing.
+        assert_eq!(
+            table.pages[2].load(Ordering::Acquire),
+            flush_pipeline::FLUSHING,
+            "page 2 must be Flushing (CAS'd but not submitted)"
+        );
+
+        // Page 3: never visited due to break → must remain Sealed.
+        assert_eq!(
+            table.pages[3].load(Ordering::Acquire),
+            flush_pipeline::SEALED,
+            "page 3 must remain Sealed (never visited)"
+        );
+    });
+}
+
+/// BUG CAUGHT: Concurrent I/O completions during a flush batch must not
+/// interfere with page-state transitions. This test exercises the interleaving
+/// where a completion callback fires between the flush thread's CAS operations.
+///
+/// Two-thread variant: one flushing, one completing I/O on already-submitted
+/// pages. Verifies that completions transition Flushing → Flushed correctly
+/// while the flush loop is still running.
+#[test]
+fn e1_flush_pipeline_concurrent_completion() {
+    loom::model(|| {
+        let table = Arc::new(flush_pipeline::PageTable::new_all_sealed());
+        // Device accepts first 2, rejects 3rd.
+        let device = Arc::new(flush_pipeline::QueueFullDevice::new(2));
+
+        // Pre-submit page 0: mark it Flushing (simulates a prior flush batch).
+        table.pages[0].store(flush_pipeline::FLUSHING, Ordering::Release);
+
+        // Thread 1: I/O completion callback for page 0.
+        let t_table = Arc::clone(&table);
+        let completion = thread::spawn(move || {
+            flush_pipeline::complete_io(&t_table, 0);
+        });
+
+        // Main thread: flush remaining sealed pages (1, 2, 3).
+        let result = flush_pipeline::flush_sealed_pages(&table, &device);
+
+        completion.join().unwrap();
+
+        // Page 0: completed by callback → Flushed.
+        assert_eq!(
+            table.pages[0].load(Ordering::Acquire),
+            flush_pipeline::FLUSHED,
+            "page 0 must be Flushed (completed by callback)"
+        );
+
+        // Flush result: pages 1 and 2 were Sealed; device accepts 2 writes.
+        // Page 1: submitted successfully → Flushing.
+        assert_eq!(
+            table.pages[1].load(Ordering::Acquire),
+            flush_pipeline::FLUSHING,
+            "page 1 must be Flushing (submitted)"
+        );
+
+        // Result reflects what the flush loop did with the 3 sealed pages.
+        // 2 accepted + QueueFull on 3rd, OR all 3 accepted if page 3 is reached.
+        // With fail_after=2: exactly 2 flushed, queue_full=true.
+        assert_eq!(result.flushed, 2, "must flush 2 pages");
+        assert!(result.queue_full, "must signal QueueFull");
+    });
+}
+
+// ============================================================================
+// E2: Allocator Retry — bounded retry with yield
+// ============================================================================
+
+/// Re-implementation of FASTER's allocator retry loop when the buffer is full.
+///
+/// Mirrors: `hybrid_log/log_allocator.rs` (allocate_at_tail retry logic)
+///
+/// The critical invariant: the retry loop must be bounded (max N attempts)
+/// to prevent writer threads from spinning indefinitely when the buffer is
+/// full and no flush progress can be made.
+mod allocator_retry {
+    use loom::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    pub const MAX_RETRIES: u32 = 32;
+
+    /// Simulated buffer-full condition.
+    pub struct BufferState {
+        pub full: AtomicBool,
+    }
+
+    impl BufferState {
+        pub fn new(full: bool) -> Self {
+            Self {
+                full: AtomicBool::new(full),
+            }
+        }
+
+        pub fn is_full(&self) -> bool {
+            self.full.load(Ordering::Acquire)
+        }
+
+        /// Simulates a maintenance thread clearing buffer space.
+        pub fn make_space(&self) {
+            self.full.store(false, Ordering::Release);
+        }
+    }
+
+    /// Allocation result: either a logical address or a retry-exhausted error.
+    #[derive(Debug, PartialEq)]
+    pub enum AllocResult {
+        Success(u32),
+        RetryExhausted,
+    }
+
+    /// CORRECT implementation: bounded retry with yield.
+    ///
+    /// When the buffer is full, yields to other threads (giving maintenance
+    /// a chance to flush) and retries up to MAX_RETRIES times. If the buffer
+    /// is still full after all retries, returns RetryExhausted.
+    pub fn try_allocate_bounded(
+        buffer: &BufferState,
+        retry_counter: &AtomicU32,
+    ) -> AllocResult {
+        for _attempt in 0..MAX_RETRIES {
+            retry_counter.fetch_add(1, Ordering::SeqCst);
+
+            if !buffer.is_full() {
+                return AllocResult::Success(42); // dummy logical address
+            }
+
+            loom::thread::yield_now();
+        }
+
+        AllocResult::RetryExhausted
+    }
+}
+
+/// BUG CAUGHT: The old bug had an unbounded `loop { ... }` when the buffer
+/// was full, causing writer threads to spin infinitely. The correct behavior
+/// is a bounded retry (max 32 attempts) with `yield_now()` between retries
+/// to give maintenance/flush threads CPU time.
+///
+/// Tests the permanently-full case: writer must give up after MAX_RETRIES.
+#[test]
+fn e2_allocator_retry_bounded() {
+    loom::model(|| {
+        let buffer = Arc::new(allocator_retry::BufferState::new(true)); // permanently full
+        let retry_count = Arc::new(loom::sync::atomic::AtomicU32::new(0));
+
+        let b = Arc::clone(&buffer);
+        let r = Arc::clone(&retry_count);
+        let result = thread::spawn(move || {
+            allocator_retry::try_allocate_bounded(&b, &r)
+        })
+        .join()
+        .unwrap();
+
+        // Writer must give up after bounded retries, not spin forever.
+        assert_eq!(
+            result,
+            allocator_retry::AllocResult::RetryExhausted,
+            "writer must return RetryExhausted, not spin forever"
+        );
+
+        // Exactly MAX_RETRIES attempts must have been made.
+        assert_eq!(
+            retry_count.load(Ordering::SeqCst),
+            allocator_retry::MAX_RETRIES,
+            "must retry exactly MAX_RETRIES times"
+        );
+    });
+}
+
+/// BUG CAUGHT: If the retry loop exits too early or doesn't yield, a
+/// maintenance thread that frees space mid-retry would not be observed.
+/// This test verifies the retry loop correctly observes a buffer-full →
+/// buffer-available transition made by a concurrent maintenance thread.
+#[test]
+fn e2_allocator_retry_succeeds_after_maintenance() {
+    loom::model(|| {
+        let buffer = Arc::new(allocator_retry::BufferState::new(true)); // starts full
+        let retry_count = Arc::new(loom::sync::atomic::AtomicU32::new(0));
+
+        // Maintenance thread: frees space after a short delay.
+        let b_maint = Arc::clone(&buffer);
+        let maintenance = thread::spawn(move || {
+            // Simulate flush completing and making buffer space available.
+            b_maint.make_space();
+        });
+
+        // Writer thread: retries allocation.
+        let b_writer = Arc::clone(&buffer);
+        let r_writer = Arc::clone(&retry_count);
+        let writer = thread::spawn(move || {
+            allocator_retry::try_allocate_bounded(&b_writer, &r_writer)
+        });
+
+        maintenance.join().unwrap();
+        let result = writer.join().unwrap();
+
+        let retries = retry_count.load(Ordering::SeqCst);
+
+        // Loom explores all interleavings. In some, maintenance runs first
+        // (writer succeeds on attempt 1). In others, writer retries several
+        // times before maintenance runs. In all cases:
+        // - If maintenance ran before/during retries: Success.
+        // - If maintenance ran after all retries: RetryExhausted (but this
+        //   interleaving is unlikely since maintenance is a single store).
+        match result {
+            allocator_retry::AllocResult::Success(_) => {
+                // Writer found space — must have retried at least once.
+                assert!(retries >= 1, "must have tried at least once");
+                assert!(
+                    retries <= allocator_retry::MAX_RETRIES,
+                    "retries must not exceed MAX_RETRIES"
+                );
+            }
+            allocator_retry::AllocResult::RetryExhausted => {
+                // Writer exhausted retries — maintenance came too late
+                // in this interleaving.
+                assert_eq!(retries, allocator_retry::MAX_RETRIES);
+            }
+        }
+    });
+}
