@@ -425,6 +425,123 @@ impl Device for SlowDevice {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ThroughputMonitor — throughput cliff detection for deadlock regression
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Detects "slow deadlocks" where the system makes just enough progress to
+/// avoid timeouts but throughput has collapsed (e.g., 14 ops/s vs 1M peak).
+///
+/// Workers increment `ops_counter` atomically. A monitor thread calls
+/// [`tick()`](ThroughputMonitor::tick) frequently; the monitor records a
+/// per-window snapshot every `window_duration`. After the test,
+/// [`assert_no_cliff()`](ThroughputMonitor::assert_no_cliff) verifies that
+/// no post-warmup window dropped below `cliff_threshold` × peak.
+struct ThroughputMonitor {
+    ops_counter: Arc<AtomicU64>,
+    window_ops: Mutex<Vec<u64>>,
+    window_duration: Duration,
+    warmup_windows: usize,
+    cliff_threshold: f64,
+    last_snapshot_ops: AtomicU64,
+    last_snapshot_time: Mutex<Instant>,
+}
+
+impl ThroughputMonitor {
+    /// Create a monitor with its own internal ops counter.
+    fn new(window_duration: Duration, warmup_windows: usize, cliff_threshold: f64) -> Self {
+        Self {
+            ops_counter: Arc::new(AtomicU64::new(0)),
+            window_ops: Mutex::new(Vec::new()),
+            window_duration,
+            warmup_windows,
+            cliff_threshold,
+            last_snapshot_ops: AtomicU64::new(0),
+            last_snapshot_time: Mutex::new(Instant::now()),
+        }
+    }
+
+    /// Create a monitor that reads from an existing external counter.
+    fn with_counter(
+        counter: Arc<AtomicU64>,
+        window_duration: Duration,
+        warmup_windows: usize,
+        cliff_threshold: f64,
+    ) -> Self {
+        Self {
+            ops_counter: counter,
+            window_ops: Mutex::new(Vec::new()),
+            window_duration,
+            warmup_windows,
+            cliff_threshold,
+            last_snapshot_ops: AtomicU64::new(0),
+            last_snapshot_time: Mutex::new(Instant::now()),
+        }
+    }
+
+    /// Get a clone of the ops counter for worker threads to increment.
+    fn counter(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.ops_counter)
+    }
+
+    /// Call frequently from a monitor/watchdog thread. Records a window
+    /// snapshot when `window_duration` has elapsed since the last one.
+    fn tick(&self) {
+        let mut last_time = self.last_snapshot_time.lock().unwrap();
+        if last_time.elapsed() >= self.window_duration {
+            let current = self.ops_counter.load(Ordering::Relaxed);
+            let prev = self.last_snapshot_ops.swap(current, Ordering::Relaxed);
+            let delta = current.saturating_sub(prev);
+            self.window_ops.lock().unwrap().push(delta);
+            *last_time = Instant::now();
+        }
+    }
+
+    /// Assert that no post-warmup window dropped below `cliff_threshold`
+    /// fraction of the peak window. Panics with a diagnostic message on
+    /// cliff detection.
+    fn assert_no_cliff(&self) {
+        let windows = self.window_ops.lock().unwrap();
+        if windows.len() <= self.warmup_windows {
+            // Not enough windows to assess — test was too short, skip check.
+            eprintln!(
+                "throughput cliff check: only {} windows (need >{}), skipping",
+                windows.len(),
+                self.warmup_windows
+            );
+            return;
+        }
+
+        let post_warmup = &windows[self.warmup_windows..];
+        let peak = post_warmup.iter().copied().max().unwrap_or(0);
+
+        if peak == 0 {
+            panic!(
+                "THROUGHPUT CLIFF: zero ops in all post-warmup windows — system is stalled. \
+                 Windows: {windows:?}"
+            );
+        }
+
+        let floor = (peak as f64 * self.cliff_threshold) as u64;
+
+        for (i, &ops) in windows.iter().enumerate().skip(self.warmup_windows) {
+            if ops < floor {
+                panic!(
+                    "THROUGHPUT CLIFF at window {i}: {ops} ops vs peak {peak} \
+                     (floor={floor}, threshold={:.0}%). Windows: {windows:?}",
+                    self.cliff_threshold * 100.0
+                );
+            }
+        }
+
+        eprintln!(
+            "throughput cliff check: {} windows, peak={peak} ops/window, floor={floor}, all OK. \
+             Windows: {windows:?}",
+            windows.len()
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -660,6 +777,14 @@ fn multi_writer_forward_progress() {
     let test_duration = Duration::from_secs(10);
     let stall_threshold = Duration::from_secs(5);
 
+    // Throughput cliff detection: 2s windows over a 10s test → ~5 windows.
+    // First 2 are warmup; remaining 3 must stay above 10% of peak.
+    let throughput_monitor = Arc::new(ThroughputMonitor::new(
+        Duration::from_secs(2),
+        2,    // warmup windows
+        0.10, // cliff threshold: 10% of peak
+    ));
+
     let barrier = Arc::new(Barrier::new(num_writers + 1)); // +1 for watchdog
     let ops_counts: Arc<Vec<AtomicU64>> = Arc::new(
         (0..num_writers)
@@ -681,6 +806,7 @@ fn multi_writer_forward_progress() {
         let ops_counts = Arc::clone(&ops_counts);
         let last_progress = Arc::clone(&last_progress);
         let stop = Arc::clone(&stop);
+        let throughput_counter = throughput_monitor.counter();
 
         handles.push(thread::spawn(move || {
             barrier.wait();
@@ -702,6 +828,7 @@ fn multi_writer_forward_progress() {
                 } else {
                     ops += 1;
                     ops_counts[writer_id].store(ops, Ordering::Relaxed);
+                    throughput_counter.fetch_add(1, Ordering::Relaxed);
                     *last_progress[writer_id].lock().unwrap() = Instant::now();
                     key += 1;
                 }
@@ -715,12 +842,16 @@ fn multi_writer_forward_progress() {
     // Watchdog thread: monitors for stalls.
     let watchdog_stop = Arc::clone(&stop);
     let watchdog_progress = Arc::clone(&last_progress);
+    let watchdog_monitor = Arc::clone(&throughput_monitor);
     let watchdog = thread::spawn(move || {
         barrier.wait();
         let start = Instant::now();
 
         while start.elapsed() < test_duration {
             thread::sleep(Duration::from_millis(500));
+
+            // Throughput cliff detection: snapshot window if due.
+            watchdog_monitor.tick();
 
             for (i, ts) in watchdog_progress.iter().enumerate() {
                 let last = *ts.lock().unwrap();
@@ -750,6 +881,9 @@ fn multi_writer_forward_progress() {
         );
         eprintln!("writer {i}: {final_count} operations");
     }
+
+    // Throughput cliff detection: verify no window dropped below 10% of peak.
+    throughput_monitor.assert_no_cliff();
 }
 
 /// Lighter-weight multi-writer test using InMemoryDevice (synchronous I/O).
@@ -1120,6 +1254,16 @@ fn lossy_16_thread_sustained_progress() {
 
     let barrier = Arc::new(Barrier::new(num_threads + 1)); // +1 for watchdog
     let total_ops = Arc::new(AtomicU64::new(0));
+
+    // Throughput cliff detection: 5s windows over a 30s test → ~6 windows.
+    // First 2 are warmup; remaining ~4 must stay above 10% of peak.
+    let throughput_monitor = Arc::new(ThroughputMonitor::with_counter(
+        Arc::clone(&total_ops),
+        Duration::from_secs(5),
+        2,    // warmup windows
+        0.10, // cliff threshold: 10% of peak
+    ));
+
     let per_thread_ops: Arc<Vec<AtomicU64>> = Arc::new(
         (0..num_threads)
             .map(|_| AtomicU64::new(0))
@@ -1207,6 +1351,7 @@ fn lossy_16_thread_sustained_progress() {
     let watchdog_stop = Arc::clone(&stop);
     let watchdog_progress = Arc::clone(&last_progress);
     let watchdog_total_ops = Arc::clone(&total_ops);
+    let watchdog_monitor = Arc::clone(&throughput_monitor);
     let watchdog = thread::spawn(move || {
         barrier.wait();
         let start = Instant::now();
@@ -1215,6 +1360,9 @@ fn lossy_16_thread_sustained_progress() {
 
         while start.elapsed() < test_duration {
             thread::sleep(Duration::from_millis(500));
+
+            // Throughput cliff detection: snapshot window if due.
+            watchdog_monitor.tick();
 
             // Per-thread stall detection.
             for (i, ts) in watchdog_progress.iter().enumerate() {
@@ -1269,6 +1417,9 @@ fn lossy_16_thread_sustained_progress() {
     let total_from_counter = total_ops.load(Ordering::Relaxed);
     eprintln!("total: {total} ops ({total_from_counter} via atomic counter) in {test_duration:?}");
     assert!(total > 0, "zero total operations — all threads were stuck");
+
+    // Throughput cliff detection: verify no window dropped below 10% of peak.
+    throughput_monitor.assert_no_cliff();
 }
 
 /// Verify that memory usage stays bounded in lossy mode under sustained load.
@@ -1325,6 +1476,15 @@ fn lossy_eviction_memory_bounded() {
     let total_ops = Arc::new(AtomicU64::new(0));
     let max_observed_pages = Arc::new(AtomicU64::new(0));
 
+    // Throughput cliff detection: 4s windows over a 20s test → ~5 windows.
+    // First 2 are warmup; remaining ~3 must stay above 10% of peak.
+    let throughput_monitor = Arc::new(ThroughputMonitor::with_counter(
+        Arc::clone(&total_ops),
+        Duration::from_secs(4),
+        2,    // warmup windows
+        0.10, // cliff threshold: 10% of peak
+    ));
+
     let barrier = Arc::new(Barrier::new(num_threads + 1)); // +1 for monitor
 
     let mut handles = Vec::new();
@@ -1366,6 +1526,7 @@ fn lossy_eviction_memory_bounded() {
     let monitor_store = Arc::clone(&store);
     let monitor_stop = Arc::clone(&stop);
     let monitor_max_pages = Arc::clone(&max_observed_pages);
+    let monitor_throughput = Arc::clone(&throughput_monitor);
     let monitor = thread::spawn(move || {
         barrier.wait();
         let start = Instant::now();
@@ -1374,6 +1535,9 @@ fn lossy_eviction_memory_bounded() {
 
         while start.elapsed() < test_duration {
             thread::sleep(Duration::from_millis(200));
+
+            // Throughput cliff detection: snapshot window if due.
+            monitor_throughput.tick();
 
             // Measure in-memory page span: tail_page − head_page.
             let tail_raw = monitor_store.tail_address().raw();
@@ -1456,4 +1620,7 @@ fn lossy_eviction_memory_bounded() {
          eviction is failing to bound memory",
         violation_ratio * 100.0
     );
+
+    // Throughput cliff detection: verify no window dropped below 10% of peak.
+    throughput_monitor.assert_no_cliff();
 }
