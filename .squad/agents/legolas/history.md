@@ -96,6 +96,31 @@ Comprehensive disk I/O benchmarking of page-cache sample. Disk baseline: 1,285 M
 
 ## Learnings
 
+### 2026-03-16: 5-Minute Stress Test Suite (stress_5min.rs on Azure VM)
+
+**Context:** Deployed and ran `stress_5min.rs` (468 lines, oracle-validated) on Azure VM (Standard_F16s_v2, 16 vCPU, 32GB RAM). Three configurations: 16t non-lossy, 16t lossy, 4t non-lossy — 300s each.
+
+**Key Findings:**
+
+1. **P1 throughput cliff is GONE in non-lossy mode** — 16-thread non-lossy sustained 38.85M avg ops/s for full 300s with only a transient 18% dip at T+90s. No cliff. This is the most important result: the cliff that previously appeared at ~70s is no longer present.
+
+2. **🔴 NEW P0: Lossy mode deadlocks at T+200s** — 16-thread lossy ran well at ~40M ops/s for 190 seconds then ALL threads froze (0 ops/s). Process consumed 13GB RAM, hung on exit, required kill -9. This is the opposite of previous behavior where lossy was the stable fallback. Probable cause: lossy eviction triggering the known multi-writer circular buffer deadlock under sustained 16-thread pressure after ~7.4B ops accumulated.
+
+3. **4-thread non-lossy is rock solid** — 14.14M avg ops/s, 0 cliff, 0 violations. 68.7% scaling efficiency from 4→16 threads.
+
+4. **Zero oracle violations across all tests** — 3.77B + 1.37B oracle checks, all passed. Correctness is solid.
+
+5. **Scale discrepancy with previous baselines** — New test operates at ~600-1000x higher ops/s than previous (38.85M vs 41K-214K). Different workload characteristics make direct numerical comparison meaningless; behavioral comparison (cliff presence, deadlock, stability) remains valid.
+
+**Learnings:**
+- **Lossy ≠ safe** — Previously lossy was the recommended path to avoid throughput cliffs. Now lossy deadlocks under sustained 16-thread pressure. The safety assumption must be re-evaluated.
+- **Deadlock timing is data-volume dependent** — Lossy deadlock at T+200s corresponds to ~7.4B ops. At lower ops/s rates (previous tests), this volume wouldn't be reached in 5 minutes, explaining why it wasn't seen before.
+- **Always run BOTH lossy and non-lossy** — Testing only one mode would have missed either the cliff (non-lossy) or the deadlock (lossy).
+- **Process watchdog needed** — stress_5min.rs should detect 0 ops/s for >30s and force-exit with diagnostics instead of hanging forever.
+- **13GB RSS at deadlock** — Memory growth during lossy operation suggests unbounded buffering before the deadlock hits. May be a symptom (growing queues) rather than the cause.
+
+**Artifacts:** `.squad/decisions/inbox/legolas-5min-stress-results.md`
+
 ### 2026-03-16: Azure VM Stress Test Run (Commit 922eb18)
 
 **Context:** Executed comprehensive stress test suite on Azure VM (Standard_F16s_v2, 16 vCPU, 32GB RAM) to validate CI fixes and establish baseline for production-readiness assessment.

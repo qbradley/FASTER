@@ -179,3 +179,17 @@ cd rust && cargo bench --bench ycsb -p faster-core -- --nocapture
 - Loom's `AtomicPtr` has no `get_mut()`. Use `load(Relaxed)` under exclusive access as the portable alternative.
 - Loom atomics aren't const — any `static` initialization must use `LazyLock` or equivalent under loom.
 - Loom's thread module has no `sleep` — shim it with `yield_now()` since loom doesn't model wall-clock time.
+
+### Stress Test Binary — stress_5min.rs (2026-07-22)
+**Impact:** Created sustained stress test example at `rust/crates/faster-core/examples/stress_5min.rs`.
+**Features:** CLI-configurable threads/duration/lossy/key-range/report-interval, YCSB-like mixed workload (50% upsert, 35% read, 10% RMW, 5% delete), per-thread correctness oracle with sanity bounds, throughput monitoring with cliff detection, xorshift64 thread-local RNG (zero external deps).
+**Verified:** 4-thread 10s smoke test: ~8.9M ops/s non-lossy, ~9.2M ops/s lossy, 0 violations both modes.
+**API notes:** `SimpleFunctions<u64,u64>` Output type is `Option<u64>` (not raw `u64`). `FasterKv::new()` takes `FasterKvConfig` struct directly — builder pattern also available via `FasterKv::<SF>::builder()`.
+
+## Learnings
+
+- `SimpleFunctions<K, V>::Output` is `Option<V>`, not `V` — read/RMW output must be `&mut Option<u64>`.
+- For examples, use `std::sync::Arc` (not `crate::sync`) since examples aren't under the loom shim.
+- `complete_pending()` should be called periodically in long-running workloads to drain async I/O.
+- `InMemoryDevice::new()` completes I/O synchronously — Pending status is rare but still possible during page transitions.
+- Batching atomic counter updates (flush every 256 ops) eliminates contention on global counters at 4+ threads.

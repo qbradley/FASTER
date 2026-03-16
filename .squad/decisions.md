@@ -2424,3 +2424,45 @@ cargo nextest run --release -p faster-core \
 **Report generated:** 2026-03-16 17:35 UTC  
 **VM session duration:** ~5 minutes  
 **Total test execution time:** ~55 seconds
+
+---
+
+## Decision: Stress Test Binary — No External Dependencies
+
+**Author:** Aragorn  
+**Date:** 2026-03-16  
+**Status:** Approved  
+
+### Context
+Created `rust/crates/faster-core/examples/stress_5min.rs` — a sustained stress test with correctness oracle and throughput monitoring.
+
+### Decision
+- No external dependencies (no `clap`, no `rand`): hand-rolled CLI arg parsing and xorshift64 PRNG. This keeps the example buildable without touching `Cargo.toml` and avoids pulling transitive deps into the example binary.
+- Uses `std::sync` directly (not `crate::sync` shim) since examples are outside the loom-testable production code path.
+- Thread-local oracle uses `HashMap<u64, u64>` — simple and adequate since each thread only tracks its own writes (no cross-thread oracle merging needed).
+
+### Consequences
+- Any future stress test examples should follow the same zero-dep pattern.
+- If more sophisticated CLI parsing is needed, consider a shared `examples/util.rs` module rather than adding `clap` to the crate.
+
+---
+
+## Decision: Lossy Mode Deadlock — P0 Escalation
+
+**Author:** Legolas  
+**Date:** 2026-03-16  
+**Status:** Requires Immediate Action  
+
+### Context
+5-minute stress test on Azure VM (16 vCPU) revealed critical failure in lossy mode at T+200s.
+
+### Decision
+1. **Lossy mode deadlock is a production blocker** — Non-lossy mode is stable (38.85M ops/s for 300s, no cliff), but lossy mode deadlocks completely after ~190 seconds.
+2. **Root cause is multi-writer cache eviction** — Likely the same circular buffer dependency chain (SF-10 buffer check + head advancement + flush back-pressure) triggered under sustained write pressure.
+3. **Non-lossy P1 cliff is RESOLVED** — Completely eliminated. Stable throughput maintained across full 5-minute run with only transient dips (<20%).
+4. **Immediate action required:** Capture thread stacks during deadlock, analyze multi-writer eviction path, deploy fix before marking lossy mode as production-ready.
+
+### Consequences
+- Stress test binary approved for merge (tests non-lossy path)
+- Lossy mode cannot be used in production until P0 is fixed
+- Add `--lossy` test to CI regression gate to prevent future regressions
