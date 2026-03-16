@@ -1966,3 +1966,109 @@ cargo +nightly fuzz run fuzz_log_recovery -- -max_total_time=200
 - **Éowyn:** Complementary to DST — fuzzing covers byte-level mutations that DST's crash injection doesn't
 - **Boromir:** Coverage matrix (A11) now has fuzz coverage for recovery/checkpoint column
 - **Aragorn:** If adding new deserialization paths in recovery, add corresponding fuzz target
+
+---
+
+# Decision: Loom Shim Patterns for Production Code
+
+**Author:** Aragorn  
+**Date:** 2026-03-16  
+**Status:** Implemented
+
+## Context
+
+The `RUSTFLAGS="--cfg loom" cargo check --features loom` build had 7 compilation errors across the crate. These are systemic gaps in the loom shim layer that anyone touching sync primitives should know about.
+
+## Decisions
+
+### 1. `thread::sleep` under loom → `yield_now()`
+
+Loom doesn't model wall-clock time. The `crate::sync::thread` module now provides a `sleep` shim that calls `loom::thread::yield_now()`. Any code using `crate::sync::thread::sleep` will automatically get the right behavior.
+
+### 2. `self: &Arc<Self>` is incompatible with loom's Arc
+
+Loom's `Arc` doesn't implement `core::ops::Receiver`, so `self: &Arc<Self>` receiver syntax fails. **Pattern:** cfg-gate the method signature and use a shared `_impl` function. Production call sites should use UFCS (`Type::method(&arc)`) which works under both cfgs.
+
+### 3. `AtomicPtr::get_mut()` unavailable under loom
+
+Use `load(Ordering::Relaxed)` as the portable alternative when `&mut self` guarantees exclusive access. Semantically equivalent.
+
+### 4. Loom atomics aren't const-constructible
+
+Any `static` using loom atomics must be wrapped in `std::sync::LazyLock` under `#[cfg(loom)]`. `LazyLock<T>` derefs to `T`, so call sites need no changes.
+
+## Impact
+
+All team members writing production code with sync primitives should be aware of these four patterns. The loom CI gate will catch violations.
+
+---
+
+# Decision: CI Concurrency Test Stabilization Patterns
+
+**Author:** Sam  
+**Date:** 2026-03-16  
+**Scope:** Testing conventions for concurrent/stress tests
+
+## Context
+
+Two CI tests were flaky due to scheduling assumptions:
+1. `concurrent_maintenance_with_varlen` — assumed maintenance thread gets CPU time before `done` is set.
+2. `checkpoint_grow_mutual_exclusion_stress` — assumed CAS race outcomes are statistically distributed across platforms.
+
+## Decisions
+
+### 1. Never rely on scheduling fairness for assertions
+
+When a test needs to verify that a background thread *ran*, use an explicit synchronization signal (e.g., `AtomicBool` with Acquire/Release) rather than assuming the OS scheduler will be fair. The main thread must wait for the signal before tearing down.
+
+**Pattern:**
+```rust
+let started = Arc::new(AtomicBool::new(false));
+// Background thread sets started=true after first meaningful iteration
+// Main thread spins: while !started.load(Acquire) { yield_now(); }
+```
+
+### 2. Hard-assert safety, soft-assert statistics
+
+Stress tests that verify mutual exclusion via CAS should:
+- **Hard-assert** safety invariants (e.g., "both sides must never win simultaneously")
+- **Soft-assert** (warn, don't fail) statistical distribution (e.g., "both sides should win some races")
+- Add scheduling jitter (asymmetric `yield_now()` counts per trial) to improve contention diversity
+
+This prevents false failures on deterministic-scheduling platforms (macOS, single-core CI) while preserving correctness coverage.
+
+---
+
+# Decision: Skip directory fsync on Windows
+
+**Author:** Boromir (QA Engineer)  
+**Date:** 2026-03-16  
+**Status:** Implemented
+
+## Context
+
+Windows CI was failing with 64 test failures, all with the same error:
+```
+failed to write test checkpoint: IoError(Os { code: 5, kind: PermissionDenied, message: "Access is denied." })
+```
+
+## Root Cause
+
+`fsync_dir()` in `checkpoint/metadata_store.rs` calls `fs::File::open()` on a directory. On Windows, this requires `FILE_FLAG_BACKUP_SEMANTICS` which Rust's standard library does not set, causing `PermissionDenied`.
+
+## Decision
+
+Use `#[cfg(unix)]` to limit directory fsync to Unix platforms. On Windows (and other non-Unix), the function is a no-op.
+
+**Rationale:** NTFS journals metadata operations, so the atomic rename in `atomic_write()` provides sufficient durability guarantees. This is the same approach used by RocksDB, SQLite, and other cross-platform database engines.
+
+## Impact
+
+- Fixes all 64 Windows CI test failures
+- No change to Unix behavior
+- No durability regression on Windows (NTFS journaling covers us)
+
+## Team Note
+
+Any future code that touches filesystem directories (open, sync, delete) must be tested for Windows compatibility. `fs::File::open()` on directories is a Unix-ism that doesn't port cleanly.
+
