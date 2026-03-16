@@ -327,10 +327,26 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), CheckpointError> {
     Ok(())
 }
 
-/// Fsync a directory by opening it read-only and calling `sync_all`.
+/// Fsync a directory to make metadata changes (renames, new entries) durable.
+///
+/// On Unix, this opens the directory and calls `fsync()`.
+///
+/// On Windows, `fs::File::open()` on a directory requires
+/// `FILE_FLAG_BACKUP_SEMANTICS` which the standard library does not set,
+/// causing `PermissionDenied` (OS error 5). NTFS journals metadata
+/// operations so the atomic rename in [`atomic_write`] already provides
+/// sufficient durability guarantees. This is the same approach used by
+/// RocksDB and SQLite on Windows.
 fn fsync_dir(dir: &Path) -> Result<(), CheckpointError> {
-    let d = fs::File::open(dir)?;
-    d.sync_all()?;
+    #[cfg(unix)]
+    {
+        let d = fs::File::open(dir)?;
+        d.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+    }
     Ok(())
 }
 
