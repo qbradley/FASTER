@@ -242,8 +242,9 @@ impl DrainList {
 
 impl Drop for DrainList {
     fn drop(&mut self) {
-        // `get_mut`: exclusive access guaranteed by `&mut self`.
-        let head = *self.head.get_mut();
+        // load(Relaxed) is safe: &mut self guarantees exclusive access, and
+        // is compatible with both std and loom AtomicPtr (loom lacks get_mut).
+        let head = self.head.load(Ordering::Relaxed);
         if head.is_null() {
             return;
         }

@@ -13,7 +13,10 @@
 use crate::sync::{AtomicU64, Ordering, RwLock};
 use std::io;
 
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, not(loom)))]
+type GenerationCounter = AtomicU64;
+
+#[cfg(all(debug_assertions, loom))]
 type GenerationCounter = AtomicU64;
 
 // ---------------------------------------------------------------------------
@@ -66,8 +69,13 @@ pub enum IoRequestResult {
 /// at allocation time. When the callback reconstructs the context via
 /// [`from_raw`](TypedIoContext::from_raw), the generation is validated to
 /// detect use-after-free (context pointer reuse after the original was freed).
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, not(loom)))]
 static IO_CONTEXT_GENERATION: GenerationCounter = GenerationCounter::new(0);
+
+// loom atomics aren't const-constructible — use LazyLock for static initialization.
+#[cfg(all(debug_assertions, loom))]
+static IO_CONTEXT_GENERATION: std::sync::LazyLock<GenerationCounter> =
+    std::sync::LazyLock::new(|| GenerationCounter::new(0));
 
 /// Type-safe wrapper for I/O completion callback contexts.
 ///

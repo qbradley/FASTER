@@ -39,7 +39,13 @@ const DEFAULT_READ_CHUNK: u32 = 8192;
 pub const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Global counter for assigning unique context IDs.
+#[cfg(not(loom))]
 static NEXT_IO_CONTEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// loom atomics aren't const-constructible — use LazyLock for static initialization.
+#[cfg(loom)]
+static NEXT_IO_CONTEXT_ID: std::sync::LazyLock<AtomicU64> =
+    std::sync::LazyLock::new(|| AtomicU64::new(1));
 
 /// Returns a unique context ID for a new pending I/O operation.
 fn next_context_id() -> u64 {

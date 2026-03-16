@@ -203,7 +203,7 @@ impl HashIndex {
     /// let _guard = thread.protect();
     /// ```
     pub fn register_thread(&self) -> Option<EpochThread> {
-        self.epoch.register()
+        EpochTable::register(&self.epoch)
     }
 
     // -----------------------------------------------------------------------

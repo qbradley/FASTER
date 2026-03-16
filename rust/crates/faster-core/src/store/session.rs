@@ -907,9 +907,7 @@ impl<F: Functions> SessionPool<F> {
     ///
     /// Panics if all epoch table slots are occupied (max 256 threads).
     pub fn create_session(&self) -> FasterSession<F> {
-        let epoch_thread = self
-            .epoch_table
-            .register()
+        let epoch_thread = EpochTable::register(&self.epoch_table)
             .expect("epoch table is full — cannot create session");
         FasterSession::new(epoch_thread, Arc::clone(&self.epoch_table))
     }

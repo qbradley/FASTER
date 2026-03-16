@@ -40,8 +40,16 @@ pub(crate) use loom::sync::atomic::{
 #[cfg(loom)]
 pub(crate) use loom::sync::{Arc, Mutex};
 // loom 0.7 does not provide RwLock — fall back to std.
+// loom's thread module doesn't provide `sleep` — we shim it here.
 #[cfg(loom)]
-pub(crate) use loom::thread;
+pub(crate) mod thread {
+    pub use loom::thread::*;
+
+    /// Under loom, `sleep` just yields — loom doesn't model real time.
+    pub fn sleep(_duration: std::time::Duration) {
+        loom::thread::yield_now();
+    }
+}
 #[cfg(loom)]
 pub(crate) use std::sync::{RwLock, RwLockReadGuard};
 

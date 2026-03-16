@@ -824,7 +824,9 @@ impl<T> Drop for MallocFixedPageSize<T> {
         }
 
         // Free all pages in the current directory, then free the directory.
-        let dir_raw = *self.dir.get_mut();
+        // load(Relaxed) is safe: &mut self guarantees exclusive access, and
+        // is compatible with both std and loom AtomicPtr (loom lacks get_mut).
+        let dir_raw = self.dir.load(Ordering::Relaxed);
         if !dir_raw.is_null() {
             // SAFETY: `dir_raw` was created by `Box::into_raw` in `new()` or
             // `expand_directory()`. `&mut self` guarantees exclusive access.

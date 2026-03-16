@@ -160,9 +160,7 @@ impl<'a> CompactionOrchestrator<'a> {
         }
 
         // Register a dedicated epoch thread for this compaction cycle.
-        let mut epoch_thread = self
-            .epoch_table
-            .register()
+        let mut epoch_thread = EpochTable::register(self.epoch_table)
             .expect("epoch table full — cannot register compaction thread");
 
         // ── Phases K1–K3 under epoch protection ─────────────────────

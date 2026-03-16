@@ -136,11 +136,25 @@ impl EpochTable {
     /// let thread = table.register().expect("should register");
     /// assert_eq!(table.registered_count(), 1);
     /// ```
+    #[cfg(not(loom))]
     pub fn register(self: &Arc<Self>) -> Option<EpochThread> {
-        let mut free_list = self.free_list.lock().expect("free list lock poisoned");
+        Self::register_impl(self)
+    }
+
+    /// Claims a slot in the epoch table (loom-compatible associated function).
+    ///
+    /// Under loom, `&Arc<Self>` cannot be used as a `self` receiver because
+    /// `loom::sync::Arc` doesn't implement `core::ops::Receiver`.
+    #[cfg(loom)]
+    pub fn register(this: &Arc<Self>) -> Option<EpochThread> {
+        Self::register_impl(this)
+    }
+
+    fn register_impl(this: &Arc<Self>) -> Option<EpochThread> {
+        let mut free_list = this.free_list.lock().expect("free list lock poisoned");
         let index = free_list.pop()?;
 
-        let entry = &self.table[index];
+        let entry = &this.table[index];
         // Mark slot as occupied. We use (index + 1) as a simple non-zero
         // sentinel. A production implementation could use OS thread IDs,
         // but ThreadId doesn't expose a stable numeric value.
@@ -148,9 +162,9 @@ impl EpochTable {
         entry.thread_id.store((index as u64) + 1, Ordering::Release);
 
         // Expand scan_limit so compute_safe_epoch covers this slot.
-        self.scan_limit.fetch_max(index + 1, Ordering::Release);
+        this.scan_limit.fetch_max(index + 1, Ordering::Release);
 
-        Some(EpochThread::new(Arc::clone(self), index))
+        Some(EpochThread::new(Arc::clone(this), index))
     }
 
     /// Releases a thread's slot back to the free list.
