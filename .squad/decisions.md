@@ -1843,3 +1843,126 @@ Expand miri test coverage to include ALL testable unsafe modules in faster-core.
 **By:** qbradley
 **Decision:** All work now goes through pull requests targeting the `rust` branch. Agents use `git worktree` for parallel development. Branch naming: `squad/{agent}/{feature-slug}`. No direct commits to `rust`.
 **Rationale:** Production workflow for code review and quality gating.
+# Decision: Sample README Structure & Style Guidelines
+
+**Date:** 2026-03-14  
+**Agent:** Arwen (Developer Advocate)  
+**Context:** Completed documentation for 8 sample crates (Backlog 3e)  
+
+## Decision
+
+Establish a **standard README template** for all FASTER samples that new users can quickly scan.
+
+## Rationale
+
+When users land on a sample crate, they should be able to answer in **30 seconds**:
+1. What does this sample demonstrate?
+2. How do I run it?
+3. What FASTER concepts does it show?
+4. Do I need special platform setup?
+
+The pattern established across all 8 new READMEs reflects this:
+
+```
+1. One-line description (title + hook)
+2. What It Demonstrates (2–3 sentences)
+3. Key Concepts (bullet list of FASTER features)
+4. Usage (copy-paste ready cargo run examples)
+5. CLI Options (reference table)
+6. Example Output (realistic results)
+7. Notes (platform requirements, caveats)
+```
+
+## Key Guidelines
+
+### Content Ordering
+- **Fast scanning first:** Title, hook, purpose (read in 15 seconds)
+- **Examples before details:** Usage code before detailed CLI table
+- **Realistic output:** Show actual command execution results
+- **Platform callouts:** io_uring, feature flags noted prominently
+
+### Tone
+- Direct, empathetic to the "I have 10 minutes" person
+- No marketing language
+- Code examples are copy-paste ready (tested mentally against main.rs)
+- Contrasts with sister samples where relevant (e.g., sync vs. async, cache vs. store)
+
+### Sample-Specific Patterns
+- **Benchmarks** (cross-impl-bench, disk-io-bench): Emphasize comparison and reproducibility
+- **Demos** (event-counter-tokio): Show async/sync bridge pattern with ASCII diagrams
+- **Workloads** (page-cache, page-store, read-cache-sim): Explain why memory budget matters
+- **Stress tests** (torture-stress): Detail threat model (what corruption could occur)
+
+## Implications
+
+### For Documentation Review (Wave 4+)
+- Apply this structure to faster-device, faster-tokio, faster-uring README updates
+- Use sample READMEs as template for crate-level examples
+
+### For Users
+- All samples now have consistent, discoverable documentation
+- No more "what does this even do?" friction
+
+### For Contributors
+- Template makes it easy to add new samples
+- Clear expectations for sample README quality
+
+## Trade-offs
+
+- **More content:** READMEs are ~3 KB each (vs. minimal existing stubs)
+- **Specificity:** Tailored examples may need updates if CLI flags change
+- **Maintenance:** Must keep CLI option tables in sync with clap derive macros
+
+*Mitigation:* Add a CI check to flag when README example code diverges from clap definitions.
+
+## Related
+
+- Wave 3 documentation audit identified 5 sample READMEs as P0 gap
+- Existing READMEs: tokio-kv-server (detailed), uring-stress (good baseline)
+- Next: Apply pattern to crate-level docs (faster-tokio, faster-uring) in Wave 4
+
+---
+
+**Status:** Adopted (all 8 READMEs follow this pattern)  
+**Link:** `arwen/sample-readmes` branch, commit 1880da1a
+# Decision: Fuzz Targets for Recovery/Checkpoint Deserialization (A9)
+
+**Agent:** Galadriel (Security Expert)
+**Date:** 2026-03-11
+**Branch:** `galadriel/fuzz-recovery-paths`
+**Status:** Implemented, awaiting CI integration
+
+## Summary
+
+Added 3 new cargo-fuzz targets to close the recovery/checkpoint deserialization fuzz gap identified in the retrospective (A9). The fuzz crate now has 8 targets total, covering all major attack surfaces.
+
+## New Targets
+
+| Target | Attack Surface | Key Entry Points |
+|--------|---------------|-----------------|
+| `fuzz_page_trailer` | CRC computation/verification | `PageTrailer::from_bytes`, `from_slice`, `write_size`, `crc_range` |
+| `fuzz_checkpoint_recovery` | Binary index file + JSON metadata | `IndexCheckpointReader::open/verify`, `serde_json::from_str` for all metadata types |
+| `fuzz_log_recovery` | Full log recovery pipeline | `LogRecoveryEngine::recover_fold_over()` with arbitrary segment files |
+
+## Dependencies Added (fuzz crate only)
+
+- `serde_json = "1"` — JSON deserialization
+- `serde = "1"` — Deserialize trait
+- `tempfile = "3"` — temp directories for file-based targets
+- `crc32fast = "1"` — CRC roundtrip verification
+
+## CI Integration Required
+
+For the 10-min-per-run budget from A9:
+```bash
+cargo +nightly fuzz run fuzz_page_trailer -- -max_total_time=200
+cargo +nightly fuzz run fuzz_checkpoint_recovery -- -max_total_time=200
+cargo +nightly fuzz run fuzz_log_recovery -- -max_total_time=200
+```
+
+## Team Impact
+
+- **Frodo:** Add to CI fuzzing job (requires nightly toolchain)
+- **Éowyn:** Complementary to DST — fuzzing covers byte-level mutations that DST's crash injection doesn't
+- **Boromir:** Coverage matrix (A11) now has fuzz coverage for recovery/checkpoint column
+- **Aragorn:** If adding new deserialization paths in recovery, add corresponding fuzz target

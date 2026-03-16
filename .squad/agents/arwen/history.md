@@ -6,82 +6,67 @@
 - **Goal:** Production-grade, no async runtime required, seamless Tokio integration, idiomatic Rust API + C FFI interface. Quality bar: mission-critical cloud services at planetary scale.
 - **Created:** 2026-03-05
 
-## Learnings
+## Core Context: Developer Advocate Playbook
+
+Arwen's accumulated knowledge distilled into reusable patterns:
+
+### Documentation Infrastructure
+- **Keep a Changelog format** for release notes (crate-organized, detailed entries, feature tables)
+- **Release notes template:** Highlights, Breaking Changes, New Features, Bug Fixes, Performance table, Migration Guide, Known Issues
+- **Documentation audit scoring:** 60 points possible (core API 15–20, samples 10, README 10, features 10, internals 5–10). Score pre-release to find P0 gaps.
+- **Sample README template:** Title, one-liner, What It Demonstrates, Key Concepts, Usage (with cargo run examples), CLI options table, Example Output, Notes, See Also
+- **Doctest validation:** `cargo test --doc` must pass in CI. `cargo nextest` does NOT run doctests—explicit step required. Doc examples must be real, tested code.
+
+### Blog Post Methodology (4 posts shipped)
+- **Title formula:** [Compelling stat] [Summary], and [Hook]. Example: "1,525 Tests, 6 Crates, and a Vec<u8> That Humbled Us All"
+- **Structure:** Callback to previous blog → problem → what we built → why it was hard → By The Numbers table → What Went Wrong → Lessons for Users → fun coda → closing links
+- **Code snippets:** Real, tested code only. Choose for illumination (CAS loop, Waker bridge, TreiberStack). 5–10 lines max, include 1-line explanation.
+- **Tone:** Technical depth for systems programmers. Specific over vague. Numbers matter. Honest about bugs.
+
+### Developer Experience (DX) Audit
+- **First 5 minutes test:** Can new user follow README → quickstart → example → run code without reading source?
+- **API discoverability:** Public APIs in rustdoc, self-documenting names, iterator/getter/setter conventions, composable traits
+- **Error message quality:** Human-readable, include problem + fix suggestion, panic messages clear
+- **Documentation structure:** README (what/why/quick example), Quickstart, API docs, Samples, Architecture guide
+- **Adoption friction:** Zero major cloud SDK deps, clear sync/async guidance, documented Cargo features, migration paths, troubleshooting
+
+### Sample Crate Documentation Patterns
+- 8 samples documented 2026-03-14: cross-impl-bench, disk-io-bench, event-counter-tokio, page-cache, page-store, read-cache-sim, read-cache-sim-tokio, torture-stress
+- Tone: Direct, action-oriented, 10-minute decision-maker focus
+- Layout: ASCII architecture diagrams for async samples; realistic CLI examples with actual output
+- Common antipatterns: Never explain FASTER internals in sample README (link to docs instead); avoid pseudocode; each README must stand alone
+
+## Learnings (Detailed History)
 
 <!-- Append new learnings below. Each entry is something lasting about the project. -->
 
-## 2026-03-10: CHANGELOG, Release Notes Template, Documentation Audit (Wave 3)
+## 2026-03-10: Wave 3 Release Infrastructure (CHANGELOG, Release Notes Template, Documentation Audit)
 
-**What:** Created three deliverables for the 0.1.0 pre-release quality plan:
+**Deliverables:** (1) `rust/CHANGELOG.md` — Keep a Changelog format, crate-organized for 0.1.0. (2) `rust/docs/release-notes-template.md` — Reusable template. (3) `rust/docs/documentation-audit.md` — Rated 7.5/10, found ~697 doc examples, identified P0 gaps (5 sample READMEs missing, sparse crate docs).
 
-1. **rust/CHANGELOG.md** — Keep a Changelog format covering every crate's features for the initial 0.1.0 release. Organized by crate with detailed entries for core engine (FasterKv, hash index, hybrid log, epoch, checkpoint/recovery, compaction, grow, batch ops), device layer, io_uring, Tokio integration, FFI bindings, DST framework, benchmarks, and 7 sample apps.
+**Key caveat:** `rust/scripts/checkin` stages ALL workspace changes. For docs-only commits, use `git commit` directly.
 
-2. **rust/docs/release-notes-template.md** — Template with sections: Highlights, Breaking Changes, New Features (by crate), Bug Fixes, Performance (with table), Migration Guide, Known Issues, Contributors. Includes fill-it-out instructions.
-
-3. **rust/docs/documentation-audit.md** — Rated project 7.5/10. Core API well-covered (~697 doc examples, 291 lines of //! docs across 6 crates). Main gaps: 5 sample crates missing READMEs (P0), faster-device lib.rs too sparse (P0), faster-tokio and faster-uring need usage examples (P1). Full priority table with effort estimates.
-
-**Branch:** `arwen/changelog-docs-audit` (from `squad`)
-
-**Caveats with checkin script:** `rust/scripts/checkin` uses `git add -A` which stages ALL workspace changes, not just the files you intend. For docs-only commits that need selective staging, commit directly with `git commit` instead.
-
-**Documentation inventory discovered:**
-- 7 top-level markdown docs (README, QUICKSTART, TESTING, TESTING-ARCHITECTURE, PERFORMANCE, SECURITY-AUDIT, FUZZING, CONTRIBUTING)
-- 2 docs/ files (benchmarking.md, mutation-testing.md)
-- 4 crate READMEs (faster-core, faster-dst, tokio-kv-server, uring-stress)
-- Missing READMEs: faster-device, faster-ffi, faster-tokio, faster-uring, faster-bench, and 5 sample crates
+**Documentation inventory:** 7 top-level markdown docs, 2 in docs/, 4 crate READMEs. Missing: 5 sample crate READMEs (remediated 2026-03-14).
 
 ---
 
-## 2026-03-07: Iteration 4 Blog Post Written (blog-iteration-4.md)
+## 2026-03-07: Iteration 4 Blog Post (blog-iteration-4.md)
 
-**What:** Wrote comprehensive blog post covering Iteration 4 — the production push. Covers compaction (K1–K6), C FFI (F1–F5), async/Tokio bridge (T1–T4), io_uring device (U1–U4), DST framework, the alignment bug story, test audit, quality gate evolution, and the squad rename from Star Wars to Lord of the Rings.
+**Coverage:** Compaction, C FFI, Tokio async bridge, io_uring, DST framework, alignment bug story, test audit evolution.
 
-**Blog style patterns established across 4 posts:**
-- Title formula: compelling stat + count + hook (e.g., "1,525 Tests, 6 Crates, and a Vec<u8> That Humbled Us All")
-- Opens with callback to previous blog's closing teaser
-- Chronological storytelling with technical depth — real code snippets, not pseudocode
-- "By The Numbers" table comparing metrics across iterations
-- "What Went Wrong (The Honest Part)" section — credibility through transparency
-- "Lessons for Squad Users" section — actionable takeaways
-- Fun coda at the end (team rename, cultural moments)
-- Closing boilerplate links to previous posts and project
-
-**Key narrative decisions:**
-- The alignment bug is the emotional center of the post — it's the story of what "production-grade" means
-- Code snippets chosen for illumination, not exhaustiveness: CAS pointer swing, Waker bridge, TreiberStack, SimulatedDevice
-- Variable-length test gap (0 → 27) is the most important number in the metrics table
-- DST positioned as "production crash simulator" — emphasizing reproducibility via seeds
-
-**Architecture patterns learned:**
-- 6 crate structure: faster-core, faster-ffi, faster-tokio, faster-uring, faster-dst, read-cache-sim
-- Compaction orchestrator manages epoch lifecycle internally (K1–K3 under protection, K4 outside)
-- FFI uses HandleTable with monotonic u64 handles, poisoned-lock recovery, #[repr(C)] enums
-- Async bridge: PendingFuture/CompletionSender with Waker registration — zero tokio deps in core
-- io_uring: dedicated I/O thread with mpsc dispatch, TreiberStack buffer pool, EMA adaptive batching
-- DST: SimulatedDevice with seed-controlled fault injection, SimulationHarness for crash-recovery tests
-
-**File paths:**
-- Blog: `.squad/agents/arwen/blog-iteration-4.md`
-- Previous blogs: `blog-behind-the-scenes.md`, `blog-iteration-2.md`, `blog-iteration-3.md`
-- Iteration plan: `.squad/plans/iteration-4.md`
+**Architecture learned:** 6-crate structure (core, ffi, tokio, uring, dst, read-cache-sim), epoch lifecycle (K1–K3 protected, K4 outside), FFI HandleTable with poisoned-lock recovery, Waker bridge (zero tokio deps in core), io_uring thread pool with TreiberStack buffer pool, SimulatedDevice with seed-controlled fault injection.
 
 ---
 
-## 2026-03-06: Quality Gate & Doc Conventions Documented (AI-2, AI-3, AI-6)
+## 2026-03-06: Quality Gate & Doc Conventions (rust/CONTRIBUTING.md)
 
-**What:** Created `rust/CONTRIBUTING.md` with quality gate (nextest + doctests + clippy + fmt), doc example rules (public API only, no internal test types), and documentation timing convention (inline doc-comments with code, user-facing docs after stabilization). Updated `rust/README.md` to reference the contributing guide.
-
-**Key insight:** `cargo nextest` does not run doctests — an explicit `cargo test --doc` step is essential. Without it, broken doc examples go unnoticed.
-
-**Existing docs:** `rust/TESTING.md` already covers test categories, time budgets, and tooling in depth. CONTRIBUTING.md complements it with the contributor-facing quality gate and conventions.
+**Key insight:** `cargo nextest` does NOT run doctests. Explicit `cargo test --doc` step required in CI. Established convention: inline docs during development, user-facing docs after API stabilization.
 
 ---
 
-## 2026-03-05T18:33: Gandalf Rust FASTER Architecture Finalized
+## 2026-03-05: Architecture Finalized (Gandalf)
 
-**What:** Gandalf completed 288 KB comprehensive Rust FASTER architecture specification (6101 lines, 14 sections). 3-part parallel document (Gandalf-A/B/C) due to massive context requirements.
-
-**Artifact Location:** `.squad/agents/gandalf/rust-faster-architecture.md`
+Gandalf delivered 288 KB comprehensive architecture spec (6101 lines, 14 sections) covering all crates, concurrency, storage, checkpoint, FFI, async integration, testing, and 25 identified risks.
 
 **Sections:** Vision, Crates, Data Structures, Concurrency, Storage, Operations, Checkpoint, API, FFI, Async Integration, Testing, Phases, 12 Key Decisions, Risk Register (25 risks, 5 critical)
 
@@ -140,45 +125,14 @@
 
 ---
 
-## 2026-03-14: Sample Crate READMEs Completed (Backlog Item 3e)
+## 2026-03-14: Sample Crate READMEs (8 crates, 1052 lines, ~30 KB)
 
-**What:** Wrote comprehensive READMEs for all 8 sample crates missing documentation:
-1. **cross-impl-bench** — YCSB benchmark suite for cross-implementation comparison
-2. **disk-io-bench** — Device implementation benchmark (sync, io_uring, Tokio)
-3. **event-counter-tokio** — Async event aggregation with Tokio integration
-4. **page-cache** — Lossy cache workload with configurable eviction
-5. **page-store** — Durable store with explicit delete-based retention
-6. **read-cache-sim** — Fixed working set cache (sync version)
-7. **read-cache-sim-tokio** — Fixed working set cache (async version)
-8. **torture-stress** — Correctness torture-test with oracle verification
+**Completed:** cross-impl-bench, disk-io-bench, event-counter-tokio, page-cache, page-store, read-cache-sim, read-cache-sim-tokio, torture-stress.
 
-**README Structure (established pattern):**
-- **Title** — crate name
-- **One-line description** — what it demonstrates
-- **What It Demonstrates** — 2–3 sentences explaining purpose
-- **Key Concepts** — bullet list of FASTER features shown
-- **Usage** — cargo run examples with common flags
-- **CLI Options** — reference table of all command-line flags
-- **Example Output** — realistic sample output/results
-- **Notes** — platform requirements, caveats, use cases
+**Pattern used:** Title, one-liner, What It Demonstrates (2–3 sentences), Key Concepts (bullet list), Usage (cargo run examples), CLI Options (reference table), Example Output (realistic run), Notes (platform requirements, caveats), architecture diagram where helpful.
 
-**Style References:**
-- Adapted from existing `tokio-kv-server/README.md` and `uring-stress/README.md`
-- Tone: Clear, direct, 10-minute decision-maker focus
-- Code examples: Realistic, copy-paste ready
+**Key design choices:** YCSB emphasis for cross-impl-bench, memory budgeting explanation for disk-io-bench, ASCII async architecture for event-counter-tokio, side-by-side comparison for sync/tokio variants, detailed oracle mechanics for torture-stress.
 
-**Key Content Decisions:**
-- **cross-impl-bench:** Emphasized YCSB standardization and cross-platform comparison
-- **disk-io-bench:** Explained memory budgeting calculation (why dataset > buffer matters)
-- **event-counter-tokio:** Showed async/sync bridge pattern with ASCII architecture diagram
-- **page-cache vs. page-store:** Clearly contrasted lossy eviction vs. durable retention
-- **read-cache-sim/-tokio:** Included side-by-side comparison table
-- **torture-stress:** Detailed thread roles, wave functions, oracle mechanics with ASCII art
+**Branch:** `arwen/sample-readmes` (Commit 1880da1a). Solves Wave 3 documentation audit gap.
 
-**Branch:** `arwen/sample-readmes` (push to origin succeeded)
-**Commit:** 1880da1a — 8 files, 1052 insertions
-
-**Total Documentation Added:** ~30 KB (1052 lines)
-- Best for: New users deciding which sample to study first
-- Solves: Documentation audit gap (5 samples missing READMEs identified in Wave 3)
 

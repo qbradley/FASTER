@@ -1,77 +1,71 @@
 # Boromir - QA Engineer History
 
-## Learnings
+## Core Context
 
-### Deadlock Test Harness (2026-03-11)
+**FASTER Rust Test Infrastructure:**
+- Test suite: 30+ integration test files in `rust/crates/faster-core/tests/`
+- Test frameworks: cargo test (standard), nextest (CI), loom (concurrency), miri (UB detection)
+- CI pipeline: `.github/workflows/rust-ci.yml` — runs on push/PR, weekly DST extended campaign
+- Mutation testing: cargo-mutants v27.0, configured in `rust/mutants.toml`
+- Fuzz testing: 8 targets in `rust/fuzz/`, libfuzzer + arbitrary
 
-Built test infrastructure for the multi-writer deadlock fix on `sam/deadlock-fix` branch:
+**Test Organization:**
+- Unit tests: `#[cfg(test)]` modules in `src/*/mod.rs`
+- Integration tests: `tests/{subject}_{type}.rs` pattern
+- Mutation tests: `tests/*_mutation_tests.rs` — targets specific mutation gaps
+- Property tests: `tests/property_tests.rs` — proptest-based
+- Specialized: `tests/loom_tests.rs`, `tests/miri_tests.rs`, `tests/deadlock_tests.rs`
+- Common utilities: `tests/common/` — devices, helpers, assertions (not a test file)
 
-**Test Devices Created:**
-- `QueueFullDevice` — returns `IoRequestResult::QueueFull` from `write_async()` after N successful writes. Unlike `FaultInjectingDevice` (callback-level errors), this injects at the submission level. Has `queue_full_after(n)` and `toggleable()` constructors.
-- `QueueFullThenSucceedDevice` — QueueFull for first M writes, then succeeds. Tests retry loop recovery.
-- `SlowDevice` — wraps `InMemoryDevice` with background-thread callback delay. Returns `Submitted` (not `CompletedSync`), matching `SyncFileDevice` behavior.
+**CI Jobs (rust-ci.yml):**
+- `fmt` — formatting check (nightly)
+- `ci` — clippy + tests (debug + release, matrix: ubuntu/windows/macos)
+- `loom` — concurrency tests (--cfg loom)
+- `dst` — DST smoke tests (~20s, 133 tests, excludes campaign_expanded)
+- `dst-extended` — full campaign (scheduled/manual, ~4min, 3009 scenarios)
+- `miri` — UB detection (nightly)
+- `coverage` — llvm-cov (lcov.info artifact)
+- `bench` — benchmarks (main branch only)
+- `semver-checks` — API compatibility (informational pre-1.0)
+- `deny` — license + advisory audit
 
-**Key Pattern: QueueFull vs Callback Errors:**
-- `FaultInjectingDevice` injects errors via the callback (`IoStatus::Error`), returning `CompletedSync`
-- `QueueFullDevice` returns `QueueFull` from `write_async()` itself (before any callback fires)
-- These exercise completely different code paths in `flush_page` / `flush_sealed_pages`
+**Test Device Doubles (faster_core::test_utils::devices):**
+- `InMemoryDevice` — synchronous, returns `CompletedSync`
+- `SlowDevice` — async with delay, returns `Submitted` (matches real devices)
+- `FaultInjectingDevice` — callback-level errors (`IoStatus::Error`)
+- `QueueFullDevice` — submission-level errors (`IoRequestResult::QueueFull`)
+- `QueueFullThenSucceedDevice` — QueueFull for N writes, then succeeds
 
-**Key Pattern: OperationOutcome API:**
-- `store.upsert()` returns `OperationOutcome<C>`, not `OperationStatus`
-- Use `.is_success()`, `.is_aborted()`, `.status()` methods
-- `OperationOutcome<C>` implements `PartialEq<OperationStatus>` for direct comparison
+**Key Testing Insights:**
+- **Page size:** 32MB (1 << 25) — exact boundary tests need full-page allocations
+- **State machine:** Open → Sealed → Flushing → Flushed → Evicted → Truncated
+- **Error injection layers:** Submission (QueueFull) vs Callback (IoStatus::Error)
+- **OperationOutcome API:** NOT Result — use `.is_success()`, `.is_aborted()`, `.status()`
+- **Atomic fetch_add:** Returns pre-increment value — compare `count >= n`, not post-increment load
+- **Test economics:** Code is free, runtime costs money — optimize for fast tests that catch real bugs
 
-**Key Pattern: Atomic Counter Off-by-One:**
-- `fetch_add(1)` returns the *pre-increment* value
-- When using the counter for threshold checks, compare the pre-increment value (`count >= n`), not loading the post-increment atomic
+## Major Work
 
-**Test Count:** 7 passing (device wrappers + basic integration), 6 ignored pending Sam's Fix A+B
+### Mutation Testing Campaign (2024)
+Killed 17 mutation gaps across 5 modules (eviction, flush, log_allocator, page, regions). Discovered equivalent mutations (| vs ^ on non-overlapping bits, > 0 vs >= 0 on unsigned), performance-only mutations (prefetch noop), and true gaps (boundaries, counters, arithmetic). Created mutation-killing test patterns: pinned reference vectors (hash), exact boundary testing, counter validation, marker bytes (offsets), logic independence (|| vs &&).
 
-### Mutation Testing Campaign - 17 Gap Survivors (2024)
+**Skills extracted:** mutation-test-strategy, integration-test-patterns
 
-Successfully wrote mutation-killing tests for 17 identified mutations that survived the initial test suite:
+### Deadlock Test Harness (2026-03-11, sam/deadlock-fix)
+Built test infrastructure with QueueFullDevice, QueueFullThenSucceedDevice, SlowDevice. Discovered QueueFull vs callback error distinction, OperationOutcome API patterns, atomic counter off-by-one. 7 passing tests, 6 ignored pending fix completion.
 
-**Mutations Killed:**
+**Skills extracted:** test-device-authoring
 
-1. **eviction.rs (4 gaps)**
-   - `needs_eviction` boundary: `>` → `>=` - Test verifies exact boundary (pages == max) doesn't trigger eviction
-   - `evict_and_truncate` zero check: `>` → `>=` - Test verifies no truncation when evicted == 0
-   - `evict_and_truncate` offset calc: `*` → `+` - Test verifies correct page * page_size calculation
-   - `advance_head` OR logic: `||` → `&&` - Documented; covered by existing integration tests
+## Skills Created (Reskill Audit 2026)
 
-2. **flush.rs (4 gaps)**
-   - `flush_page_sync` state checks (3 mutations) - Already covered by existing tests
-   - `flush_sealed_pages` counter: `+=` → `*=` - Documented; covered by tier-2 integration test
+**New skills from history mining:**
+1. `test-device-authoring` — Test double patterns for FASTER I/O (5.3 KB)
+2. `integration-test-patterns` — State machine, boundary, multi-page testing (6.8 KB)
+3. `mutation-test-strategy` — Mutation classification, kill patterns (7.0 KB)
+4. `test-naming-conventions` — File and function naming standards (5.0 KB)
 
-3. **log_allocator.rs (4 gaps)**
-   - `try_allocate` seal boundary: `==` → `!=` - Test verifies sealing only at exact page fill
-   - `advance_to_next_page` retry: `!=` → `==` - Test verifies CAS retry logic
-   - `load_pages_from_device` offset: `*` → `/` - Test uses marker bytes to verify correct offsets
-   - `load_pages_from_device` counter: `+=` → `*=` - Test verifies accurate page count
+**Existing skills (verified):**
+- `mutation-testing` — cargo-mutants tool usage (3.1 KB) — COMPLEMENTARY, kept
+- `fuzz-target-authoring` — Fuzz target patterns (existing)
 
-4. **page.rs (3 gaps)**
-   - `get_or_allocate_frame` recycle: `||` → `&&` - Test verifies Evicted OR Free recycling
-   - `PageTrailer::write_size` alignment (2 mutations) - Tests verify sector alignment formula
-
-5. **regions.rs (2 gaps)**
-   - `is_in_memory` always true: Test verifies OnDisk/Truncated/Invalid return false
-   - `needs_flush` comparison: `<` → `>` - Test verifies fuzzy region detection
-
-**Key Patterns Discovered:**
-
-- **Page size matters**: FASTER uses 32MB pages (1 << 25), requiring full-page allocations for sealing tests
-- **Region boundaries**: Many operations require pages in specific regions (read-only, flushed, etc.)
-- **State transitions**: Complex state machines (Open → Sealed → Flushing → Flushed → Evicted)
-- **Private methods**: Some mutations are in private methods, best tested via public APIs or documented
-- **Counter mutations**: `+=` → `*=` breaks all counters (0 * 1 = 0); verify counts > 0
-- **Arithmetic mutations**: `*` → `+` or `/` in offset calculations; use marker bytes to verify correctness
-- **Boundary mutations**: `>` → `>=` or `==` → `!=`; test exact boundaries and off-by-one cases
-- **Logic mutations**: `||` → `&&`; ensure tests exercise individual conditions independently
-
-**Testing Strategy:**
-
-1. Unit tests for simple arithmetic/logic mutations
-2. Integration tests for complex state machine interactions
-3. Documentation for private method mutations covered by higher-level tests
-4. Marker bytes/distinct values to verify calculation correctness
-5. Boundary testing at exact limits (==, off-by-one)
+**Total knowledge formalized:** 24.1 KB of reusable testing patterns
