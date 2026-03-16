@@ -47,3 +47,22 @@ Branch: `gandalf/release-automation`. Created `release.toml`, `rust-release.yml`
 
 ### Wave 3 Integration (2026-03-09)
 Integrated Legolas's benchmark baseline infrastructure and Boromir's release gate. Updated releasing.md to reference `bench-record-baseline.sh` and `release-gate` script.
+
+## Learnings
+
+### Deadlock Post-Mortem (2026-03-16)
+Analyzed why two serious deadlocks (P1 flush-pipeline circular dependency, P0 lossy-mode InMemoryDevice lock starvation) escaped 2,100+ automated tests. Key findings:
+
+1. **Loom tests are scoped correctly but limited by design.** Our 21 loom tests cover atomic primitives (Treiber stack, epoch, hash bucket, record info, state transitions, log alloc). They cannot model multi-component pipeline progress failures or scale-dependent behaviors. This is inherent — not a gap to fix.
+
+2. **Both bugs share a meta-pattern: O(1)-at-test-scale → O(n)-at-production-scale.** Bug 1: retry loop deadlocks only when buffer fills under sustained load. Bug 2: `fill(0)` in truncate_until is O(total_bytes_flushed), taking 1-3s at ~9GB. Tests running <10s with small data never see this.
+
+3. **Lossy mode is critically undertested.** Every test config helper sets `lossy: false`. Lossy mode activates `truncate_until` on every eviction cycle — a path no automated test exercises under load.
+
+4. **InMemoryDevice hides pipeline stalls.** It completes I/O synchronously (`CompletedSync`), eliminating the timing gap between flush submission and callback that triggers Bug 1. Use `SlowDevice` for pipeline stress tests.
+
+5. **Progress assertions > correctness assertions for concurrency.** "Did it finish?" misses throughput cliffs. "Did ops/s stay above a floor?" catches liveness bugs. Recommended: add throughput-over-time assertions to multi-writer tests.
+
+6. **Deterministic simulation is the only tool that catches both bug categories.** Loom covers memory ordering, stress tests cover scale, but only a FoundationDB-style simulator covers progress + scale + timing together. Backlogged as R7.
+
+7. **Immediate actions:** (R1) lossy-mode regression test, (R2) throughput-cliff detection in CI, (R3) "no O(n) under lock" code review rule, (R4) SlowDevice stress test in nightly. See `.squad/decisions/inbox/gandalf-deadlock-postmortem.md`.

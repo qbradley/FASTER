@@ -222,3 +222,28 @@ cargo nextest run --release -p faster-core --run-ignored ignored-only \
 - **SCP deploy + VM test is a viable rapid verification workflow** — Deploy 5 files, build in 8s, full 300s test confirms fix. Faster than waiting for CI.
 
 **Artifacts:** `.squad/decisions/inbox/legolas-lossy-fix-verification.md`
+
+### 2026-03-16: 1-Hour Stress Test Attempt (Commit b65a0ba, Azure VM)
+
+**Context:** Attempted 1-hour (3600s) stress tests on Azure VM (Standard_F16s_v2, 16 vCPU, 32GB RAM, no swap) for both non-lossy and lossy modes at 16 threads to validate long-duration stability.
+
+**Key Findings:**
+
+1. **Both tests OOM-killed before completion** — Non-lossy died at T+480s (8 min), lossy at T+540s (9 min). `InMemoryDevice` Vec grows at ~56-63 MB/s, filling 32GB in <10 minutes. This is a fundamental limitation of the in-memory device for long-duration tests.
+
+2. **🟢 Lossy deadlock fix (b65a0ba) VALIDATED to 20.8B ops** — The lossy test processed 2.8x more ops than the previous deadlock point (7.4B) with zero stalling. Death was clean OOM, not deadlock. The O(N) truncation fix is solid.
+
+3. **Lossy eviction provides ~11% memory growth reduction** — Lossy grew at ~56 MB/s vs non-lossy ~63 MB/s, surviving 60s longer. Eviction/truncation works but `Vec` never shrinks.
+
+4. **Throughput rock-solid while running** — Non-lossy: 38.6M avg (σ=2.8%), Lossy: 38.4M avg (σ=1.2%). Lossy was more stable. Zero oracle violations in either test.
+
+5. **1-hour tests require disk-backed device** — At 60 MB/s growth, a 1-hour run would need ~230GB. Only a disk-backed or memory-capped device can sustain this.
+
+**Learnings:**
+- **InMemoryDevice is a test fixture, not a production storage backend** — Its unbounded growth makes it unsuitable for runs >5-10 minutes at full throughput on 32GB VMs.
+- **OOM ≠ bug** — This is expected behavior for an in-memory device under sustained write pressure. The real test is disk-backed operation.
+- **Lossy mode is more stable than non-lossy** — Lower throughput variance (1.2% vs 2.8% CoV) suggests eviction smooths out memory pressure effects.
+- **Memory growth rate is linear and predictable** — ~60 MB/s at 38-39M ops/s. Can estimate required RAM from planned test duration.
+- **Next step: implement disk-backed stress test** — This is the only way to validate true 1-hour stability.
+
+**Artifacts:** `.squad/decisions/inbox/legolas-1hr-stress.md`

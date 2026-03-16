@@ -140,6 +140,16 @@ Use `FaultInjectingDevice` to inject QueueFull errors deterministically.
 3. **Discarded results hide problems** — `let _ = flush(...)` can't detect zero-progress
 4. **Callbacks need CPU time** — `yield_now()` is essential in retry loops
 5. **Buffer needs 4× headroom** — async flush means tail can't lap unflushed pages
+6. **Throughput cliffs escape correctness tests** — "did it complete?" ≠ "did it stay fast." Use window-based throughput monitoring with cliff detection (10% of peak floor) to catch slow deadlocks where the system makes just enough progress to avoid timeouts
+
+## Throughput Cliff Detection Pattern
+
+For stress/regression tests, add `ThroughputMonitor`:
+- Workers increment a shared `AtomicU64` counter (Relaxed ordering, negligible overhead)
+- Monitor thread snapshots ops per window (e.g., every 2-5 seconds)
+- After warmup (first 2 windows), assert no window drops below 10% of peak
+- Reuse existing watchdog/monitor threads via `tick()` — no extra thread spawns
+- Window duration must satisfy: `test_duration / window_duration > warmup_windows + 1`
 
 ## Anti-Patterns
 

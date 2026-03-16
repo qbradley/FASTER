@@ -193,3 +193,5 @@ cd rust && cargo bench --bench ycsb -p faster-core -- --nocapture
 - `complete_pending()` should be called periodically in long-running workloads to drain async I/O.
 - `InMemoryDevice::new()` completes I/O synchronously — Pending status is rare but still possible during page transitions.
 - Batching atomic counter updates (flush every 256 ops) eliminates contention on global counters at 4+ threads.
+- Throughput cliff detection (ThroughputMonitor) catches "slow deadlocks" that pass correctness checks but have collapsed throughput. Pattern: AtomicU64 counter + periodic window snapshots + post-warmup cliff assertion at 10% of peak.
+- For timed stress tests, window duration must be chosen so that test_duration / window_duration > warmup_windows + 1 to get at least one checked window. E.g., 10s test needs ≤2s windows with 2 warmup windows.
