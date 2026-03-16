@@ -554,13 +554,14 @@ impl Device for InMemoryDevice {
         Ok(source.len() as u32)
     }
 
-    fn truncate_until(&self, offset: u64) {
-        let mut guard = self.data.write().expect("InMemoryDevice lock poisoned");
-        let off = offset as usize;
-        if off <= guard.len() {
-            // Zero out the truncated region.
-            guard[..off].fill(0);
-        }
+    fn truncate_until(&self, _offset: u64) {
+        // No-op: data below begin_address is never read in lossy mode,
+        // so zeroing is unnecessary. The previous implementation held the
+        // write lock while zeroing guard[..offset], which is O(total_flushed)
+        // and grows linearly over time. Under sustained load, this eventually
+        // blocks all concurrent write_async (flush) calls for seconds,
+        // starving the flush pipeline and causing a permanent throughput
+        // collapse. See: lossy-eviction deadlock fix.
     }
 
     fn size(&self) -> u64 {
@@ -694,15 +695,10 @@ mod tests {
         let data = vec![0xABu8; 1024];
         dev.write_sync(0, &data).unwrap();
 
-        // Truncate first 512 bytes.
+        // Truncate first 512 bytes. For InMemoryDevice, truncate_until is a
+        // no-op (data below begin_address is never read in normal operation).
+        // Verify it doesn't panic and the un-truncated region is intact.
         dev.truncate_until(512);
-
-        let mut first_half = vec![0xFFu8; 512];
-        dev.read_sync(0, &mut first_half).unwrap();
-        assert!(
-            first_half.iter().all(|&b| b == 0),
-            "truncated region should be zeroed"
-        );
 
         let mut second_half = vec![0u8; 512];
         dev.read_sync(512, &mut second_half).unwrap();
@@ -710,6 +706,9 @@ mod tests {
             second_half.iter().all(|&b| b == 0xAB),
             "un-truncated region should be intact"
         );
+
+        // Size should be unchanged.
+        assert_eq!(dev.size(), 1024);
     }
 
     #[test]

@@ -77,3 +77,11 @@ Built test infrastructure with QueueFullDevice, QueueFullThenSucceedDevice, Slow
 - **Blast radius:** All 64 failing tests trace to one 3-line function. Every test calling `write_checkpoint_metadata()`, `delete_checkpoint()`, or `atomic_write()` was affected — spanning `checkpoint_recovery_tests.rs`, `recovery_edge_cases.rs`, `recovery/mod.rs`, `recovery/log_recovery.rs`, `metadata_store.rs` unit tests, and `orchestrator.rs` unit tests.
 - **Fix:** `cfg(unix)` guard on directory fsync; no-op on non-Unix. NTFS journals metadata ops so rename-based atomic writes are already durable. Same approach as RocksDB/SQLite.
 - **Key insight:** A single platform-incompatible helper function caused 64 test failures — always check stdlib filesystem operations for Windows compatibility when they touch directories or file handles.
+
+### Lossy Mode Deadlock Regression Tests (2025)
+- **Tests added:** `lossy_16_thread_sustained_progress` (30s, 16 threads) and `lossy_eviction_memory_bounded` (20s, 8 threads) in `deadlock_tests.rs`.
+- **Pattern:** Tiny buffer (8 pages, max 4 in-memory) + lossy mode triggers eviction pipeline contention much faster than the original 128-page repro. Avoids 200s wait.
+- **Watchdog design:** Per-thread stall detection (5s threshold via `Mutex<Instant>`) + global throughput monitor (AtomicU64 total_ops, 5s zero-progress panic). Dual watchdog catches both single-thread deadlock and collective starvation.
+- **Memory bounding:** Raw address difference `(tail - head) >> 25` approximates in-memory page count without needing access to internal allocator snapshot. Ceiling at 2× buffer_size allows in-flight flush overhead.
+- **Current status (pre-fix):** Both tests PASS — the deadlock may require larger buffers or longer runs to manifest. Tests are positioned as regression gates for when the fix lands.
+- **Key insight:** Mixed workload (upsert + read + RMW + delete) on overlapping key ranges is critical — pure upserts don't trigger the hash-index invalidation + eviction race that causes the real deadlock.

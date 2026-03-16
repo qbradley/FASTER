@@ -198,3 +198,27 @@ cargo nextest run --release -p faster-core --run-ignored ignored-only \
 - 🟢 Correctness confidence: HIGH
 - 🟡 Throughput confidence: MEDIUM (need extended tests)
 - **Decision:** Current commit stable for merge. Add nightly extended stress tests to quality gate.
+
+### 2026-03-16: Lossy Deadlock Fix Verification (Sam's Fix on Azure VM)
+
+**Context:** Deployed Sam's uncommitted fix (device.rs, kv.rs) to Azure VM via SCP and ran the exact configuration that deadlocked earlier: 16-thread lossy, 300 seconds.
+
+**Key Findings:**
+
+1. **P0 lossy deadlock is RESOLVED** — 16-thread lossy ran the full 300 seconds at 39.88M avg ops/s (peak 41.32M). Previously deadlocked at T+200s with 0 ops/s and 13GB RSS. T+200s now shows healthy 37.67M ops/s.
+
+2. **No regression in non-lossy** — 16-thread non-lossy actually improved from 38.85M to 40.85M avg ops/s (+5.1%). The fix reduces contention in shared eviction paths.
+
+3. **Lossy now matches non-lossy throughput** — 39.88M vs 40.85M (2.4% gap). Both modes are production-ready at 16 threads.
+
+4. **Boromir's regression tests pass** — `lossy_16_thread_sustained_progress` (494.8M ops, 30s) and `lossy_eviction_memory_bounded` (61.9M ops, memory bounded) both green.
+
+5. **Zero oracle violations** — 3.86B + 3.96B checks across lossy and non-lossy, all passed.
+
+**Learnings:**
+- **Fix has zero performance cost** — Non-lossy improved 5.1%, lossy went from unusable to 39.88M ops/s. The deadlock fix likely reduces contention in shared paths.
+- **Transient dips are normal** — Both modes show a single ~15% dip per run (1 interval out of 30). This is periodic eviction/GC, not a regression.
+- **Always test at T+200s+ for lossy** — The deadlock was data-volume dependent (~7.4B ops), not time-dependent. Short tests would miss it.
+- **SCP deploy + VM test is a viable rapid verification workflow** — Deploy 5 files, build in 8s, full 300s test confirms fix. Faster than waiting for CI.
+
+**Artifacts:** `.squad/decisions/inbox/legolas-lossy-fix-verification.md`

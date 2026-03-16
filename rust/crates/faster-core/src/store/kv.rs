@@ -1698,17 +1698,24 @@ impl<F: Functions> FasterKv<F> {
         // Buffer-pressure: force read-only shift and eviction when the buffer
         // is nearly full. With mutable_fraction ~0.9, the normal threshold may
         // never trigger because mutable_pages() == mutable_fraction_pages().
+        //
+        // Only evict here (no truncation). Truncation is deferred to step 3
+        // where it runs after flushing, so newly-flushed pages can also be
+        // evicted in the same cycle. Calling truncate_until before flush is
+        // wasteful and can cause write-lock contention on devices that use a
+        // shared lock for both flush and truncation (e.g., InMemoryDevice).
         let head_page = info.head_address.page().0 as u64;
         let tail_page = info.tail_address.page().0 as u64;
         let in_memory_pages = tail_page.saturating_sub(head_page);
         let buffer_size = self.allocator.page_table().buffer_size() as u64;
         if in_memory_pages + 2 >= buffer_size {
             self.allocator.shift_read_only_to_tail();
+            self.evictor.evict_pages(&self.allocator);
             if self.config.lossy {
-                self.evictor
-                    .evict_and_truncate(&self.allocator, self.device.as_ref());
-            } else {
-                self.evictor.evict_pages(&self.allocator);
+                // Advance begin_address so records on evicted pages are
+                // classified as Truncated rather than OnDisk.
+                let head = self.allocator.head_address();
+                self.allocator.try_advance_begin(head);
             }
         }
 
@@ -1727,15 +1734,25 @@ impl<F: Functions> FasterKv<F> {
         if buffer_pressure || eager_flush || self.evictor.needs_eviction(&self.allocator.snapshot())
         {
             if self.config.lossy {
-                // Lossy mode: evict, advance begin_address, truncate device,
-                // and invalidate stale hash entries in a single step.
+                // Lossy mode: evict pages, advance begin_address, and
+                // invalidate stale hash entries. Device truncation is
+                // separated from the critical eviction path to avoid
+                // holding device locks during begin/hash updates.
                 let old_begin = self.allocator.begin_address();
-                self.evictor
-                    .evict_and_truncate(&self.allocator, self.device.as_ref());
-                let new_begin = self.allocator.begin_address();
+                let evicted = self.evictor.evict_pages(&self.allocator);
+                let head = self.allocator.head_address();
+                let new_begin = self.allocator.try_advance_begin(head);
                 if new_begin > old_begin {
                     self.hash_index
                         .invalidate_entries_in_range(old_begin, new_begin);
+                }
+                // Truncate device data below the new begin_address. This is
+                // best-effort and not needed for forward progress — it just
+                // reclaims device space.
+                if evicted > 0 {
+                    let truncate_offset =
+                        u64::from(new_begin.page().0) * u64::from(self.allocator.page_size());
+                    self.device.truncate_until(truncate_offset);
                 }
             } else {
                 self.evictor.evict_pages(&self.allocator);

@@ -1057,3 +1057,403 @@ fn queue_full_device_toggle() {
     };
     assert!(matches!(result, IoRequestResult::CompletedSync));
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Lossy Mode Deadlock Regression Tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Lossy-mode config tuned for maximum eviction pressure with 16 threads.
+/// Tiny buffer forces continuous flush/evict cycles. Hash index is large
+/// enough to avoid bucket contention dominating over the real bottleneck.
+fn lossy_pressure_config() -> FasterKvConfig {
+    FasterKvConfig {
+        hash_index_size_log2: 20, // 1M buckets — matches repro parameters
+        buffer_size_pages: 8,     // small buffer → constant eviction
+        mutable_fraction: 0.5,
+        sector_size: 512,
+        eviction_policy: EvictionPolicy {
+            max_in_memory_pages: 4, // force eviction at 50% buffer
+            eviction_batch_size: 4, // batch eviction for throughput
+        },
+        grow_config: GrowConfig {
+            enabled: false,
+            ..GrowConfig::default()
+        },
+        auto_compact: false,
+        lossy: true,
+    }
+}
+
+/// Regression test for lossy-mode deadlock under 16-thread sustained pressure.
+///
+/// # Background
+///
+/// The original bug: 16 threads doing mixed ops in lossy mode deadlock after
+/// ~200s (~7.4B ops) with buffer_size_pages: 128. All threads freeze at 0
+/// ops/s, 13GB RSS, requires kill -9.
+///
+/// # Strategy
+///
+/// We use a TINY buffer (8 pages, max 4 in-memory) to trigger the same
+/// eviction/flush pipeline contention much faster. A 30-second budget with
+/// a 5-second stall watchdog catches deadlocks without waiting 200s.
+///
+/// # Expected Behavior
+///
+/// - **Pre-fix:** May deadlock or stall (watchdog fires, test fails).
+/// - **Post-fix:** All 16 threads make sustained forward progress.
+#[test]
+#[ignore = "tier-2: lossy deadlock regression (30s)"]
+fn lossy_16_thread_sustained_progress() {
+    let config = lossy_pressure_config();
+    let store = Arc::new(FasterKv::new(
+        config,
+        SimpleFunctions::default(),
+        InMemoryDevice::new(),
+    ));
+
+    let num_threads = 16;
+    let test_duration = Duration::from_secs(30);
+    let stall_threshold = Duration::from_secs(5);
+    let min_ops_per_thread = 1_000u64;
+    let key_range = 1_000_000u64;
+
+    let barrier = Arc::new(Barrier::new(num_threads + 1)); // +1 for watchdog
+    let total_ops = Arc::new(AtomicU64::new(0));
+    let per_thread_ops: Arc<Vec<AtomicU64>> = Arc::new(
+        (0..num_threads)
+            .map(|_| AtomicU64::new(0))
+            .collect::<Vec<_>>(),
+    );
+    let last_progress: Arc<Vec<Mutex<Instant>>> = Arc::new(
+        (0..num_threads)
+            .map(|_| Mutex::new(Instant::now()))
+            .collect::<Vec<_>>(),
+    );
+    let stop = Arc::new(AtomicBool::new(false));
+
+    // Spawn 16 worker threads doing mixed operations.
+    let mut handles = Vec::new();
+    for tid in 0..num_threads {
+        let store = Arc::clone(&store);
+        let barrier = Arc::clone(&barrier);
+        let total_ops = Arc::clone(&total_ops);
+        let per_thread_ops = Arc::clone(&per_thread_ops);
+        let last_progress = Arc::clone(&last_progress);
+        let stop = Arc::clone(&stop);
+
+        handles.push(thread::spawn(move || {
+            barrier.wait();
+            let mut session = store.new_session();
+            let mut ops: u64 = 0;
+            let mut key_counter: u64 = 0;
+
+            while !stop.load(Ordering::Relaxed) {
+                // Mixed workload: upserts + reads + RMW + deletes on
+                // overlapping key ranges to maximize contention.
+                let key = (tid as u64 * 1000 + key_counter) % key_range;
+                let op = key_counter % 4;
+                let succeeded = match op {
+                    0 => {
+                        // Upsert
+                        let status = store.upsert(&mut session, &key, &(key * 7), ());
+                        !status.is_aborted()
+                    }
+                    1 => {
+                        // Read
+                        let mut output: Option<u64> = None;
+                        let status = store.read(&mut session, &key, &0u64, &mut output, ());
+                        !status.is_aborted()
+                    }
+                    2 => {
+                        // RMW
+                        let mut output: Option<u64> = None;
+                        let status = store.rmw(&mut session, &key, &(key + 1), &mut output, ());
+                        !status.is_aborted()
+                    }
+                    _ => {
+                        // Delete
+                        let status = store.delete(&mut session, &key, ());
+                        !status.is_aborted()
+                    }
+                };
+
+                if succeeded {
+                    ops += 1;
+                    per_thread_ops[tid].store(ops, Ordering::Relaxed);
+                    total_ops.fetch_add(1, Ordering::Relaxed);
+                    *last_progress[tid].lock().unwrap() = Instant::now();
+                } else {
+                    // Aborted — yield and retry
+                    thread::yield_now();
+                }
+
+                key_counter += 1;
+
+                // Drive the maintenance pipeline periodically to
+                // keep flush/eviction running.
+                if key_counter % 512 == 0 {
+                    store.maintenance();
+                    let _ = store.complete_pending(&mut session);
+                }
+            }
+
+            store.dispose_session(session);
+            ops
+        }));
+    }
+
+    // Watchdog thread: monitors for stalls in any 5-second window.
+    let watchdog_stop = Arc::clone(&stop);
+    let watchdog_progress = Arc::clone(&last_progress);
+    let watchdog_total_ops = Arc::clone(&total_ops);
+    let watchdog = thread::spawn(move || {
+        barrier.wait();
+        let start = Instant::now();
+        let mut prev_total_ops = 0u64;
+        let mut last_global_progress = Instant::now();
+
+        while start.elapsed() < test_duration {
+            thread::sleep(Duration::from_millis(500));
+
+            // Per-thread stall detection.
+            for (i, ts) in watchdog_progress.iter().enumerate() {
+                let last = *ts.lock().unwrap();
+                if last.elapsed() > stall_threshold {
+                    watchdog_stop.store(true, Ordering::Release);
+                    panic!(
+                        "DEADLOCK DETECTED: thread {i} stuck for {:?} (0 ops in window)",
+                        last.elapsed()
+                    );
+                }
+            }
+
+            // Global throughput stall detection: if total ops hasn't
+            // changed in 5 seconds, all threads are collectively stuck.
+            let current_total = watchdog_total_ops.load(Ordering::Relaxed);
+            if current_total > prev_total_ops {
+                prev_total_ops = current_total;
+                last_global_progress = Instant::now();
+            } else if last_global_progress.elapsed() > stall_threshold {
+                watchdog_stop.store(true, Ordering::Release);
+                panic!(
+                    "DEADLOCK DETECTED: global throughput 0 ops/s for {:?} \
+                     (total_ops={})",
+                    last_global_progress.elapsed(),
+                    current_total
+                );
+            }
+        }
+
+        watchdog_stop.store(true, Ordering::Release);
+    });
+
+    // Join all threads and assert forward progress.
+    watchdog
+        .join()
+        .expect("watchdog panicked — deadlock detected");
+
+    let mut total = 0u64;
+    for (i, handle) in handles.into_iter().enumerate() {
+        let ops = handle.join().expect("worker thread panicked");
+        let final_count = per_thread_ops[i].load(Ordering::Relaxed);
+        eprintln!("thread {i:2}: {final_count:>10} ops");
+        assert!(
+            final_count >= min_ops_per_thread,
+            "thread {i} only completed {final_count} ops (minimum: {min_ops_per_thread}) — \
+             likely deadlocked or starved"
+        );
+        total += ops;
+    }
+
+    let total_from_counter = total_ops.load(Ordering::Relaxed);
+    eprintln!("total: {total} ops ({total_from_counter} via atomic counter) in {test_duration:?}");
+    assert!(total > 0, "zero total operations — all threads were stuck");
+}
+
+/// Verify that memory usage stays bounded in lossy mode under sustained load.
+///
+/// In lossy mode, eviction + truncation should keep the in-memory page count
+/// near `max_in_memory_pages`. If pages leak (eviction fails to advance head),
+/// the page gap grows unboundedly and RSS explodes.
+///
+/// # Strategy
+///
+/// 8 threads writing for 20 seconds with a tiny buffer. We sample the
+/// in-memory page count (tail_page − head_page) periodically and assert
+/// it never exceeds `buffer_size_pages + overhead`.
+///
+/// # Expected Behavior
+///
+/// - **Pre-fix:** In-memory pages may grow unbounded (bug: eviction stalls).
+/// - **Post-fix:** Pages stay bounded near buffer_size_pages.
+#[test]
+#[ignore = "tier-2: lossy memory bounded regression (20s)"]
+fn lossy_eviction_memory_bounded() {
+    let buffer_size_pages: u32 = 8;
+    let max_in_memory: u32 = 4;
+    // Allow some overhead for in-flight flushes and race conditions,
+    // but the gap should never exceed 2× the buffer.
+    let page_count_ceiling: u64 = (buffer_size_pages as u64) * 2;
+
+    let config = FasterKvConfig {
+        hash_index_size_log2: 16, // 64k buckets
+        buffer_size_pages: buffer_size_pages as usize,
+        mutable_fraction: 0.5,
+        sector_size: 512,
+        eviction_policy: EvictionPolicy {
+            max_in_memory_pages: max_in_memory,
+            eviction_batch_size: 2,
+        },
+        grow_config: GrowConfig {
+            enabled: false,
+            ..GrowConfig::default()
+        },
+        auto_compact: false,
+        lossy: true,
+    };
+
+    let store = Arc::new(FasterKv::new(
+        config,
+        SimpleFunctions::default(),
+        InMemoryDevice::new(),
+    ));
+
+    let num_threads = 8;
+    let test_duration = Duration::from_secs(20);
+    let stop = Arc::new(AtomicBool::new(false));
+    let total_ops = Arc::new(AtomicU64::new(0));
+    let max_observed_pages = Arc::new(AtomicU64::new(0));
+
+    let barrier = Arc::new(Barrier::new(num_threads + 1)); // +1 for monitor
+
+    let mut handles = Vec::new();
+    for tid in 0..num_threads {
+        let store = Arc::clone(&store);
+        let barrier = Arc::clone(&barrier);
+        let stop = Arc::clone(&stop);
+        let total_ops = Arc::clone(&total_ops);
+
+        handles.push(thread::spawn(move || {
+            barrier.wait();
+            let mut session = store.new_session();
+            let mut ops: u64 = 0;
+            let mut key: u64 = tid as u64 * 10_000_000;
+
+            while !stop.load(Ordering::Relaxed) {
+                let status = store.upsert(&mut session, &key, &(key * 3), ());
+                if !status.is_aborted() {
+                    ops += 1;
+                    total_ops.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    thread::yield_now();
+                }
+
+                key += 1;
+
+                if ops % 512 == 0 {
+                    store.maintenance();
+                    let _ = store.complete_pending(&mut session);
+                }
+            }
+
+            store.dispose_session(session);
+            ops
+        }));
+    }
+
+    // Monitor thread: sample in-memory page count and enforce the ceiling.
+    let monitor_store = Arc::clone(&store);
+    let monitor_stop = Arc::clone(&stop);
+    let monitor_max_pages = Arc::clone(&max_observed_pages);
+    let monitor = thread::spawn(move || {
+        barrier.wait();
+        let start = Instant::now();
+        let mut samples = 0u64;
+        let mut violations = 0u64;
+
+        while start.elapsed() < test_duration {
+            thread::sleep(Duration::from_millis(200));
+
+            // Measure in-memory page span: tail_page − head_page.
+            let tail_raw = monitor_store.tail_address().raw();
+            let head_raw = monitor_store.head_address().raw();
+
+            // Page addresses are encoded as (page_index << 25) | offset.
+            // We approximate page count from the raw address difference.
+            // Each page is 32 MiB = 1 << 25 bytes.
+            let page_span = if tail_raw > head_raw {
+                (tail_raw - head_raw) >> 25
+            } else {
+                0
+            };
+
+            // Track high-water mark.
+            let mut current_max = monitor_max_pages.load(Ordering::Relaxed);
+            while page_span > current_max {
+                match monitor_max_pages.compare_exchange_weak(
+                    current_max,
+                    page_span,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(v) => current_max = v,
+                }
+            }
+
+            if page_span > page_count_ceiling {
+                violations += 1;
+                eprintln!(
+                    "WARNING: in-memory pages = {page_span} exceeds ceiling {page_count_ceiling} \
+                     (sample {samples})"
+                );
+            }
+
+            samples += 1;
+        }
+
+        monitor_stop.store(true, Ordering::Release);
+        (samples, violations)
+    });
+
+    let (samples, violations) = monitor.join().expect("monitor thread panicked");
+    let high_water = max_observed_pages.load(Ordering::Relaxed);
+
+    let mut total = 0u64;
+    for (i, handle) in handles.into_iter().enumerate() {
+        let ops = handle.join().expect("worker thread panicked");
+        eprintln!("thread {i}: {ops} ops");
+        total += ops;
+    }
+
+    let total_from_counter = total_ops.load(Ordering::Relaxed);
+    eprintln!(
+        "memory bounded test: {total} ops ({total_from_counter} via counter), \
+         max_pages={high_water}, samples={samples}, violations={violations}"
+    );
+
+    // Sanity: the test actually did work.
+    assert!(total > 0, "zero total operations — test didn't run");
+
+    // Core assertion: in-memory page count stayed bounded.
+    assert!(
+        high_water <= page_count_ceiling,
+        "MEMORY LEAK: in-memory pages peaked at {high_water}, exceeding ceiling \
+         {page_count_ceiling} (buffer_size={buffer_size_pages}, max_in_memory={max_in_memory}). \
+         Eviction is not keeping up — likely the lossy deadlock bug."
+    );
+
+    // Verify no sustained violations.
+    let violation_ratio = if samples > 0 {
+        violations as f64 / samples as f64
+    } else {
+        0.0
+    };
+    assert!(
+        violation_ratio < 0.1,
+        "memory ceiling violated in {violations}/{samples} samples ({:.1}%) — \
+         eviction is failing to bound memory",
+        violation_ratio * 100.0
+    );
+}

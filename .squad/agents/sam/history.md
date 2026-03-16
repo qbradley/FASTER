@@ -89,3 +89,14 @@ Three-point fix: (A) FlushBatchResult with break-on-QueueFull, (B) poll_completi
 
 ### Backlog Sprint — API Parameterization (2026-03-11)
 Added `log_prefix` parameter to recovery API (fc0d3da9, 33fb44cf). Tier-2 test classification: optimized 4 tests, marked 12 tier-2, 0 tier-1 >1s. Quadrant sprint with Aragorn, Éowyn, Galadriel.
+
+### Lossy Mode Deadlock Fix (P0)
+**Root cause:** `InMemoryDevice::truncate_until` zeroed `guard[..offset].fill(0)` under a write lock. As the log advanced, offset grew to GB-scale, making each truncation take seconds while blocking all concurrent `write_async` (flush) operations. After ~200s, the truncation time dominated all 16 writer threads' retry budgets → 0 ops/s permanent freeze. 13GB RSS was the growing Vec never shrinking.  
+**Fix:** (A) InMemoryDevice::truncate_until → no-op (data below begin_address is never read, zeroing is cosmetic). (B) Maintenance pre-flush eviction block: use `evict_pages` + `try_advance_begin` instead of `evict_and_truncate` — no device truncation before flush. (C) Main eviction block: separated `evict_pages` + `try_advance_begin` + hash invalidation from device truncation, so the critical eviction path doesn't hold device locks during begin/hash updates. 1720 tests passing, clippy clean, loom check clean.
+
+## Learnings
+
+- **InMemoryDevice write-lock contention:** The RwLock<Vec<u8>> in InMemoryDevice serializes all write_async and truncate_until calls. Any O(N) operation under the write lock (like zeroing GB of data) creates a chokepoint that blocks ALL flush operations, starving the entire pipeline. truncate_until was O(total_logical_pages × page_size) and called multiple times per maintenance cycle.
+- **Eviction churn in lossy mode:** In lossy mode, eviction → hash invalidation → keys appear "new" → copy-to-tail → tail advances → more eviction. This creates sustained tail advance that doesn't exist in non-lossy mode (where the key space saturates in mutable region and upserts are in-place). The effective data rate is ~50 MB/s for 1M keys with 5% delete rate.
+- **Device truncation is optimization, not correctness:** `truncate_until` reclaims device space but is never needed for forward progress. Eviction (advancing head) + begin_address advancement (for correct Truncated classification) are the critical operations. Truncation can be deferred or made a no-op without affecting correctness.
+- **Separate eviction from truncation in maintenance hot path:** Pre-flush eviction should never call truncate_until — it only needs to advance head so the allocator can reclaim buffer slots. Coupling eviction with device truncation causes unnecessary I/O contention during the most time-critical part of maintenance.

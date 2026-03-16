@@ -201,7 +201,9 @@ fn worker(
         local_ops += 1;
 
         if local_ops % FLUSH_INTERVAL == 0 {
-            counters.total_ops.fetch_add(FLUSH_INTERVAL, Ordering::Relaxed);
+            counters
+                .total_ops
+                .fetch_add(FLUSH_INTERVAL, Ordering::Relaxed);
             if local_violations > 0 {
                 counters
                     .violations
@@ -356,7 +358,11 @@ fn main() {
         lossy: cfg.lossy,
     };
 
-    let store: Store = FasterKv::new(store_config, SimpleFunctions::default(), InMemoryDevice::new());
+    let store: Store = FasterKv::new(
+        store_config,
+        SimpleFunctions::default(),
+        InMemoryDevice::new(),
+    );
     let store = Arc::new(store);
     let counters = Arc::new(SharedCounters::new());
 

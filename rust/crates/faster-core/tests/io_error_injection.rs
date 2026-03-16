@@ -1239,12 +1239,15 @@ fn fault_device_truncate_delegates() {
     let (device, _) = FaultInjectingDevice::new_dormant(FaultTarget::Both, -1);
 
     device.write_sync(0, b"0123456789").unwrap();
+    // InMemoryDevice::truncate_until is a no-op (data below begin_address
+    // is never read in normal operation; zeroing caused O(N) write-lock
+    // contention). Verify truncate doesn't panic and un-truncated data survives.
     device.truncate_until(5);
 
-    // First 5 bytes should be zeroed.
     let mut buf = [0xFFu8; 10];
     device.read_sync(0, &mut buf).unwrap();
-    assert_eq!(&buf[..5], &[0, 0, 0, 0, 0]);
+    // First 5 bytes are still the original data (not zeroed).
+    assert_eq!(&buf[..5], b"01234");
     assert_eq!(&buf[5..], b"56789");
 }
 
