@@ -930,6 +930,29 @@ mod tests {
 
     type TestFunctions = SimpleFunctions<u64, u64>;
 
+    // Under simulation, SimInstant needs a clock installed so that
+    // Instant::now() returns a non-zero value (tests subtract durations
+    // from now()).  10 seconds gives plenty of headroom.
+    #[cfg(feature = "simulation")]
+    fn install_test_clock() {
+        crate::sim_time::install_sim_clock(std::sync::Arc::new(
+            std::sync::atomic::AtomicU64::new(10_000_000_000), // 10s
+        ));
+    }
+
+    #[cfg(feature = "simulation")]
+    fn remove_test_clock() {
+        crate::sim_time::remove_sim_clock();
+    }
+
+    #[cfg(not(feature = "simulation"))]
+    fn install_test_clock() {}
+
+    #[cfg(not(feature = "simulation"))]
+    fn remove_test_clock() {
+        let _ = (); // no-op
+    }
+
     fn make_pool() -> (Arc<EpochTable>, SessionPool<TestFunctions>) {
         let epoch_table = Arc::new(EpochTable::new());
         let pool = SessionPool::<TestFunctions>::new(Arc::clone(&epoch_table));
@@ -1327,7 +1350,8 @@ mod tests {
 
     #[test]
     fn expired_pending_count_detects_expired() {
-        use std::time::{Duration, Instant};
+        use crate::sync::{Duration, Instant};
+        install_test_clock();
         let (_, pool) = make_pool();
         let mut session = pool.create_session();
         let expired_ctx = PendingIoContext::<TestFunctions>::new_for_test_with_timeout(
@@ -1353,6 +1377,7 @@ mod tests {
         assert_eq!(session.expired_pending_count(), 1);
         assert_eq!(session.io_pending_count(), 2);
         session.clear_pending();
+        remove_test_clock();
     }
 
     #[test]
@@ -1417,7 +1442,8 @@ mod tests {
 
     #[test]
     fn cancel_all_expired_removes_only_expired() {
-        use std::time::{Duration, Instant};
+        use crate::sync::{Duration, Instant};
+        install_test_clock();
         let (_, pool) = make_pool();
         let mut session = pool.create_session();
         let expired1 = PendingIoContext::<TestFunctions>::new_for_test_with_timeout(
@@ -1457,6 +1483,7 @@ mod tests {
         assert_eq!(session.io_pending_count(), 1);
         assert_eq!(session.expired_pending_count(), 0);
         session.clear_pending();
+        remove_test_clock();
     }
 
     #[test]
@@ -1487,7 +1514,8 @@ mod tests {
 
     #[test]
     fn take_completed_io_does_not_remove_expired() {
-        use std::time::{Duration, Instant};
+        use crate::sync::{Duration, Instant};
+        install_test_clock();
         let (_, pool) = make_pool();
         let mut session = pool.create_session();
         let expired = PendingIoContext::<TestFunctions>::new_for_test_with_timeout(
@@ -1506,11 +1534,13 @@ mod tests {
         assert_eq!(session.io_pending_count(), 1);
         assert_eq!(session.expired_pending_count(), 1);
         session.clear_pending();
+        remove_test_clock();
     }
 
     #[test]
     fn complete_then_cancel_expired_integration() {
-        use std::time::{Duration, Instant};
+        use crate::sync::{Duration, Instant};
+        install_test_clock();
         let (_, pool) = make_pool();
         let mut session = pool.create_session();
         let completed_ctx = PendingIoContext::<TestFunctions>::new_for_test(
@@ -1549,6 +1579,7 @@ mod tests {
         assert_eq!(session.io_pending_count(), 1);
         assert_eq!(session.expired_pending_count(), 0);
         session.clear_pending();
+        remove_test_clock();
     }
 
     // ── A2: SessionStats ────────────────────────────────────────────

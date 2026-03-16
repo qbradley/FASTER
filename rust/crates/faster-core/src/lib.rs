@@ -128,6 +128,10 @@ mod instrument;
 #[cfg_attr(feature = "simulation", allow(unused))]
 pub mod sim_hooks;
 
+#[cfg(feature = "simulation")]
+#[deny(unsafe_code)]
+pub mod sim_time;
+
 #[deny(unsafe_code)]
 pub mod metrics;
 #[deny(unsafe_code)]

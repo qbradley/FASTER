@@ -1,11 +1,13 @@
 //! Simulation hooks for deterministic testing.
 //!
-//! Provides two macro families:
+//! Provides two macro families and thread-local scheduling hooks:
 //!
 //! - [`sim_yield!`] — scheduling yield-point markers (Phase 3).
 //! - [`crash_point!`] — crash-injection hooks (Phase 4).
+//! - Yield/sleep hooks — thread-local flags consumed by the DST scheduler.
 //!
-//! Without the `simulation` feature both macros compile to nothing.
+//! Without the `simulation` feature both macros compile to nothing and the
+//! hook functions are not available.
 
 // ── sim_yield! ──────────────────────────────────────────────────────
 
@@ -101,3 +103,118 @@ macro_rules! crash_point {
 
 #[allow(unused_imports)]
 pub(crate) use crash_point;
+
+// ── Yield / Sleep hooks ─────────────────────────────────────────────
+//
+// Thread-local flags that record yield/sleep requests from the sync
+// abstraction layer.  The DST scheduler reads and clears them to decide
+// how to advance the simulated thread.
+
+#[cfg(feature = "simulation")]
+use std::time::Duration;
+
+#[cfg(feature = "simulation")]
+std::thread_local! {
+    static YIELD_REQUESTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static SLEEP_REQUESTED: std::cell::RefCell<Option<Duration>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Record that a yield was executed at a scheduling point.
+#[cfg(feature = "simulation")]
+#[inline]
+pub fn on_yield() {
+    YIELD_REQUESTED.with(|cell| cell.set(true));
+}
+
+/// Record that a sleep was executed at a scheduling point.
+#[cfg(feature = "simulation")]
+#[inline]
+pub fn on_sleep(duration: Duration) {
+    SLEEP_REQUESTED.with(|cell| {
+        *cell.borrow_mut() = Some(duration);
+    });
+}
+
+/// Check and clear the yield-request flag.  Returns `true` if a yield
+/// was recorded since the last call.
+#[cfg(feature = "simulation")]
+pub fn take_yield_request() -> bool {
+    YIELD_REQUESTED.with(|cell| cell.replace(false))
+}
+
+/// Check and clear the sleep-request.  Returns `Some(duration)` if a
+/// sleep was recorded since the last call.
+#[cfg(feature = "simulation")]
+pub fn take_sleep_request() -> Option<Duration> {
+    SLEEP_REQUESTED.with(|cell| cell.borrow_mut().take())
+}
+
+/// Public API: request that the current thread yield at the next
+/// scheduling point (e.g. for buggify injection).
+#[cfg(feature = "simulation")]
+pub fn request_yield() {
+    on_yield();
+}
+
+/// Public API: request that the current thread sleep for `duration`
+/// (e.g. for buggify injection).
+#[cfg(feature = "simulation")]
+pub fn request_sleep(duration: Duration) {
+    on_sleep(duration);
+}
+
+// ── Yield / Sleep hook tests ────────────────────────────────────────
+
+#[cfg(all(test, feature = "simulation"))]
+mod hook_tests {
+    use super::*;
+
+    #[test]
+    fn yield_round_trip() {
+        // Clear any prior state
+        let _ = take_yield_request();
+
+        assert!(!take_yield_request());
+        on_yield();
+        assert!(take_yield_request());
+        // Second take should be false (cleared)
+        assert!(!take_yield_request());
+    }
+
+    #[test]
+    fn sleep_round_trip() {
+        // Clear any prior state
+        let _ = take_sleep_request();
+
+        assert!(take_sleep_request().is_none());
+        on_sleep(Duration::from_millis(100));
+        assert_eq!(take_sleep_request(), Some(Duration::from_millis(100)));
+        // Second take should be None (cleared)
+        assert!(take_sleep_request().is_none());
+    }
+
+    #[test]
+    fn request_yield_api() {
+        let _ = take_yield_request();
+
+        request_yield();
+        assert!(take_yield_request());
+    }
+
+    #[test]
+    fn request_sleep_api() {
+        let _ = take_sleep_request();
+
+        request_sleep(Duration::from_secs(1));
+        assert_eq!(take_sleep_request(), Some(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn sleep_overwrites_previous() {
+        let _ = take_sleep_request();
+
+        on_sleep(Duration::from_millis(10));
+        on_sleep(Duration::from_millis(20));
+        assert_eq!(take_sleep_request(), Some(Duration::from_millis(20)));
+    }
+}

@@ -588,6 +588,29 @@ mod tests {
 
     type TestFunctions = SimpleFunctions<u64, u64>;
 
+    // Under simulation, SimInstant needs a clock installed so that
+    // Instant::now() returns a non-zero value (tests subtract durations
+    // from now()).  10 seconds gives plenty of headroom.
+    #[cfg(feature = "simulation")]
+    fn install_test_clock() {
+        crate::sim_time::install_sim_clock(std::sync::Arc::new(
+            std::sync::atomic::AtomicU64::new(10_000_000_000), // 10s
+        ));
+    }
+
+    #[cfg(feature = "simulation")]
+    fn remove_test_clock() {
+        crate::sim_time::remove_sim_clock();
+    }
+
+    #[cfg(not(feature = "simulation"))]
+    fn install_test_clock() {}
+
+    #[cfg(not(feature = "simulation"))]
+    fn remove_test_clock() {
+        let _ = (); // no-op
+    }
+
     /// Helper: create a `PendingOperation` for testing.
     fn make_pending_op(page: u32, offset: u32) -> PendingOperation<TestFunctions> {
         PendingOperation {
@@ -909,6 +932,7 @@ mod tests {
 
     #[test]
     fn context_expired_with_zero_timeout() {
+        install_test_clock();
         let past = Instant::now() - Duration::from_millis(1);
         let ctx = PendingIoContext::<TestFunctions>::new_for_test_with_timeout(
             make_pending_op(0, 0),
@@ -921,10 +945,12 @@ mod tests {
             past,
         );
         assert!(ctx.is_expired());
+        remove_test_clock();
     }
 
     #[test]
     fn context_expired_after_timeout_elapses() {
+        install_test_clock();
         let past = Instant::now() - Duration::from_secs(2);
         let ctx = PendingIoContext::<TestFunctions>::new_for_test_with_timeout(
             make_pending_op(0, 0),
@@ -938,6 +964,7 @@ mod tests {
         );
         assert!(ctx.is_expired());
         assert!(ctx.elapsed() >= Duration::from_secs(2));
+        remove_test_clock();
     }
 
     #[test]

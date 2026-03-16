@@ -63,8 +63,25 @@ pub(crate) use std::sync::atomic::{
 };
 #[cfg(all(not(loom), feature = "simulation"))]
 pub(crate) use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
+
+// Simulation tier thread module: wraps yield_now / sleep to record
+// scheduling events in sim_hooks before delegating to the real OS.
 #[cfg(all(not(loom), feature = "simulation"))]
-pub(crate) use std::thread;
+pub(crate) mod thread {
+    pub use std::thread::*;
+
+    /// Yield the current thread, recording the event for the DST scheduler.
+    pub fn yield_now() {
+        crate::sim_hooks::on_yield();
+        std::thread::yield_now();
+    }
+
+    /// Sleep for `duration`, recording the event for the DST scheduler.
+    pub fn sleep(duration: std::time::Duration) {
+        crate::sim_hooks::on_sleep(duration);
+        std::thread::sleep(duration);
+    }
+}
 
 // ============================================================
 // Tier 3: std — production builds
@@ -80,13 +97,15 @@ pub(crate) use std::thread;
 
 // ============================================================
 // Time abstractions (not affected by loom)
-// Phase 2 will swap simulation branch to SimClock
+// Simulation branch uses SimInstant for deterministic virtual time
 // ============================================================
 #[cfg(not(feature = "simulation"))]
 pub(crate) use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(feature = "simulation")]
-pub(crate) use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+pub(crate) use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(feature = "simulation")]
+pub(crate) use crate::sim_time::SimInstant as Instant;
 
 // ============================================================
 // Channel abstractions (not affected by loom for our purposes)
