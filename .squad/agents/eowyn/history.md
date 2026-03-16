@@ -165,3 +165,15 @@
 **Learned:** Even when loom can't model the full scale-dependent deadlock, it can model the *algorithmic fix pattern* (break vs continue, bounded vs unbounded). This catches regressions if someone changes the control flow back.
 
 ---
+
+### DST v2.0 Technical Design (2026-03-16)
+Produced eowyn-dst-v2-technical-design.md (60KB, 1753 lines) — detailed core API design and integration points for deterministic simulation framework:
+
+1. **Core API design:** SimClock (wall clock + virtual cost), DstScheduler (deterministic task scheduling, yield semantics), SimDevice (async I/O simulation with queue depth), Scenario + Seed framework (deterministic test parameterization), and Integration points (sync.rs interceptors, workload instrumentation, campaign execution).
+
+2. **Complex development cycle:** Implementation failed twice with 503 GOAWAY errors (API rate limiting or server-side issues), succeeded on 3rd attempt with reduced scope and incremental validation. Final design balances comprehensiveness with practical implementation constraints.
+
+3. **Related work from same session:** Produced loom/DST gap analysis documenting coverage deltas between loom primitives (memory ordering only) and DST requirements (timing + scale + causality). Also created 4 new loom tests extending concurrency coverage for seal+revify, two-phase insert, and EPVS state machine transitions.
+
+**Branch:** `eowyn/dst-v2-technical-design`, **Artifacts:** eowyn-dst-v2-technical-design.md, loom-dst-gap-analysis.md, 4 new tests in loom_tests.rs
+

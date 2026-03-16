@@ -66,3 +66,36 @@ Analyzed why two serious deadlocks (P1 flush-pipeline circular dependency, P0 lo
 6. **Deterministic simulation is the only tool that catches both bug categories.** Loom covers memory ordering, stress tests cover scale, but only a FoundationDB-style simulator covers progress + scale + timing together. Backlogged as R7.
 
 7. **Immediate actions:** (R1) lossy-mode regression test, (R2) throughput-cliff detection in CI, (R3) "no O(n) under lock" code review rule, (R4) SlowDevice stress test in nightly. See `.squad/decisions/inbox/gandalf-deadlock-postmortem.md`.
+
+### DST v2.0 Architecture (2026-03-16)
+Authored the DST v2.0 architecture document (`gandalf-dst-v2-architecture.md`) — a FoundationDB-inspired deterministic simulation framework for catching time/scale-dependent concurrency bugs. Key decisions:
+
+1. **Extend `faster-dst`, don't create a new crate.** Existing infrastructure (SimClock, DeterministicScheduler, SimTask, SeedCampaign, 22 crash scenarios) is reused directly. Concurrency simulation is a new scenario family, not a new framework.
+
+2. **Run real FasterKv code, simulate only I/O and time.** The Device trait is the abstraction boundary — SimDeviceV2 with async completion queue, queue depth limits, and latency injection. Hash index, epoch system, hybrid log, and flush/evict pipeline all run as real production code.
+
+3. **Two-phase thread model.** Phase 1 (4-5 weeks): real OS threads + simulated I/O timing. Not fully deterministic, but catches pipeline progress failures (Bug 1 class). Phase 2 (4-6 weeks): green threads via DeterministicScheduler for full determinism. Same seed = same execution = same outcome.
+
+4. **`buggify!` macro follows `crash_point!` pattern.** Zero-cost without `simulation` feature. Seeded PRNG controls injection decisions for reproducibility.
+
+5. **Scale simulation without real scale.** Virtual cost annotations (`annotate_cost`) model O(n) operations at small test data sizes. Catches Bug 2 pattern without 9GB of real memory.
+
+6. **Key existing infrastructure reused:** SimulatedClock (clock.rs), DeterministicScheduler (scheduler.rs), SimTask/TaskAction/BlockReason (task.rs), SeedCampaign (campaign.rs), SimulatedStorage (device.rs), SimulationTrace (trace.rs), Workload trait (workload.rs), Invariant trait (invariant.rs), sync.rs cfg cascade, crash_point! macro pattern.
+
+7. **CI integration:** PR gate <10 min (30 seeds), nightly <60 min (200 seeds), weekly exploration 10,000 seeds. Failing seed → auto-filed issue → developer reproduces in <30s.
+
+8. **Identified risks:** FasterKv internal thread spawns in grow/checkpoint state machines (must intercept in Phase 2), `!Send` session types across yield points, cross-platform seed reproducibility.
+
+### DST v2.0 Architecture (2026-03-16)
+Produced gandalf-dst-v2-architecture.md (49KB) — FoundationDB-inspired deterministic simulation framework extending faster-dst for time/scale-dependent concurrency bugs:
+
+1. **3-phase architecture:** Phase 1 (SimDeviceV2 + controlled multi-thread, 4-5 weeks) catches pipeline progress failures; Phase 2 (green threads/full determinism via DeterministicScheduler, 4-6 weeks) guarantees reproducibility; Phase 3 (buggify + fault campaigns, 2-3 weeks) exhaustive coverage.
+
+2. **Device trait as simulation boundary.** SimDeviceV2 models async I/O with queue depth, latency injection, and completion callbacks. Hash index, epoch system, hybrid log, and flush/evict pipeline run as production code — only I/O and time are simulated (FoundationDB Future/Promise pattern).
+
+3. **Release gate tiers designed:** PR gate <10 min (30 seeds), nightly <60 min (200 seeds), weekly exploration 10,000 seeds. Failing seed → auto-filed issue → developer reproduces in <30s.
+
+4. **Reuses existing infrastructure:** SimulatedClock, DeterministicScheduler, SimTask/TaskAction/BlockReason, SeedCampaign, SimulatedStorage, SimulationTrace, Workload/Invariant traits, sync.rs cfg cascade, crash_point! macro. Also produced deadlock post-mortem (gandalf-deadlock-postmortem.md) identifying core infrastructure gaps.
+
+Also investigated multi-writer deadlock root causes in earlier session (see gandalf-deadlock-postmortem.md).
+
