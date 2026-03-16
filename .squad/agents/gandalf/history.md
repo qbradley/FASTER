@@ -99,3 +99,20 @@ Produced gandalf-dst-v2-architecture.md (49KB) — FoundationDB-inspired determi
 
 Also investigated multi-writer deadlock root causes in earlier session (see gandalf-deadlock-postmortem.md).
 
+### DST v2.0 Phase 1 Implementation Plan (2026-03-16 → 2026-03-17)
+Produced `gandalf-dst-v2-implementation-plan.md` (597 lines) — detailed 7-phase breakdown for Phase 1 (SimDeviceV2 + controlled multi-thread scenarios). Critical path: 18 working days. Committed to git (branch: rust). Key decisions:
+
+1. **7 phases, critical path ~18 working days.** P1 (sim_time/sim_hooks in faster-core) → P2 (SimDeviceV2) → P5 (DstRunner integration) → P6 (Bug 1/Bug 2 scenarios) → P7 (CI). P3 (cost model) and P4 (config/assertions) run in parallel.
+
+2. **Agent assignment: Eowyn is primary implementer (5/7 phases), Sam owns faster-core changes (P1, P7).** Eowyn bottleneck mitigated by batching P2/P3/P4. Aragorn supports P6 test authoring. Legolas not needed until Phase 2.
+
+3. **Integration milestone M3 is the risk gate:** First time real FasterKv runs against SimDeviceV2 (async completions vs CompletedSync). If flush pipeline assumptions break, debug before adding multi-writer complexity.
+
+4. **Key risk: FasterKv flush pipeline has never been tested with in-process `Submitted` returns.** SimDeviceV2 defers callbacks unlike InMemoryDevice. Fallback: `sync_mode: bool` config for debugging.
+
+5. **Phase 1 release gate:** SimDeviceV2 operational, virtual time wired, 4+ concurrency scenarios with canary seeds, deterministic I/O timing, no test regressions, CI integrated with < 10 min PR gate.
+
+6. **Existing infrastructure inventory:** faster-dst has 4,086 lines across 17 modules + 1,215 lines in 22 crash-recovery scenarios. SimulatedClock already has `advance()`, `set()`, `now()` — needs only `charge()` and `now_nanos()` extensions. sync.rs 3-tier cascade (loom > simulation > std) already in place, simulation tier currently re-exports std — ready for swap.
+
+7. **Open decisions resolved:** Completion scheduler as separate thread (not piggybacked on maintenance). SimDeviceV2 reads return CompletedSync initially (async reads deferred to Phase 2). StatsCollector records every op (ring buffer, bounded memory). Regression seeds live in `const` arrays in `seeds.rs`.
+
