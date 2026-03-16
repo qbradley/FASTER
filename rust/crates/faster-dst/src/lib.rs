@@ -100,6 +100,8 @@
 pub mod campaign;
 pub mod channel;
 pub mod clock;
+pub mod concurrency;
+pub mod cost_model;
 pub mod crash;
 pub mod device;
 pub mod fault;
