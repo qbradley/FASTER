@@ -113,3 +113,41 @@ Produced sam-dst-internals-inventory.md (38KB) — comprehensive audit of Faster
 
 4. **Defined minimum simulator state machine:** 11 page states, 7 device completion modes, 4 task scheduling levels, 3 eviction priority classes. Sufficient to reproduce both known deadlocks at 1M keys in <10 seconds with small buffers.
 
+### DST v2.0 Phase 1 — SimClock Extensions + sim_hooks (2026-03-16)
+Implemented SimInstant and yield/sleep hooks behind `#[cfg(feature = "simulation")]`:
+
+1. **sim_time.rs (NEW):** `SimInstant` — drop-in replacement for `std::time::Instant`. Backed by `Arc<AtomicU64>` (nanoseconds), thread-local install/remove. Full API: `now()`, `elapsed()`, `Add<Duration>`, `Sub<Duration>`, `Sub<SimInstant>`, `PartialOrd`/`Ord`, `checked_add/sub`, `Debug`. 11 unit tests including cross-thread sharing.
+
+2. **sim_hooks.rs (EXTENDED):** Added thread-local yield/sleep scheduling hooks: `on_yield()`, `on_sleep(d)`, `take_yield_request()`, `take_sleep_request()`, `request_yield()`, `request_sleep(d)`. 5 unit tests. Complements existing `sim_yield!`/`crash_point!` macros.
+
+3. **sync.rs (MODIFIED):** Simulation tier now swaps `Instant → SimInstant` via type alias. Custom `thread` module wraps `yield_now()` and `sleep()` to record scheduling events in sim_hooks before delegating to OS. Loom tier untouched. Std tier untouched.
+
+4. **Test compatibility:** 4 tests in `pending_io.rs` and 4 in `session.rs` that construct past instants via `Instant::now() - Duration` needed sim clock installation under simulation (SimInstant starts at 0, subtraction would underflow). Added cfg-gated `install_test_clock()`/`remove_test_clock()` helpers — no-ops under std.
+
+**Verified:** std 1722 tests, simulation 1738 tests (16 new), loom 25 tests, clippy clean on both std and simulation.
+**Branch:** `rust`, **Commit:** `717d9903`
+
+
+---
+
+### 2026-03-16: DST v2.0 Phase 1 — SimInstant + sim_hooks (P1)
+
+**What:** Implemented SimClock foundation layer for DST v2.0 Phase 1 — drop-in `SimInstant` replacement for `std::time::Instant` and scheduling hooks.
+
+**Files:**
+- `rust/crates/faster-core/src/sync.rs` — aliased Instant → SimInstant under simulation feature
+- `rust/crates/faster-core/src/sim_time.rs` — new SimInstant with thread-local clock backing
+- `rust/crates/faster-core/src/sim_hooks.rs` — extended with yield/sleep scheduling hooks
+
+**Tests:** 1722 pass (16 new). Loom 25 tests clean. Simulation 1738 tests pass.
+
+**Key Pattern:** Tests that compute past instants via `Instant::now() - Duration` must install a test clock. Pattern documented in decisions.md.
+
+**Cross-Agent Impact:**
+- Provides foundational SimClock that Eowyn's SimDeviceV2 + DstRunner depend on (P2–P5)
+- DST internals inventory (prior session) identified 10 subsystems requiring simulation — P1 enables hooking at sync layer
+
+**Commit:** `717d9903`
+
+**Branch:** `rust`
+
