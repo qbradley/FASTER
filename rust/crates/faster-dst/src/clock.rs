@@ -55,6 +55,24 @@ impl SimulatedClock {
         self.nanos.store(time.as_nanos() as u64, Ordering::Relaxed);
     }
 
+    /// Current monotonic time as raw nanoseconds.
+    ///
+    /// Avoids [`Duration`] construction in hot paths (e.g. I/O latency
+    /// calculations inside [`SimDeviceV2`](crate::sim_device_v2::SimDeviceV2)).
+    pub fn now_nanos(&self) -> u64 {
+        self.nanos.load(Ordering::Relaxed)
+    }
+
+    /// Charge virtual time for an O(n) operation.
+    ///
+    /// Advances the clock by `cost_ns` nanoseconds, making the operation
+    /// "take time" in simulation without performing real work.
+    pub fn charge(&self, cost_ns: u64) {
+        if cost_ns > 0 {
+            self.nanos.fetch_add(cost_ns, Ordering::Relaxed);
+        }
+    }
+
     /// Simulated monotonic time (alias for [`now`](Self::now)).
     ///
     /// In production code you would use `std::time::Instant::now()`; in DST

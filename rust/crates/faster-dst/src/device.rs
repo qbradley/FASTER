@@ -27,7 +27,7 @@ use crate::trace::IoOp;
 /// store drops (simulated crashes).
 #[derive(Debug)]
 pub struct SimulatedStorage {
-    data: RwLock<Vec<u8>>,
+    pub(crate) data: RwLock<Vec<u8>>,
 }
 
 impl SimulatedStorage {
@@ -58,7 +58,7 @@ impl SimulatedStorage {
         self.len() == 0
     }
 
-    fn ensure_capacity(buf: &mut Vec<u8>, end: usize) {
+    pub(crate) fn ensure_capacity(buf: &mut Vec<u8>, end: usize) {
         if end > buf.len() {
             buf.resize(end, 0);
         }

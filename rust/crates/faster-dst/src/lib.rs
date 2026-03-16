@@ -110,6 +110,7 @@ pub mod runtime;
 pub mod scenario;
 pub mod scenarios;
 pub mod scheduler;
+pub mod sim_device_v2;
 pub mod sim_store;
 pub mod task;
 pub mod trace;
@@ -123,6 +124,7 @@ pub use crash::{
     CrashTrigger,
 };
 pub use device::{SimulatedDevice, SimulatedStorage};
+pub use sim_device_v2::{SimDeviceV2, SimIoConfig};
 pub use fault::{CheckpointPhase, CompactionPhase, CrashPoint, FaultConfig, RecoveryPhase};
 pub use harness::SimulationHarness;
 pub use invariant::{

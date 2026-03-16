@@ -431,6 +431,7 @@ dependencies = [
  "crc32fast",
  "faster-core",
  "rand",
+ "rand_chacha",
  "tempfile",
 ]
 
