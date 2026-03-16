@@ -162,3 +162,20 @@ cd rust && cargo bench --bench ycsb -p faster-core -- --nocapture
 **Verdict:** APPROVE WITH COMMENTS  
 **Findings:** Fix A/B/C correct. Deadlock root cause: timing gap between I/O submission and callback landing. `SyncFileDevice` yields in `poll_completions` (good). `allocate_at_tail` retry loop bounded at 32 (good). `deadlock_tests.rs` strong regression coverage but `#[ignore]`-ed.  
 **Action:** Validated fix by running ignored tests (all passed).
+
+---
+
+### Loom CI Compilation Fixes (2026-07-22)
+**Impact:** Fixed all 7 loom compilation errors across 7 files.  
+**Fixes:**
+- `sync.rs`: Added `sleep` shim for loom's thread module (yields instead of sleeping — loom doesn't model time)
+- `epoch/table.rs`: Split `register()` into cfg-gated method (non-loom) + associated fn (loom) with shared `register_impl`. Loom's Arc doesn't implement `Receiver`, so `self: &Arc<Self>` is unavailable.
+- `allocator.rs`, `epoch/drain.rs`: Replaced `AtomicPtr::get_mut()` with `load(Relaxed)` — loom's AtomicPtr lacks `get_mut`; both sites have `&mut self` guaranteeing exclusive access.
+- `device.rs`, `store/pending_io.rs`: Wrapped static atomics in `LazyLock` under `#[cfg(loom)]` — loom atomics aren't const-constructible.
+- Updated 3 production call sites to UFCS `EpochTable::register(...)` which works under both cfgs.
+
+**Learnings:**
+- Loom's `Arc` doesn't implement `core::ops::Receiver` → `self: &Arc<Self>` breaks under loom. Use cfg-gated associated function pattern.
+- Loom's `AtomicPtr` has no `get_mut()`. Use `load(Relaxed)` under exclusive access as the portable alternative.
+- Loom atomics aren't const — any `static` initialization must use `LazyLock` or equivalent under loom.
+- Loom's thread module has no `sleep` — shim it with `yield_now()` since loom doesn't model wall-clock time.

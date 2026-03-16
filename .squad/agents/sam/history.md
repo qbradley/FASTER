@@ -56,6 +56,8 @@
 - **Buffer headroom:** Async flush needs 4× target pages. Tail can't lap unflushed pages. EvictionPolicy::default() has max_in_memory_pages=256 — explicitly set lower for disk workloads.
 - **Fuzz target isolation:** Fuzz targets in `rust/fuzz/` are standalone workspace. Not in main test matrix. Manual updates needed when core API changes.
 - **Multi-agent hazards:** Sub-agents can destructively revert files during conflicts. Stage+commit immediately. Use `git worktree` for isolation.
+- **CI thread starvation:** On constrained CI runners, threads spawned alongside many active worker threads may never get scheduled before a stop flag is set. Fix: use a `started` AtomicBool with Acquire/Release so the main thread spins until the target thread has run at least once. Never rely on scheduling fairness for assertions.
+- **Statistical CAS assertions:** On macOS (and single-core CI), thread scheduling after a Barrier is deterministic enough that one CAS side wins every trial. Hard-assert only safety invariants (mutual exclusion); downgrade distribution checks to soft warnings. Add asymmetric yield-based jitter to improve contention diversity.
 
 ## Implementation History
 

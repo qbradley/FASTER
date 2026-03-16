@@ -69,3 +69,11 @@ Built test infrastructure with QueueFullDevice, QueueFullThenSucceedDevice, Slow
 - `fuzz-target-authoring` — Fuzz target patterns (existing)
 
 **Total knowledge formalized:** 24.1 KB of reusable testing patterns
+
+## Learnings
+
+### Windows CI fsync_dir Fix (2025)
+- **Root cause:** `fsync_dir()` in `metadata_store.rs` calls `fs::File::open()` on a directory, which requires `FILE_FLAG_BACKUP_SEMANTICS` on Windows — not set by Rust's stdlib. Produces `PermissionDenied` (OS error 5).
+- **Blast radius:** All 64 failing tests trace to one 3-line function. Every test calling `write_checkpoint_metadata()`, `delete_checkpoint()`, or `atomic_write()` was affected — spanning `checkpoint_recovery_tests.rs`, `recovery_edge_cases.rs`, `recovery/mod.rs`, `recovery/log_recovery.rs`, `metadata_store.rs` unit tests, and `orchestrator.rs` unit tests.
+- **Fix:** `cfg(unix)` guard on directory fsync; no-op on non-Unix. NTFS journals metadata ops so rename-based atomic writes are already durable. Same approach as RocksDB/SQLite.
+- **Key insight:** A single platform-incompatible helper function caused 64 test failures — always check stdlib filesystem operations for Windows compatibility when they touch directories or file handles.
