@@ -2172,3 +2172,227 @@ fn e2_allocator_retry_succeeds_after_maintenance() {
         }
     });
 }
+
+// ============================================================================
+// Test F1: Free-list Treiber stack ABA resistance (P1-C)
+// ============================================================================
+
+/// Treiber stack modelled on the allocator's free list (`allocator.rs:838-900`).
+///
+/// The stack is pre-populated before threads start, simulating the allocator's
+/// free list state during concurrent alloc (pop) and free (push) operations.
+/// The ABA counter occupies the upper 16 bits, matching the production code.
+mod f1_free_list {
+    use loom::sync::atomic::{AtomicU64, Ordering};
+
+    const TAG_SHIFT: u32 = 48;
+    const ADDR_MASK: u64 = (1u64 << TAG_SHIFT) - 1;
+    const TAG_INCREMENT: u64 = 1u64 << TAG_SHIFT;
+
+    pub struct FreeList {
+        head: AtomicU64,
+        /// Simulated page memory: next[i] holds the next-pointer for node i.
+        /// Index 0 is reserved (0 = empty sentinel).
+        next: [AtomicU64; 5],
+    }
+
+    impl FreeList {
+        /// Create an empty free list.
+        pub fn new() -> Self {
+            Self {
+                head: AtomicU64::new(0),
+                next: [
+                    AtomicU64::new(0),
+                    AtomicU64::new(0),
+                    AtomicU64::new(0),
+                    AtomicU64::new(0),
+                    AtomicU64::new(0),
+                ],
+            }
+        }
+
+        /// Push (free) a node back onto the list — mirrors `push_free_list`.
+        pub fn push(&self, addr: u64) {
+            debug_assert!(addr != 0 && addr <= 4);
+            loop {
+                let old_head = self.head.load(Ordering::Acquire);
+                let old_addr = old_head & ADDR_MASK;
+                let old_tag = old_head & !ADDR_MASK;
+
+                self.next[addr as usize].store(old_addr, Ordering::Relaxed);
+
+                let new_head = addr | old_tag.wrapping_add(TAG_INCREMENT);
+                match self.head.compare_exchange_weak(
+                    old_head,
+                    new_head,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => return,
+                    Err(_) => continue,
+                }
+            }
+        }
+
+        /// Pop (alloc) a node from the list — mirrors `pop_free_list`.
+        pub fn pop(&self) -> Option<u64> {
+            loop {
+                let old_head = self.head.load(Ordering::Acquire);
+                let head_addr = old_head & ADDR_MASK;
+
+                if head_addr == 0 {
+                    return None;
+                }
+
+                let next_val = self.next[head_addr as usize].load(Ordering::Relaxed);
+                let old_tag = old_head & !ADDR_MASK;
+                let new_head = (next_val & ADDR_MASK) | old_tag.wrapping_add(TAG_INCREMENT);
+
+                match self.head.compare_exchange_weak(
+                    old_head,
+                    new_head,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => return Some(head_addr),
+                    Err(_) => continue,
+                }
+            }
+        }
+
+        /// Drain all remaining nodes (single-threaded, for post-join verification).
+        pub fn drain(&self) -> Vec<u64> {
+            let mut items = Vec::new();
+            while let Some(addr) = self.pop() {
+                items.push(addr);
+            }
+            items
+        }
+    }
+}
+
+/// Concurrent pop (alloc) from a pre-populated free list.
+///
+/// Two threads race to pop from a list containing [1, 2]. Each must get a
+/// distinct item — a double-allocation means the ABA counter or CAS failed.
+#[test]
+fn f1_free_list_concurrent_alloc() {
+    loom::model(|| {
+        let fl = Arc::new(f1_free_list::FreeList::new());
+        // Pre-populate: push 1, then 2 (head → 2 → 1).
+        fl.push(1);
+        fl.push(2);
+
+        let fl1 = Arc::clone(&fl);
+        let t1 = thread::spawn(move || fl1.pop());
+
+        let fl2 = Arc::clone(&fl);
+        let t2 = thread::spawn(move || fl2.pop());
+
+        let r1 = t1.join().unwrap().expect("thread 1 must pop a node");
+        let r2 = t2.join().unwrap().expect("thread 2 must pop a node");
+
+        // No double-allocation: each thread got a different node.
+        assert_ne!(r1, r2, "double allocation: both threads got node {r1}");
+        // No lost nodes: both original items were returned.
+        assert!(
+            (r1 == 1 && r2 == 2) || (r1 == 2 && r2 == 1),
+            "unexpected values: {r1}, {r2}"
+        );
+        // List must now be empty.
+        assert!(fl.pop().is_none(), "list should be empty after 2 pops");
+    });
+}
+
+/// Interleaved alloc/free cycle — the classic ABA trigger.
+///
+/// Two threads each pop a node then push it back, simulating alloc → free.
+/// The ABA hazard: thread A reads head, thread B pops + pushes (same address
+/// reappears), thread A's stale CAS could succeed without the tag counter.
+/// After both threads finish, exactly 2 nodes must be recoverable.
+#[test]
+fn f1_free_list_alloc_free_no_lost_nodes() {
+    loom::model(|| {
+        let fl = Arc::new(f1_free_list::FreeList::new());
+        fl.push(1);
+        fl.push(2);
+
+        // Thread A: pop (alloc) then push back (free).
+        let fl1 = Arc::clone(&fl);
+        let t1 = thread::spawn(move || {
+            let v = fl1.pop().expect("t1 pop must succeed");
+            fl1.push(v);
+        });
+
+        // Thread B: pop (alloc) then push back (free).
+        let fl2 = Arc::clone(&fl);
+        let t2 = thread::spawn(move || {
+            let v = fl2.pop().expect("t2 pop must succeed");
+            fl2.push(v);
+        });
+
+        t1.join().unwrap();
+        t2.join().unwrap();
+
+        // All nodes must be recoverable — no lost nodes.
+        let mut remaining = fl.drain();
+        remaining.sort();
+        assert_eq!(
+            remaining,
+            vec![1, 2],
+            "lost or corrupted nodes: expected [1, 2], got {remaining:?}"
+        );
+    });
+}
+
+/// Mixed alloc/free with a third thread doing pure allocation.
+///
+/// Pre-populate [1, 2, 3]. Thread A: pop+push (alloc-free cycle).
+/// Thread B: pop (pure alloc — keeps the node). After join, exactly
+/// 2 nodes remain on the list and thread B's node is distinct.
+#[test]
+fn f1_free_list_mixed_alloc_free() {
+    loom::model(|| {
+        let fl = Arc::new(f1_free_list::FreeList::new());
+        fl.push(1);
+        fl.push(2);
+        fl.push(3);
+
+        // Thread A: alloc-free cycle (pop then push back).
+        let fl1 = Arc::clone(&fl);
+        let t1 = thread::spawn(move || {
+            let v = fl1.pop().expect("t1 pop must succeed");
+            fl1.push(v);
+        });
+
+        // Thread B: pure allocation (pop, keep the node).
+        let fl2 = Arc::clone(&fl);
+        let t2 = thread::spawn(move || fl2.pop().expect("t2 pop must succeed"));
+
+        t1.join().unwrap();
+        let allocated = t2.join().unwrap();
+
+        // The allocated node must be one of {1, 2, 3}.
+        assert!(
+            (1..=3).contains(&allocated),
+            "unexpected allocated value: {allocated}"
+        );
+
+        // Remaining list must contain exactly the other 2 nodes.
+        let mut remaining = fl.drain();
+        remaining.sort();
+        assert_eq!(remaining.len(), 2, "expected 2 remaining, got {remaining:?}");
+
+        // No double-allocation: allocated node must not appear in remaining.
+        assert!(
+            !remaining.contains(&allocated),
+            "double allocation: node {allocated} both allocated and on free list"
+        );
+
+        // All 3 original nodes are accounted for.
+        let mut all = remaining.clone();
+        all.push(allocated);
+        all.sort();
+        assert_eq!(all, vec![1, 2, 3], "lost nodes: got {all:?}");
+    });
+}
