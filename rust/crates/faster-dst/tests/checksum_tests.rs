@@ -110,6 +110,7 @@ fn torn_write_produces_crc_mismatch() {
         .with_sector_size(SECTOR);
 
     let (pt, flusher) = prepare_page(1000);
+    let pt = Arc::new(pt);
     let page = faster_core::address::Page(0);
 
     // Flush with guaranteed partial write. The page is still in Flushing

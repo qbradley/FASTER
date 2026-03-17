@@ -401,11 +401,9 @@ fn main() {
     let violations = counters.violations.load(Ordering::Relaxed);
     let oracle_checks = counters.oracle_checks.load(Ordering::Relaxed);
 
-    let avg_ops = if cfg.duration_secs > 0 {
-        total_ops / cfg.duration_secs
-    } else {
-        total_ops
-    };
+    let avg_ops = total_ops
+        .checked_div(cfg.duration_secs)
+        .unwrap_or(total_ops);
 
     let peak_ops = snapshots
         .iter()

@@ -838,6 +838,8 @@ mod tests {
     fn typed_io_context_from_raw_round_trip() {
         let ctx = TypedIoContext::new(42u64);
         let raw = ctx.as_raw();
+        // SAFETY: `raw` was obtained from `ctx.as_raw()` on the line above and
+        // has not been consumed yet, so it points to a valid IoContextEnvelope.
         let boxed = unsafe { TypedIoContext::<u64>::from_raw(raw) };
         assert_eq!(*boxed, 42);
     }
@@ -863,6 +865,8 @@ mod tests {
         };
         let ptr = Box::into_raw(Box::new(envelope)) as *mut u8;
         // The sentinel is CONSUMED — from_raw must panic.
+        // SAFETY: `ptr` points to a valid IoContextEnvelope allocated via
+        // `Box::into_raw` above; the consumed sentinel triggers the expected panic.
         let _ = unsafe { TypedIoContext::<u64>::from_raw(ptr) };
     }
 
@@ -891,6 +895,8 @@ mod tests {
     fn typed_io_context_from_raw_with_drop_type() {
         let ctx = TypedIoContext::new(vec![1u32, 2, 3]);
         let raw = ctx.as_raw();
+        // SAFETY: `raw` was obtained from `ctx.as_raw()` on the line above and
+        // has not been consumed yet, so it points to a valid IoContextEnvelope.
         let boxed = unsafe { TypedIoContext::<Vec<u32>>::from_raw(raw) };
         assert_eq!(*boxed, vec![1, 2, 3]);
         // Vec drops correctly — no leak or double-free.
