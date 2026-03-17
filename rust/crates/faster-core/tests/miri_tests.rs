@@ -1625,6 +1625,140 @@ mod miri_compaction_scanner {
         assert_eq!(plan.tombstone_count, 1);
         assert_eq!(plan.tombstone_records.len(), 1);
     }
+
+    /// Exercises the version chain walk path in `is_current_version`.
+    ///
+    /// Writes two records for the same key (V1 then V2) with V2's
+    /// `previous_address` pointing back at V1. The hash index head points
+    /// at V2. On scan V2 should be live and V1 dead — the scanner must
+    /// walk the chain through `read_header_and_match_key_varlen` which
+    /// constructs a `RecordAccessor` (unsafe) on each hop.
+    #[test]
+    fn scan_version_chain_classifies_superseded_as_dead() {
+        let alloc = HybridLogAllocator::new(4, 0.5, 512);
+        let hash_index = HashIndex::new(4);
+        let writer = LogRecordWriter::new(&alloc);
+
+        let start = alloc.tail_address();
+        let key: u64 = 42;
+
+        // V1: first version, no predecessor.
+        let info_v1 = RecordInfo::new(LogicalAddress::INVALID, 0, false, false, false);
+        let addr_v1 = writer.write_record(&info_v1, &key, &100u64).unwrap();
+
+        // Index V1 so we can update the slot to V2 below.
+        let hash = <u64 as faster_core::hash::Hashable>::hash(&key);
+        let result = hash_index.find_or_create(hash, addr_v1);
+        let committed_v1 = result.entry.without_tentative();
+        result
+            .slot
+            .compare_exchange(
+                result.entry,
+                committed_v1,
+                core::sync::atomic::Ordering::AcqRel,
+                core::sync::atomic::Ordering::Acquire,
+            )
+            .ok();
+
+        // V2: newer version, chain links back to V1.
+        let info_v2 = RecordInfo::new(addr_v1, 0, false, false, false);
+        let addr_v2 = writer.write_record(&info_v2, &key, &200u64).unwrap();
+
+        // Swing hash index to point at V2.
+        let updated = faster_core::hash::bucket::HashBucketEntry::new(
+            committed_v1.tag(),
+            addr_v2,
+            false,
+        );
+        hash_index.update(result.slot, committed_v1, updated);
+
+        let end = alloc.tail_address();
+
+        let scanner = CompactionScanner::new(&alloc, &hash_index);
+        let plan = scanner
+            .scan::<u64, u64>(start, end)
+            .expect("scan should succeed");
+
+        assert_eq!(plan.total_records(), 2, "should see both versions");
+        assert_eq!(plan.live_records.len(), 1, "only V2 is live");
+        assert_eq!(plan.dead_count, 1, "V1 is dead (superseded)");
+        assert_eq!(
+            plan.live_records[0].address, addr_v2,
+            "the live record should be V2"
+        );
+    }
+
+    /// Writes a record whose invalid flag is set before scanning.
+    ///
+    /// The scanner reads the `RecordInfo` through a `RecordAccessor`
+    /// (unsafe pointer → `from_raw_parts`) and must detect the invalid
+    /// bit. This exercises the `atomic_record_info` path for pre-
+    /// invalidated records.
+    #[test]
+    fn scan_invalid_record_classified_as_dead() {
+        let alloc = HybridLogAllocator::new(4, 0.5, 512);
+        let hash_index = HashIndex::new(4);
+        let writer = LogRecordWriter::new(&alloc);
+
+        let start = alloc.tail_address();
+
+        // Write a record that is already invalid.
+        let info = RecordInfo::new(LogicalAddress::INVALID, 0, true, false, false);
+        writer.write_record(&info, &99u64, &0u64).unwrap();
+
+        let end = alloc.tail_address();
+
+        let scanner = CompactionScanner::new(&alloc, &hash_index);
+        let plan = scanner
+            .scan::<u64, u64>(start, end)
+            .expect("scan should succeed");
+
+        assert_eq!(plan.total_records(), 1);
+        assert_eq!(plan.dead_count, 1, "invalid record must be dead");
+        assert_eq!(plan.live_records.len(), 0, "no live records expected");
+    }
+
+    /// Fills a page nearly to its end so that the scanner hits the
+    /// `MIN_READABLE` guard and must advance to the next page. Validates
+    /// no out-of-bounds pointer arithmetic at page boundaries.
+    #[test]
+    fn scan_near_page_boundary_advances_safely() {
+        // Use a tiny page so Miri finishes quickly. 4 pages, 512-byte sectors.
+        let alloc = HybridLogAllocator::new(4, 0.5, 512);
+        let hash_index = HashIndex::new(4);
+        let writer = LogRecordWriter::new(&alloc);
+
+        let start = alloc.tail_address();
+
+        // Write as many records as will fit, filling up towards the page end.
+        // RecordLayout for u64/u64 is 24 bytes (8 header + 8 key + 8 value).
+        let mut count = 0u64;
+        for i in 0..2000u64 {
+            if writer
+                .write_record(
+                    &RecordInfo::new(LogicalAddress::INVALID, 0, false, false, false),
+                    &i,
+                    &(i * 10),
+                )
+                .is_some()
+            {
+                count += 1;
+            } else {
+                break;
+            }
+        }
+        assert!(count > 10, "should have written many records");
+
+        let end = alloc.tail_address();
+
+        let scanner = CompactionScanner::new(&alloc, &hash_index);
+        let plan = scanner
+            .scan::<u64, u64>(start, end)
+            .expect("scan near page boundary should succeed");
+
+        // All records are unindexed → conservative = live.
+        assert_eq!(plan.total_records() as u64, count);
+    }
 }
 
 // -----------------------------------------------------------------------
