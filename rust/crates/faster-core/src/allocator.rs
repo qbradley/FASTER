@@ -322,17 +322,20 @@ pub struct MallocFixedPageSize<T> {
     _phantom: PhantomData<T>,
 }
 
-// SAFETY: All shared state is accessed through atomics or Mutex. Pages are
-// heap-allocated and never moved. The raw pointers in `dir` and `retired_dirs`
-// point to owned allocations that are only freed when the allocator is dropped
-// (which requires `&mut self`, guaranteeing exclusive access). The `epoch`
-// field holds an `Arc<EpochTable>` which is inherently Send + Sync.
+// SAFETY: `MallocFixedPageSize<T>` is !Send by default because
+// `retired_dirs` contains `NonNull<PageDir<T>>` (which is !Send).
+// Sending is safe because all raw pointers (`dir`, `retired_dirs`) target
+// exclusively-owned heap allocations freed only on drop (requires `&mut self`).
+// All shared state uses atomics (`AtomicPtr`, `AtomicU64`) or `Mutex`.
+// Invariant: pages must never be freed while live references from `get()`/
+// `get_mut()` exist. New fields must be `Send` or access-protected.
 unsafe impl<T: Send> Send for MallocFixedPageSize<T> {}
-// SAFETY: Same rationale as Send. Concurrent access to the allocator is safe
-// because: (1) the bump counter uses atomic fetch_add, (2) the free list uses
-// lock-free CAS, (3) page installation uses atomic CAS, (4) directory growth
-// is mutex-protected, and (5) the epoch field is only mutated during
-// single-threaded initialization via `set_epoch`. No data races are possible.
+// SAFETY: Concurrent access is data-race-free because: (1) `count` uses
+// atomic `fetch_add`, (2) `free_list` uses lock-free CAS, (3) page
+// installation uses atomic CAS on the directory, (4) directory growth is
+// mutex-protected, and (5) `epoch` is only set during single-threaded
+// initialization via `set_epoch`.
+// Invariant: new fields must be `Sync` or mutation must go through atomics/mutex.
 unsafe impl<T: Send> Sync for MallocFixedPageSize<T> {}
 
 // ---------------------------------------------------------------------------
@@ -353,11 +356,13 @@ struct FreeListPush {
     addr_raw: u64,
 }
 
-// SAFETY: The raw pointers target allocator-owned memory that is guaranteed
-// to outlive the drain callback. The allocator's `Drop` implementation
-// flushes all pending epoch drain callbacks (via `bump_current_epoch_no_callback`)
-// before releasing any memory, so the pointers are valid when the callback
-// executes.
+// SAFETY: `FreeListPush` is !Send by default because of raw pointers
+// `free_list: *const AtomicU64` and `item_ptr: *mut u8`.
+// Sending to the epoch drain thread is safe because both pointers target
+// allocator-owned memory guaranteed to outlive the callback: the allocator's
+// `Drop` flushes all pending epoch callbacks (via `bump_current_epoch_no_callback`)
+// before releasing any memory.
+// Invariant: the allocator must drain all pending callbacks before freeing pages.
 unsafe impl Send for FreeListPush {}
 
 impl FreeListPush {

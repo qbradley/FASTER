@@ -265,11 +265,17 @@ pub struct PageFrame {
     flushed_until: AtomicU32,
 }
 
-// SAFETY: `PageFrame` exclusively owns its heap allocation. No aliased
-// mutable access is possible, so sending across threads is safe.
+// SAFETY: `PageFrame` is !Send by default because of `data: NonNull<u8>`.
+// Sending is safe because the frame exclusively owns its heap allocation —
+// no aliased mutable pointers exist outside the frame.
+// Invariant: `data` must always point to a live allocation of `size` bytes.
+// Callers must ensure exclusive write access (e.g., page in `Open` state).
 unsafe impl Send for PageFrame {}
-// SAFETY: See `Send` impl above — exclusive ownership. Concurrent readers
-// access disjoint offset ranges and state transitions are atomic.
+// SAFETY: `PageFrame` is !Sync by default because of `data: NonNull<u8>`.
+// Sharing is safe because concurrent readers access disjoint offset ranges
+// (guaranteed by the record layout), and state transitions use atomics
+// (`state: AtomicPageState`, `flushed_until: AtomicU32`).
+// Invariant: no `&self` path may produce overlapping `&mut` views of `data`.
 unsafe impl Sync for PageFrame {}
 
 impl PageFrame {
@@ -522,10 +528,16 @@ pub struct PageTable {
     sector_size: usize,
 }
 
-// SAFETY: All shared state in `PageTable` is behind atomics (`AtomicPtr`).
-// `PageFrame` is `Send + Sync`, so sharing `PageTable` across threads is safe.
+// SAFETY: `PageTable` is auto-Send/Sync (all fields are Send+Sync), but we
+// add explicit impls to guard against future field additions that might
+// silently remove the auto-trait. `frames` contains `AtomicPtr<PageFrame>`,
+// which is Send+Sync. `PageFrame` itself is `Send + Sync` (see above).
+// The remaining fields (`buffer_size`, `buffer_mask`, `page_size`,
+// `sector_size`) are plain `usize`, inherently Send+Sync.
+// Invariant: new fields must be Send+Sync or these impls must be re-evaluated.
 unsafe impl Send for PageTable {}
-// SAFETY: See `Send` impl above.
+// SAFETY: Concurrent access is safe because frame slot reads/writes go
+// through `AtomicPtr` CAS, and scalar fields are immutable after construction.
 unsafe impl Sync for PageTable {}
 
 impl PageTable {

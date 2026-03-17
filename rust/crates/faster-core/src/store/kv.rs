@@ -225,17 +225,23 @@ pub struct FasterKv<F: Functions> {
     metrics: crate::metrics::Metrics,
 }
 
-// SAFETY: FasterKv is Send+Sync because all its fields are Send+Sync.
-// - HashIndex, HybridLogAllocator, PageFlusher, PageEvictor are Send+Sync
-//   (they use atomics internally).
-// - Box<dyn Device> is Send+Sync because Device: Send + Sync + 'static.
-// - Arc<EpochTable> is Send+Sync.
-// - F: Functions requires Send + Sync.
-// - SessionPool<F> contains Arc<EpochTable> + PhantomData<F>, both Send+Sync.
-// - Mutex<()> is Send+Sync.
-// - Option<Box<dyn CompactionPolicy>> is Send+Sync because CompactionPolicy: Send+Sync.
+// SAFETY: `FasterKv<F>` uses explicit Send/Sync impls to guard against future
+// field additions silently breaking thread-safety. All current fields are Send+Sync:
+// - HashIndex, HybridLogAllocator, PageFlusher, PageEvictor: Send+Sync (atomics)
+// - Box<dyn Device>: Send+Sync (Device: Send + Sync + 'static)
+// - Arc<EpochTable>: Send+Sync
+// - F: Functions requires Send + Sync
+// - SessionPool<F>: Send+Sync (Arc<EpochTable> + PhantomData<F>)
+// - PendingIoManager, GrowManager: Send+Sync (atomic internals)
+// - Mutex<()>, FasterKvConfig: Send+Sync
+// - Option<Box<dyn CompactionPolicy>>: Send+Sync (CompactionPolicy: Send+Sync)
+// Invariant: new fields must be Send+Sync. If adding a !Send/!Sync field,
+// re-evaluate these impls.
 unsafe impl<F: Functions> Send for FasterKv<F> {}
-// SAFETY: All methods take &self and internal mutation is through atomics.
+// SAFETY: All `&self` methods use interior mutability only through atomics,
+// `Mutex`, or `Arc`. Sessions require `&mut FasterSession`, preventing
+// concurrent session use (sessions are `!Send`).
+// Invariant: `&self` methods must not expose `&mut` access to non-atomic fields.
 unsafe impl<F: Functions> Sync for FasterKv<F> {}
 
 impl<F: Functions> Drop for FasterKv<F> {

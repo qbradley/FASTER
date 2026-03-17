@@ -204,10 +204,15 @@ struct IoRequest {
     context: *mut u8,
 }
 
-// SAFETY: The raw pointers in `IoRequest` (`buffer` and `context`) are
-// guaranteed valid by the `Device` trait contract until the completion
-// callback fires. Each worker thread accesses them exactly once and does
-// not retain them afterward.
+// SAFETY: `IoRequest` is !Send by default because of raw pointers
+// `buffer: *mut u8` and `context: *mut u8`.
+// Sending to the I/O worker thread is safe because the `Device` trait contract
+// guarantees both pointers remain valid until the completion callback fires.
+// The worker accesses them exactly once and does not retain them afterward.
+// `callback` is a function pointer (inherently Send); `kind`, `offset`, `len`
+// are plain data types.
+// Invariant: callers must keep `buffer` and `context` alive until the callback
+// fires. The worker must not retain either pointer after callback invocation.
 unsafe impl Send for IoRequest {}
 
 // ---------------------------------------------------------------------------

@@ -58,16 +58,19 @@ pub(crate) struct DrainList {
     drain_count: AtomicU64,
 }
 
-// SAFETY: `DrainList` is safe to send between threads. The raw
-// `*mut DrainNode` inside `AtomicPtr` is only accessed through atomic
-// operations (CAS on push, swap on drain). Node ownership transfers
-// cleanly: `Box::into_raw` on push, `Box::from_raw` on drain/drop.
+// SAFETY: `DrainList` is auto-Send (all fields are atomics), but we add an
+// explicit impl to guard against future field additions. `head` is an
+// `AtomicPtr<DrainNode>` — the raw `*mut DrainNode` inside is only accessed
+// through atomic operations (CAS on push, swap on drain). Node ownership
+// transfers cleanly: `Box::into_raw` on push, `Box::from_raw` on drain/drop.
+// Invariant: every `Box::into_raw` must have a matching `Box::from_raw`.
 unsafe impl Send for DrainList {}
 
-// SAFETY: `DrainList` is safe to share between threads. Concurrent
-// pushes are serialized by CAS on the head pointer. Drain atomically
-// claims the entire list via swap, after which only the draining thread
-// accesses the claimed nodes.
+// SAFETY: Concurrent sharing is safe because pushes are serialized by CAS on
+// `head`. Drain atomically claims the entire list via swap, after which only
+// the draining thread accesses the claimed nodes. `drain_count` is an
+// `AtomicU64` — inherently Sync.
+// Invariant: drain must swap the head to null before walking the chain.
 unsafe impl Sync for DrainList {}
 
 impl DrainList {

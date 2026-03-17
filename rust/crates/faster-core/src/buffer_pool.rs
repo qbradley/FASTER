@@ -38,11 +38,16 @@ pub struct AlignedBuffer {
     layout: Layout,
 }
 
-// SAFETY: `AlignedBuffer` exclusively owns its heap allocation. No aliased
-// mutable access is possible, so sending/sharing across threads is safe.
+// SAFETY: `AlignedBuffer` is !Send by default because of `ptr: NonNull<u8>`.
+// Sending across threads is safe because the allocation is exclusively owned —
+// no aliased pointers exist, and no interior mutability is exposed.
+// Invariant: `ptr` must always refer to a live, exclusively-owned allocation.
+// New fields must not introduce aliased or shared mutable state.
 unsafe impl Send for AlignedBuffer {}
-// SAFETY: See `Send` impl above — exclusive ownership with no interior
-// mutability.
+// SAFETY: `AlignedBuffer` is !Sync by default because of `ptr: NonNull<u8>`.
+// Sharing is safe because `&AlignedBuffer` only permits reads through the raw
+// pointer — no `&self` method hands out mutable access to the allocation.
+// Invariant: no `&self` method may produce `&mut` access to the allocation.
 unsafe impl Sync for AlignedBuffer {}
 
 impl AlignedBuffer {
