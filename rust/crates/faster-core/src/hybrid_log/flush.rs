@@ -166,11 +166,12 @@ unsafe fn flush_completion_callback(context: *mut u8, status: IoStatus, bytes_tr
             // write size. A short write should NOT transition to Flushed —
             // the page stays in Flushing for retry.
             if bytes_transferred < ctx.bytes_flushed {
-                #[cfg(debug_assertions)]
-                eprintln!(
+                log::error!(
                     "flush_completion_callback: short write on page {:?} \
-                     (transferred={}, expected={})",
-                    ctx.page, bytes_transferred, ctx.bytes_flushed,
+                     (transferred={}, expected={}) — page stays in Flushing state",
+                    ctx.page,
+                    bytes_transferred,
+                    ctx.bytes_flushed,
                 );
                 // Leave in Flushing state — retry logic handles recovery.
                 drop(ctx);
@@ -183,6 +184,13 @@ unsafe fn flush_completion_callback(context: *mut u8, status: IoStatus, bytes_tr
                 .state()
                 .try_transition(PageState::Flushing, PageState::Flushed);
         }
+    } else {
+        log::error!(
+            "flush_completion_callback: I/O error on page {:?} (status={:?}) \
+             — page stays in Flushing state, potential data loss",
+            ctx.page,
+            status,
+        );
     }
     // On error: leave page in Flushing state — retry logic handles recovery.
     drop(ctx);

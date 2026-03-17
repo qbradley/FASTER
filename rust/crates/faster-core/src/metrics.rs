@@ -41,6 +41,12 @@ pub struct Metrics {
     pub total_operations: AtomicU64,
     /// Number of page flushes issued.
     pub flush_count: AtomicU64,
+    /// CAS failures during write-completion (potential silent data loss).
+    pub write_completion_cas_failures: AtomicU64,
+    /// I/O dispatch failures in pending-op processing.
+    pub io_dispatch_failures: AtomicU64,
+    /// Flush I/O errors in completion callbacks.
+    pub flush_io_errors: AtomicU64,
 }
 
 impl Metrics {
@@ -59,6 +65,9 @@ impl Metrics {
             checkpoint_count: AtomicU64::new(0),
             total_operations: AtomicU64::new(0),
             flush_count: AtomicU64::new(0),
+            write_completion_cas_failures: AtomicU64::new(0),
+            io_dispatch_failures: AtomicU64::new(0),
+            flush_io_errors: AtomicU64::new(0),
         }
     }
 
@@ -88,6 +97,11 @@ impl Metrics {
             checkpoint_count: self.checkpoint_count.load(Ordering::Relaxed),
             total_operations: self.total_operations.load(Ordering::Relaxed),
             flush_count: self.flush_count.load(Ordering::Relaxed),
+            write_completion_cas_failures: self
+                .write_completion_cas_failures
+                .load(Ordering::Relaxed),
+            io_dispatch_failures: self.io_dispatch_failures.load(Ordering::Relaxed),
+            flush_io_errors: self.flush_io_errors.load(Ordering::Relaxed),
         }
     }
 }
@@ -134,6 +148,18 @@ impl fmt::Debug for Metrics {
                 &self.total_operations.load(Ordering::Relaxed),
             )
             .field("flush_count", &self.flush_count.load(Ordering::Relaxed))
+            .field(
+                "write_completion_cas_failures",
+                &self.write_completion_cas_failures.load(Ordering::Relaxed),
+            )
+            .field(
+                "io_dispatch_failures",
+                &self.io_dispatch_failures.load(Ordering::Relaxed),
+            )
+            .field(
+                "flush_io_errors",
+                &self.flush_io_errors.load(Ordering::Relaxed),
+            )
             .finish()
     }
 }
@@ -168,6 +194,12 @@ pub struct MetricsSnapshot {
     pub total_operations: u64,
     /// Number of page flushes issued.
     pub flush_count: u64,
+    /// CAS failures during write-completion (potential silent data loss).
+    pub write_completion_cas_failures: u64,
+    /// I/O dispatch failures in pending-op processing.
+    pub io_dispatch_failures: u64,
+    /// Flush I/O errors in completion callbacks.
+    pub flush_io_errors: u64,
 }
 
 impl fmt::Display for MetricsSnapshot {
@@ -176,7 +208,8 @@ impl fmt::Display for MetricsSnapshot {
             f,
             "hash(lookups={}, inserts={}) overflow(allocs={}, frees={}) \
              epoch(bumps={}, drains={}) allocator(allocs={}, frees={}) \
-             io(inflight={}, flushes={}) checkpoint={} ops={}",
+             io(inflight={}, flushes={}) checkpoint={} ops={} \
+             errors(write_cas={}, io_dispatch={}, flush_io={})",
             self.hash_lookups,
             self.hash_inserts,
             self.overflow_allocations,
@@ -189,6 +222,9 @@ impl fmt::Display for MetricsSnapshot {
             self.flush_count,
             self.checkpoint_count,
             self.total_operations,
+            self.write_completion_cas_failures,
+            self.io_dispatch_failures,
+            self.flush_io_errors,
         )
     }
 }
@@ -214,6 +250,9 @@ mod tests {
         assert_eq!(snap.checkpoint_count, 0);
         assert_eq!(snap.total_operations, 0);
         assert_eq!(snap.flush_count, 0);
+        assert_eq!(snap.write_completion_cas_failures, 0);
+        assert_eq!(snap.io_dispatch_failures, 0);
+        assert_eq!(snap.flush_io_errors, 0);
     }
 
     #[test]
@@ -231,6 +270,10 @@ mod tests {
         m.checkpoint_count.fetch_add(2, Ordering::Relaxed);
         m.total_operations.fetch_add(100, Ordering::Relaxed);
         m.flush_count.fetch_add(9, Ordering::Relaxed);
+        m.write_completion_cas_failures
+            .fetch_add(11, Ordering::Relaxed);
+        m.io_dispatch_failures.fetch_add(12, Ordering::Relaxed);
+        m.flush_io_errors.fetch_add(13, Ordering::Relaxed);
 
         let snap = m.snapshot();
         assert_eq!(snap.hash_lookups, 10);
@@ -245,6 +288,9 @@ mod tests {
         assert_eq!(snap.checkpoint_count, 2);
         assert_eq!(snap.total_operations, 100);
         assert_eq!(snap.flush_count, 9);
+        assert_eq!(snap.write_completion_cas_failures, 11);
+        assert_eq!(snap.io_dispatch_failures, 12);
+        assert_eq!(snap.flush_io_errors, 13);
     }
 
     #[test]

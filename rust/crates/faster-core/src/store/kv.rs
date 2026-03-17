@@ -1099,8 +1099,8 @@ impl<F: Functions> FasterKv<F> {
                     session.enqueue_io_context(io_ctx);
                 }
                 Err(_err) => {
-                    #[cfg(debug_assertions)]
-                    eprintln!("dispatch_pending_io: I/O dispatch failed: {_err}");
+                    log::warn!("dispatch_pending_io: I/O dispatch failed: {_err}");
+                    metrics_inc!(self.metrics, io_dispatch_failures);
                 }
             }
         }
@@ -1369,7 +1369,16 @@ impl<F: Functions> FasterKv<F> {
                 accessor.write_full_record(&new_ri, key, &new_val, layout);
 
                 let committed = HashBucketEntry::new(entry.tag(), new_addr, false);
-                let _ = self.hash_index.update(slot, entry, committed);
+                if !self.hash_index.update(slot, entry, committed) {
+                    log::warn!(
+                        "complete_write_pending: upsert CAS failed (key_hash={:?}, \
+                         old_addr={:?}, new_addr={:?}) — record orphaned at tail",
+                        key_hash,
+                        old_addr,
+                        new_addr,
+                    );
+                    metrics_inc!(self.metrics, write_completion_cas_failures);
+                }
             }
             PendingOpType::Rmw => {
                 let input = cio
@@ -1399,7 +1408,16 @@ impl<F: Functions> FasterKv<F> {
                     accessor.write_full_record(&new_ri, key, &new_val, layout);
 
                     let committed = HashBucketEntry::new(entry.tag(), new_addr, false);
-                    let _ = self.hash_index.update(slot, entry, committed);
+                    if !self.hash_index.update(slot, entry, committed) {
+                        log::warn!(
+                            "complete_write_pending: rmw-initial CAS failed (key_hash={:?}, \
+                             old_addr={:?}, new_addr={:?}) — record orphaned at tail",
+                            key_hash,
+                            old_addr,
+                            new_addr,
+                        );
+                        metrics_inc!(self.metrics, write_completion_cas_failures);
+                    }
                 } else {
                     let old_value: F::Value = cio.read_value(layout);
                     let mut new_value = old_value.clone();
@@ -1422,7 +1440,16 @@ impl<F: Functions> FasterKv<F> {
                     accessor.write_full_record(&new_ri, key, &new_value, layout);
 
                     let committed = HashBucketEntry::new(entry.tag(), new_addr, false);
-                    let _ = self.hash_index.update(slot, entry, committed);
+                    if !self.hash_index.update(slot, entry, committed) {
+                        log::warn!(
+                            "complete_write_pending: rmw-copy CAS failed (key_hash={:?}, \
+                             old_addr={:?}, new_addr={:?}) — record orphaned at tail",
+                            key_hash,
+                            old_addr,
+                            new_addr,
+                        );
+                        metrics_inc!(self.metrics, write_completion_cas_failures);
+                    }
                 }
             }
             PendingOpType::Delete => {
@@ -1446,7 +1473,16 @@ impl<F: Functions> FasterKv<F> {
                 accessor.write_full_record(&tombstone_ri, key, &dummy_value, layout);
 
                 let committed = HashBucketEntry::new(entry.tag(), new_addr, false);
-                let _ = self.hash_index.update(slot, entry, committed);
+                if !self.hash_index.update(slot, entry, committed) {
+                    log::warn!(
+                        "complete_write_pending: delete CAS failed (key_hash={:?}, \
+                         old_addr={:?}, new_addr={:?}) — tombstone orphaned at tail",
+                        key_hash,
+                        old_addr,
+                        new_addr,
+                    );
+                    metrics_inc!(self.metrics, write_completion_cas_failures);
+                }
             }
             PendingOpType::Read => unreachable!("read handled above"),
         }

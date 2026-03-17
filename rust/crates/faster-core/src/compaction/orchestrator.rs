@@ -75,6 +75,13 @@ pub enum CompactionError {
     CopyFailed(CopyError),
     /// Epoch drain timed out after pointer swing.
     EpochDrainTimeout,
+    /// All pointer swings failed — truncation aborted to prevent data loss.
+    SwingFailed {
+        /// Number of records that were copied but not swung.
+        records_copied: usize,
+        /// Number of CAS failures during pointer swing.
+        cas_failed: u64,
+    },
     /// Scan detected a corrupted record; compaction aborted to preserve data.
     ScanCorruption(RecordSizeError),
 }
@@ -91,6 +98,16 @@ impl core::fmt::Display for CompactionError {
             CompactionError::CopyFailed(e) => write!(f, "record copy failed: {e}"),
             CompactionError::EpochDrainTimeout => {
                 write!(f, "epoch drain timed out after pointer swing")
+            }
+            CompactionError::SwingFailed {
+                records_copied,
+                cas_failed,
+            } => {
+                write!(
+                    f,
+                    "all pointer swings failed (records_copied={records_copied}, \
+                     cas_failed={cas_failed}) — truncation aborted to prevent data loss"
+                )
             }
             CompactionError::ScanCorruption(e) => {
                 write!(f, "scan detected corrupted record: {e}")
@@ -211,6 +228,29 @@ impl<'a> CompactionOrchestrator<'a> {
         self.drain_epoch()?;
         crash_point!("compaction_epoch_drained");
 
+        // ── Swing guard ─────────────────────────────────────────────
+        //
+        // If records were copied but no pointer swings succeeded, the
+        // old hash entries still point into the compacted region.
+        // Truncating now would leave those entries dangling — data loss.
+        // Abort truncation and surface an error.
+        if let Some(ref stats) = swing_stats {
+            if let Some((records_copied, _)) = copy_info {
+                if records_copied > 0 && stats.swung == 0 {
+                    log::error!(
+                        "compaction: all pointer swings failed (records_copied={}, \
+                         cas_failed={}) — aborting truncation to prevent data loss",
+                        records_copied,
+                        stats.cas_failed,
+                    );
+                    return Err(CompactionError::SwingFailed {
+                        records_copied,
+                        cas_failed: stats.cas_failed,
+                    });
+                }
+            }
+        }
+
         // ── Phase 4: Begin-address advance ──────────────────────────
 
         let advancer = BeginAddressAdvancer::new(self.allocator, self.device);
@@ -219,7 +259,18 @@ impl<'a> CompactionOrchestrator<'a> {
 
         let (records_copied, bytes_copied) = copy_info.unwrap_or((0, 0));
         let (swung, cas_failed, tombstones_removed) = match swing_stats {
-            Some(s) => (s.swung, s.cas_failed, s.tombstones_removed),
+            Some(s) => {
+                if s.cas_failed > 0 && s.swung > 0 {
+                    log::warn!(
+                        "compaction: partial swing failures (swung={}, cas_failed={}, \
+                         not_found={}) — some records may reference stale addresses",
+                        s.swung,
+                        s.cas_failed,
+                        s.not_found,
+                    );
+                }
+                (s.swung, s.cas_failed, s.tombstones_removed)
+            }
             None => (0, 0, 0),
         };
 
