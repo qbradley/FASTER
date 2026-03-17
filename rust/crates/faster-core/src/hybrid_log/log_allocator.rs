@@ -176,8 +176,23 @@ impl HybridLogAllocator {
     /// Get a raw pointer to the memory at the given logical address.
     ///
     /// The address must be in the in-memory region (between head and tail).
-    /// Returns `None` if the page frame is not allocated.
+    /// Returns `None` if the page is below `head_address` (evicted) or if
+    /// the page frame is not allocated.
+    ///
+    /// The head-address check prevents a circular-buffer ABA hazard: after
+    /// eviction, the frame slot (`page % buffer_size`) may be recycled for
+    /// a higher-numbered page. Without this guard, callers would silently
+    /// read data from the *wrong* page — leading to misclassified records
+    /// in the compaction scanner and potential use-after-free when frames
+    /// are deallocated during eviction.
     pub fn get_physical_address(&self, addr: LogicalAddress) -> Option<*mut u8> {
+        // Bounds check: reject addresses below head — their frame slots
+        // may have been recycled for newer pages (ABA in circular buffer).
+        let head = self.head_address.load(Ordering::Acquire);
+        if addr.raw() < head.raw() {
+            return None;
+        }
+
         let frame = self.page_table.get_frame(addr.page())?;
         let offset = addr.offset().0 as usize;
 

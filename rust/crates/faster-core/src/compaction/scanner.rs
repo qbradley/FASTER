@@ -214,16 +214,18 @@ impl<'a> CompactionScanner<'a> {
                     record_size,
                 });
 
-                // SF-3: Warn when tombstone vector exceeds 100 MB.
-                if plan.tombstone_records.len() % 1024 == 0 {
-                    let estimated_bytes =
-                        plan.tombstone_records.len() * std::mem::size_of::<LiveRecord>();
+                // SF-3: Warn once when tombstone vector exceeds 100 MB.
+                // Only log at powers-of-two entry counts to avoid flooding
+                // stderr in hot loops (170K+ lines in stress tests).
+                let len = plan.tombstone_records.len();
+                if len.is_power_of_two() && len >= 1024 {
+                    let estimated_bytes = len * std::mem::size_of::<LiveRecord>();
                     const TOMBSTONE_WARN_BYTES: usize = 100 * 1024 * 1024;
                     if estimated_bytes > TOMBSTONE_WARN_BYTES {
                         eprintln!(
                             "compaction: tombstone_records ~{} MB ({} entries)",
                             estimated_bytes / (1024 * 1024),
-                            plan.tombstone_records.len(),
+                            len,
                         );
                     }
                 }

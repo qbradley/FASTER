@@ -1636,7 +1636,22 @@ impl<F: Functions> FasterKv<F> {
             .lock()
             .expect("compaction lock poisoned");
 
-        let begin = self.first_data_address();
+        // Limit the scan range to pages that are actually in memory.
+        // Pages below head_address have been evicted — their frame slots
+        // may be recycled for newer pages (circular buffer ABA). Scanning
+        // them would read data from the wrong page, causing misclassification
+        // and potential SIGSEGV from use-after-free on deallocated frames.
+        //
+        // In practice, records on evicted pages are dead: writers continuously
+        // upsert new versions at the tail, so hash index entries for live keys
+        // point above head. Truncating the evicted region is safe.
+        let first_data = self.first_data_address();
+        let head = self.allocator.head_address();
+        let begin = if head.raw() > first_data.raw() {
+            head
+        } else {
+            first_data
+        };
         let until = self.allocator.safe_read_only_address();
 
         if begin >= until {
@@ -1837,6 +1852,11 @@ impl<F: Functions> FasterKv<F> {
     /// It is a no-op if no policy is set, `auto_compact` is `false`, or
     /// the policy does not recommend compaction.
     ///
+    /// Uses `try_lock` on the compaction mutex so that concurrent calls
+    /// (e.g., from writer-thread inline maintenance) return immediately
+    /// instead of blocking. This prevents compaction from starving the
+    /// flush/evict pipeline that writers depend on.
+    ///
     /// Returns `Some(result)` if compaction ran, `None` otherwise.
     pub fn maybe_compact(&self) -> Option<Result<CompactionResult, CompactionError>> {
         if !self.config.auto_compact {
@@ -1850,7 +1870,54 @@ impl<F: Functions> FasterKv<F> {
             return None;
         }
 
-        Some(self.compact())
+        // Non-blocking: if another thread is already compacting, skip.
+        // This prevents writer-thread inline maintenance from blocking
+        // on compaction when the buffer is full (the throughput cliff).
+        let _lock = match self.compaction_lock.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+            Err(std::sync::TryLockError::Poisoned(e)) => {
+                // Panic matches the behavior of compact() on poisoned mutex.
+                panic!("compaction lock poisoned: {e}");
+            }
+        };
+
+        // Re-read head and safe_read_only under the lock to avoid stale snapshots.
+        let first_data = self.first_data_address();
+        let head = self.allocator.head_address();
+        let begin = if head.raw() > first_data.raw() {
+            head
+        } else {
+            first_data
+        };
+        let until = self.allocator.safe_read_only_address();
+
+        if begin >= until {
+            return Some(Err(CompactionError::EmptyRegion { begin, until }));
+        }
+
+        // Limit the scan range to at most MAX_COMPACT_PAGES per cycle.
+        // This keeps each compaction cycle short so the maintenance thread
+        // can return to flush/evict between cycles, preventing the 80–95%
+        // throughput cliff observed when compaction blocks maintenance for
+        // the duration of a full scan.
+        const MAX_COMPACT_PAGES: u32 = 4;
+        let page_size = 1u64 << crate::address::OFFSET_BITS;
+        let max_bytes = MAX_COMPACT_PAGES as u64 * page_size;
+        let range_bytes = until.raw().saturating_sub(begin.raw());
+        let capped_until = if range_bytes > max_bytes {
+            LogicalAddress::from_raw(begin.raw() + max_bytes)
+        } else {
+            until
+        };
+
+        let orch = CompactionOrchestrator::new(
+            &self.allocator,
+            &self.hash_index,
+            self.device.as_ref(),
+            &self.epoch_table,
+        );
+        Some(orch.run::<F::Key, F::Value>(begin, capped_until))
     }
 
     // ── Hash Index Grow ─────────────────────────────────────────────
