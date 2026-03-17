@@ -17,11 +17,12 @@
 //! # Callback ownership
 //!
 //! The async callback context is heap-allocated via `Box::into_raw` and
-//! reclaimed in the completion callback via `Box::from_raw`. The raw
-//! `*const PageTable` pointer is safe because the page table outlives any
-//! in-flight flush (the allocator cannot be dropped while flushes are pending).
+//! reclaimed in the completion callback via `Box::from_raw`. The
+//! `Arc<PageTable>` held in each callback context guarantees the page table
+//! remains alive until the callback fires, with no reliance on external drop
+//! ordering.
 
-use crate::sync::Ordering;
+use crate::sync::{Arc, Ordering};
 use std::{fmt, io};
 
 use crate::address::Page;
@@ -127,22 +128,20 @@ impl std::error::Error for FlushError {
 struct FlushCallbackContext {
     /// Page being flushed.
     page: Page,
-    /// Pointer back to the page table for state transition.
+    /// Strong reference to the page table for state transition.
     ///
-    /// # Safety
-    ///
-    /// The `PageTable` outlives any in-flight flush — `FasterKv::Drop` drains
-    /// all pending flushes before the allocator (and its `PageTable`) is
-    /// dropped, so this pointer is always valid when the callback fires.
-    page_table: *const PageTable,
+    /// The `Arc` guarantees the `PageTable` is alive when the callback fires,
+    /// regardless of `FasterKv` field drop order.
+    page_table: Arc<PageTable>,
     /// Number of bytes that were flushed.
     bytes_flushed: u32,
 }
 
-// SAFETY: The raw pointer is only dereferenced inside the callback, which runs
-// while the `PageTable` is still alive. The context is transferred to the I/O
-// thread and consumed exactly once.
-unsafe impl Send for FlushCallbackContext {}
+// FlushCallbackContext is Send because all fields are Send:
+// - Page is Copy
+// - Arc<PageTable> is Send (PageTable: Send + Sync)
+// - u32 is Send
+// No manual `unsafe impl Send` required.
 
 // ---------------------------------------------------------------------------
 // Flush completion callback
@@ -159,9 +158,7 @@ unsafe fn flush_completion_callback(context: *mut u8, status: IoStatus, bytes_tr
     // pointer created via `TypedIoContext::new`. We are the sole consumer.
     let ctx = unsafe { TypedIoContext::<FlushCallbackContext>::from_raw(context) };
 
-    // SAFETY: The `PageTable` outlives in-flight flushes — `FasterKv::Drop`
-    // drains pending I/O before the allocator is dropped (SF-10).
-    let page_table = unsafe { &*ctx.page_table };
+    let page_table = &ctx.page_table;
 
     if status == IoStatus::Success {
         if let Some(frame) = page_table.get_frame(ctx.page) {
@@ -225,7 +222,7 @@ impl PageFlusher {
     pub fn flush_page(
         &self,
         page: Page,
-        page_table: &PageTable,
+        page_table: &Arc<PageTable>,
         device: &dyn Device,
         valid_bytes: u32,
     ) -> Result<bool, FlushError> {
@@ -259,10 +256,11 @@ impl PageFlusher {
         self.write_crc_trailer(frame, valid_bytes, write_size);
 
         // Heap-allocate the callback context via TypedIoContext (manages the
-        // Box → raw → typed lifecycle safely).
+        // Box → raw → typed lifecycle safely). The Arc clone keeps the
+        // PageTable alive until the callback fires, regardless of drop order.
         let io_ctx = TypedIoContext::new(FlushCallbackContext {
             page,
-            page_table: page_table as *const PageTable,
+            page_table: Arc::clone(page_table),
             bytes_flushed: write_size,
         });
 
@@ -386,7 +384,7 @@ impl PageFlusher {
         trace_span!("flush_sealed_pages");
         let head_page = allocator.head_address().page().0;
         let ro_page = allocator.read_only_address().page().0;
-        let page_table = allocator.page_table();
+        let page_table = allocator.page_table_arc();
 
         let mut flushed_count = 0u32;
 
@@ -482,6 +480,7 @@ mod tests {
     use crate::address::Page;
     use crate::device::{InMemoryDevice, NullDevice};
     use crate::hybrid_log::page::{PageState, PageTable};
+    use std::sync::Arc;
 
     /// Small page size for tests (4096 bytes) to keep memory usage reasonable.
     const TEST_PAGE_SIZE: usize = 4096;
@@ -491,8 +490,8 @@ mod tests {
 
     /// Helper: create a page table and allocate a frame for the given page,
     /// returning it in the specified state.
-    fn setup_page_in_state(page: Page, state: PageState) -> PageTable {
-        let pt = PageTable::new(TEST_BUFFER_PAGES, TEST_PAGE_SIZE, TEST_SECTOR_SIZE);
+    fn setup_page_in_state(page: Page, state: PageState) -> Arc<PageTable> {
+        let pt = Arc::new(PageTable::new(TEST_BUFFER_PAGES, TEST_PAGE_SIZE, TEST_SECTOR_SIZE));
         let frame = pt.get_or_allocate_frame(page);
         // Frame starts as Open. Transition to the desired state.
         match state {
@@ -690,7 +689,7 @@ mod tests {
         //
         // We create a PageTable, allocate pages 0-3, seal pages 0-1, and then
         // call flush_page on each to simulate flush_sealed_pages behavior.
-        let pt = PageTable::new(TEST_BUFFER_PAGES, TEST_PAGE_SIZE, TEST_SECTOR_SIZE);
+        let pt = Arc::new(PageTable::new(TEST_BUFFER_PAGES, TEST_PAGE_SIZE, TEST_SECTOR_SIZE));
         let dev = NullDevice::new();
         let flusher = PageFlusher::new(TEST_SECTOR_SIZE as u32, TEST_PAGE_SIZE as u32);
 
@@ -780,7 +779,7 @@ mod tests {
     // 8. Flush a page that doesn't exist in the table.
     #[test]
     fn flush_page_not_found() {
-        let pt = PageTable::new(TEST_BUFFER_PAGES, TEST_PAGE_SIZE, TEST_SECTOR_SIZE);
+        let pt = Arc::new(PageTable::new(TEST_BUFFER_PAGES, TEST_PAGE_SIZE, TEST_SECTOR_SIZE));
         let dev = NullDevice::new();
         let flusher = PageFlusher::new(TEST_SECTOR_SIZE as u32, TEST_PAGE_SIZE as u32);
 

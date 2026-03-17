@@ -174,7 +174,7 @@ fn flush_sealed_pages_returns_exact_count() {
 fn flush_page_already_flushing_returns_ok_false() {
     let page_size = 4096usize;
     let sector_size = 512usize;
-    let page_table = PageTable::new(4, page_size, sector_size);
+    let page_table = std::sync::Arc::new(PageTable::new(4, page_size, sector_size));
     let device = NullDevice::new();
     let flusher = PageFlusher::new(sector_size as u32, page_size as u32);
 
@@ -200,7 +200,7 @@ fn flush_page_already_flushing_returns_ok_false() {
 fn flush_page_free_page_returns_error() {
     let page_size = 4096usize;
     let sector_size = 512usize;
-    let page_table = PageTable::new(4, page_size, sector_size);
+    let page_table = std::sync::Arc::new(PageTable::new(4, page_size, sector_size));
     let device = NullDevice::new();
     let flusher = PageFlusher::new(sector_size as u32, page_size as u32);
 

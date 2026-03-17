@@ -242,9 +242,10 @@ impl<F: Functions> Drop for FasterKv<F> {
     fn drop(&mut self) {
         // Ordered shutdown (SF-10): drain in-flight I/O before releasing memory.
         //
-        // Flush callbacks hold raw pointers to the PageTable (see
-        // `FlushCallbackContext` in flush.rs). We must ensure all callbacks
-        // have completed before the allocator (and its PageTable) is dropped.
+        // Flush callbacks hold an `Arc<PageTable>` (see `FlushCallbackContext`
+        // in flush.rs), so the PageTable cannot be freed while callbacks are
+        // outstanding. We still drain pending I/O here for clean shutdown and
+        // to avoid leaking the Arc reference.
         //
         // Shutdown sequence:
         //   1. Synchronously flush remaining sealed pages (avoids creating

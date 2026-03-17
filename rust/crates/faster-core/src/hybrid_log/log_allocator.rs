@@ -24,6 +24,7 @@ use crate::address::{AtomicLogicalAddress, LogicalAddress, MAX_PAGE, OFFSET_BITS
 use crate::device::Device;
 use crate::record::RECORD_HEADER_SIZE;
 use crate::recovery::log_recovery::LogRecoveryResult;
+use crate::sync::Arc;
 
 use super::page::{PageState, PageTable};
 use super::record_ops::MutableRecordAccessor;
@@ -38,7 +39,11 @@ use super::record_ops::MutableRecordAccessor;
 /// Page frames are lazily allocated via the underlying [`PageTable`].
 pub struct HybridLogAllocator {
     /// The page table backing this allocator.
-    page_table: PageTable,
+    ///
+    /// Wrapped in `Arc` so that flush callbacks can hold a strong reference,
+    /// guaranteeing the table outlives any in-flight I/O without relying on
+    /// struct field drop order.
+    page_table: Arc<PageTable>,
 
     /// Start of valid data on disk.
     begin_address: AtomicLogicalAddress,
@@ -83,7 +88,7 @@ impl HybridLogAllocator {
         let start = LogicalAddress::new(Page(0), Offset(0));
 
         Self {
-            page_table: PageTable::new(buffer_size_pages, page_size as usize, sector_size),
+            page_table: Arc::new(PageTable::new(buffer_size_pages, page_size as usize, sector_size)),
             begin_address: AtomicLogicalAddress::new(start),
             head_address: AtomicLogicalAddress::new(start),
             read_only_address: AtomicLogicalAddress::new(start),
@@ -394,6 +399,15 @@ impl HybridLogAllocator {
     /// Get the page table reference.
     #[inline]
     pub fn page_table(&self) -> &PageTable {
+        &self.page_table
+    }
+
+    /// Get a cloneable `Arc` handle to the page table.
+    ///
+    /// Used by flush callbacks that need to keep the page table alive
+    /// independently of the allocator's lifetime.
+    #[inline]
+    pub fn page_table_arc(&self) -> &Arc<PageTable> {
         &self.page_table
     }
 
