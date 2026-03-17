@@ -320,3 +320,24 @@ Produced eowyn-dst-v2-technical-design.md (60KB, 1753 lines) — detailed core A
 
 **Commit:** c7e0023b
 
+### Session — 2025-07-25: Loom test for free-list Treiber stack ABA (P1-C)
+
+**Task:** Write loom tests exercising the allocator's Treiber stack free-list (P1-C from Aragorn's unsafe survey). The allocator uses a 16-bit ABA tag in the upper bits of the free-list head word to prevent ABA on concurrent push/pop.
+
+**What was done:**
+- Added `mod f1_free_list` module to `loom_tests.rs` — a Treiber stack matching the allocator's exact bit layout (16-bit tag at bits 48-63, 48-bit address) and memory orderings (Acquire/AcqRel/Relaxed next-ptr writes).
+- Three tests added:
+  1. `f1_free_list_concurrent_alloc` — Two threads race to pop from a pre-populated [1,2] list. Verifies no double-allocation (distinct values) and no lost nodes.
+  2. `f1_free_list_alloc_free_no_lost_nodes` — Two threads each do pop+push (alloc-free cycle), the classic ABA-triggering pattern. Verifies all nodes recoverable after join.
+  3. `f1_free_list_mixed_alloc_free` — Pre-populated [1,2,3]. Thread A does pop+push cycle, Thread B does pure pop (keeps node). Verifies allocated node not on free list, exactly 2 remaining, all 3 accounted for.
+
+**Results:**
+- All 3 new tests pass under loom (1.37s for F1 tests alone)
+- All 28 tests pass (25 existing + 3 new, 32.9s total)
+- `cargo clippy -p faster-core -- -D warnings` clean
+- Loom explored all interleavings — no ABA detected, tag counter works correctly
+
+**Verdict:** The 16-bit ABA tag is sound under loom's exhaustive interleaving exploration. The tag wraps after 2^16 = 65,536 concurrent operations between a thread's read and CAS retry — structurally unlikely in practice.
+
+**Commit:** 08268171
+
