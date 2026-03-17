@@ -1766,6 +1766,13 @@ impl<F: Functions> FasterKv<F> {
             thread::yield_now();
             self.device.poll_completions();
         }
+
+        // 5. Auto-compaction: check policy and compact if warranted.
+        //    In non-lossy mode, compaction is the *only* mechanism that
+        //    advances begin_address and truncates old device segments.
+        if self.config.auto_compact {
+            self.maybe_compact();
+        }
     }
 
     /// Return a snapshot of pipeline addresses for diagnostic purposes.

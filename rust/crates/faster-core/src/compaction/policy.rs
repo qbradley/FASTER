@@ -243,6 +243,70 @@ impl CompactionPolicy for TombstonePercentPolicy {
     }
 }
 
+// ── LogSizeBudgetPolicy ─────────────────────────────────────────────
+
+/// Triggers compaction when the total log size exceeds a byte budget.
+///
+/// Unlike [`SpaceAmplificationPolicy`], this policy does **not** need
+/// accurate live-data estimates — it fires purely on total log growth.
+/// This makes it suitable for use with the lightweight O(1) stat
+/// collector that cannot distinguish live from dead data without a scan.
+///
+/// A typical budget is 4× the in-memory buffer capacity (C++ FASTER's
+/// `hlog_size_budget` approach).
+///
+/// # Examples
+///
+/// ```
+/// use faster_core::compaction::policy::{CompactionPolicy, CompactionStats, LogSizeBudgetPolicy};
+///
+/// // Trigger when total log exceeds 2 GB.
+/// let policy = LogSizeBudgetPolicy::new(2 * 1024 * 1024 * 1024);
+///
+/// let small = CompactionStats {
+///     total_log_bytes: 1_000_000,
+///     live_data_bytes: 1_000_000,
+///     tombstone_count: 0,
+///     total_record_count: 100,
+/// };
+/// assert!(!policy.should_compact(&small));
+///
+/// let large = CompactionStats {
+///     total_log_bytes: 3_000_000_000,
+///     live_data_bytes: 3_000_000_000,
+///     tombstone_count: 0,
+///     total_record_count: 1_000_000,
+/// };
+/// assert!(policy.should_compact(&large));
+/// ```
+#[derive(Debug, Clone)]
+pub struct LogSizeBudgetPolicy {
+    budget_bytes: u64,
+}
+
+impl LogSizeBudgetPolicy {
+    /// Creates a policy that triggers when `total_log_bytes > budget_bytes`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `budget_bytes` is zero.
+    pub fn new(budget_bytes: u64) -> Self {
+        assert!(budget_bytes > 0, "budget must be > 0, got 0");
+        Self { budget_bytes }
+    }
+}
+
+impl CompactionPolicy for LogSizeBudgetPolicy {
+    #[inline]
+    fn should_compact(&self, stats: &CompactionStats) -> bool {
+        stats.total_log_bytes > self.budget_bytes
+    }
+
+    fn name(&self) -> &str {
+        "LogSizeBudget"
+    }
+}
+
 // ── ManualPolicy ────────────────────────────────────────────────────
 
 /// Never triggers automatic compaction.
@@ -542,6 +606,32 @@ mod tests {
         assert!(!policy.should_compact(&make_stats(100, 0, 100, 100)));
     }
 
+    // ── LogSizeBudgetPolicy ─────────────────────────────────────────
+
+    #[test]
+    fn log_size_budget_triggers_above() {
+        let policy = LogSizeBudgetPolicy::new(1000);
+        assert!(policy.should_compact(&make_stats(1001, 1001, 0, 10)));
+    }
+
+    #[test]
+    fn log_size_budget_does_not_trigger_at_budget() {
+        let policy = LogSizeBudgetPolicy::new(1000);
+        assert!(!policy.should_compact(&make_stats(1000, 1000, 0, 10)));
+    }
+
+    #[test]
+    fn log_size_budget_does_not_trigger_below() {
+        let policy = LogSizeBudgetPolicy::new(1000);
+        assert!(!policy.should_compact(&make_stats(500, 500, 0, 10)));
+    }
+
+    #[test]
+    #[should_panic(expected = "budget must be > 0")]
+    fn log_size_budget_rejects_zero() {
+        LogSizeBudgetPolicy::new(0);
+    }
+
     // ── Policy names ────────────────────────────────────────────────
 
     #[test]
@@ -552,6 +642,7 @@ mod tests {
         );
         assert_eq!(TombstonePercentPolicy::default().name(), "TombstonePercent");
         assert_eq!(ManualPolicy.name(), "Manual");
+        assert_eq!(LogSizeBudgetPolicy::new(1).name(), "LogSizeBudget");
         assert_eq!(AnyPolicy::new(vec![]).name(), "Any");
         assert_eq!(AllPolicy::new(vec![]).name(), "All");
     }

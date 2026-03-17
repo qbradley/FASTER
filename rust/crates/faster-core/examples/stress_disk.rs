@@ -30,6 +30,7 @@ use std::time::{Duration, Instant};
 
 use faster_core::grow::GrowConfig;
 use faster_core::hybrid_log::EvictionPolicy;
+use faster_core::compaction::policy::LogSizeBudgetPolicy;
 use faster_core::{FasterKv, FasterKvConfig, SimpleFunctions, SyncFileDevice};
 
 type Store = FasterKv<SimpleFunctions<u64, u64>>;
@@ -300,14 +301,21 @@ fn main() {
             eviction_batch_size: 4,
         },
         grow_config: GrowConfig::default(),
-        auto_compact: false,
+        auto_compact: true,
         lossy: false,
     };
 
     let device = SyncFileDevice::new(&cfg.storage_dir, "log.", 512, segment_size, 4)
         .expect("failed to create SyncFileDevice");
 
-    let store: Store = FasterKv::new(store_config, SimpleFunctions::default(), device);
+    let mut store: Store = FasterKv::new(store_config, SimpleFunctions::default(), device);
+
+    // Compact when total log exceeds 4× the in-memory buffer capacity.
+    // With 16 × 32 MB pages (512 MB in-memory), the budget is ~2 GB.
+    let page_size_bytes = 1u64 << faster_core::address::OFFSET_BITS;
+    let budget = 4 * buffer_size_pages as u64 * page_size_bytes;
+    store.set_compaction_policy(Some(Box::new(LogSizeBudgetPolicy::new(budget))));
+
     let store = Arc::new(store);
     let counters = Arc::new(SharedCounters::new());
     let live_keys_sampler = Arc::new(AtomicU64::new(0));
