@@ -186,3 +186,15 @@ Created `stress_disk.rs` example — production-realistic stress test using Sync
 
 **Branch:** `rust`, **Commit:** `103a887a`
 
+### Wire Log Compaction into maintenance() (2026-03-17)
+Closed the loop on bounded lossless disk operation. The compaction pipeline was fully built (scan → copy → pointer swing → begin-address advance → truncate_until) but never called from the maintenance loop:
+
+1. **`LogSizeBudgetPolicy` (NEW):** Added to `compaction/policy.rs`. Triggers compaction when `total_log_bytes > budget_bytes`. Unlike `SpaceAmplificationPolicy`, doesn't need accurate live-data estimates — works with the O(1) `collect_stats` heuristic that treats all data as live. Follows C++ FASTER's `hlog_size_budget` model. 4 unit tests + 1 doc test.
+
+2. **`maintenance()` now calls `maybe_compact()`:** Added step 5 at end of `kv.rs:maintenance()` — when `auto_compact` is enabled, calls `maybe_compact()` which checks the policy and runs the full 4-phase compaction pipeline if triggered. This is the critical missing link: without it, even `auto_compact: true` had no effect because nothing ever invoked the check.
+
+3. **`stress_disk.rs` enables compaction:** Set `auto_compact: true`, import `LogSizeBudgetPolicy`, configure budget = `4 × buffer_size_pages × page_size` (2 GB with default 16 × 32 MB config). The maintenance thread now automatically compacts → advances begin_address → truncates old segments.
+
+**Verified:** 1726 tests pass, clippy -D warnings clean, doc tests pass.
+**Branch:** `rust`, **Commit:** `762bc3bd`
+
