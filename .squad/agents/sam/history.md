@@ -218,3 +218,11 @@ Fixed three compaction bugs found by Legolas's disk stress retest (SIGSEGV at T+
 **Key design:** Eviction no longer frees frame memory — frames stay in slots for recycling, guaranteeing all non-null frame pointers are always valid. try_evict_frame atomically checks pin_count == 0 via single CAS. Scanner (the SIGSEGV crash site) now has zero production unsafe blocks.
 **Results:** 1734 tests pass (1726→1734, +8 pin tests). Clippy clean. stress_disk 60s @ 16 threads: ~11M ops/s sustained, no crash.
 **Commit:** `96267b56`
+
+### Allocator Bounds Checking — P1-B (2026-07-25)
+**Impact:** Added unconditional runtime bounds checking to all allocator page-frame access methods. OOB access now panics (get/get_mut/get_ptr) or returns None (try_get/try_get_mut/try_get_ptr) instead of silently reading/writing past page boundaries.
+**Files:** `allocator.rs` (resolve→unconditional assert, try_resolve+try_get/try_get_mut/try_get_ptr, 11 new tests), `log_allocator.rs` (get_physical_address offset check, mutable_record_at reject-not-clamp), `page.rs` (PinnedPage::as_mut_ptr_at→Option, get_slice overflow protection).
+**Key design:** resolve() upgrades 3 debug_assert to unconditional assert (item_idx, page_idx, null page). try_resolve() provides Option path for callers wanting graceful handling. mutable_record_at no longer silently clamps oversized records — returns None. PinnedPage::as_mut_ptr_at returns Option<*mut u8>.
+**Bounds checks added:** 6 unconditional runtime checks across 3 files (3 in resolve, 1 in get_physical_address, 1 in mutable_record_at size, 1 in as_mut_ptr_at). Plus overflow protection in get_slice.
+**Results:** 1745 tests pass (1734→1745, +11 bounds tests). Clippy clean.
+**Commit:** `19efbfbb`
