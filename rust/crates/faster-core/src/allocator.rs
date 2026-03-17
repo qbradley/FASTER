@@ -517,9 +517,10 @@ impl<T> MallocFixedPageSize<T> {
     /// session ownership model. This method is safe because the intended usage
     /// (hash bucket lookup) always goes through atomic fields inside `T`.
     ///
-    /// # Panics (debug)
+    /// # Panics
     ///
-    /// Debug-asserts that the page is allocated.
+    /// Panics if the address is out of bounds or refers to an unallocated
+    /// page. For a non-panicking alternative, use [`try_get`](Self::try_get).
     #[inline]
     pub fn get(&self, addr: LogicalAddress) -> &T {
         let (page_ptr, item_idx) = self.resolve(addr);
@@ -529,6 +530,20 @@ impl<T> MallocFixedPageSize<T> {
         // `&mut T`). The lifetime of the returned reference is tied to `&self`,
         // and the page is never freed while the allocator is alive.
         unsafe { &*page_ptr.add(item_idx) }
+    }
+
+    /// Returns a shared reference to the item at `addr`, or `None` if
+    /// the address is out of bounds or refers to an unallocated page.
+    ///
+    /// This is the checked variant of [`get`](Self::get). Same safety
+    /// contract applies for the aliasing guarantee — the caller must ensure
+    /// no concurrent `&mut T` exists for this item.
+    #[inline]
+    pub fn try_get(&self, addr: LogicalAddress) -> Option<&T> {
+        let (page_ptr, item_idx) = self.try_resolve(addr)?;
+        // SAFETY: `try_resolve` validated bounds and page allocation.
+        // Caller upholds aliasing contract.
+        Some(unsafe { &*page_ptr.add(item_idx) })
     }
 
     /// Returns an exclusive reference to the item at `addr`.
@@ -542,9 +557,11 @@ impl<T> MallocFixedPageSize<T> {
     ///   by this session and hasn't been published) or by epoch protection
     ///   (all other threads have exited the epoch that references this item).
     ///
-    /// # Panics (debug)
+    /// # Panics
     ///
-    /// Debug-asserts that the page is allocated.
+    /// Panics if the address is out of bounds or refers to an unallocated
+    /// page. For a non-panicking alternative, use
+    /// [`try_get_mut`](Self::try_get_mut).
     #[inline]
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn get_mut(&self, addr: LogicalAddress) -> &mut T {
@@ -554,15 +571,49 @@ impl<T> MallocFixedPageSize<T> {
         unsafe { &mut *page_ptr.add(item_idx) }
     }
 
+    /// Returns an exclusive reference to the item at `addr`, or `None` if
+    /// the address is out of bounds or refers to an unallocated page.
+    ///
+    /// This is the checked variant of [`get_mut`](Self::get_mut). Same
+    /// safety contract applies for the exclusive-access guarantee.
+    ///
+    /// # Safety
+    ///
+    /// The caller must have exclusive logical ownership of this item.
+    #[inline]
+    #[allow(clippy::mut_from_ref)]
+    pub unsafe fn try_get_mut(&self, addr: LogicalAddress) -> Option<&mut T> {
+        let (page_ptr, item_idx) = self.try_resolve(addr)?;
+        // SAFETY: `try_resolve` validated bounds. Caller guarantees exclusive access.
+        Some(unsafe { &mut *page_ptr.add(item_idx) })
+    }
+
     /// Returns the item at `addr` as a raw pointer.
     ///
     /// This is a lower-level alternative to [`get`] / [`get_mut`] for callers
     /// who need a pointer without creating a reference.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the address is out of bounds or refers to an unallocated
+    /// page. For a non-panicking alternative, use
+    /// [`try_get_ptr`](Self::try_get_ptr).
     #[inline]
     pub fn get_ptr(&self, addr: LogicalAddress) -> *mut T {
         let (page_ptr, item_idx) = self.resolve(addr);
         // SAFETY: pointer arithmetic within a valid page allocation.
         unsafe { page_ptr.add(item_idx) }
+    }
+
+    /// Returns the item at `addr` as a raw pointer, or `None` if the
+    /// address is out of bounds or refers to an unallocated page.
+    ///
+    /// This is the checked variant of [`get_ptr`](Self::get_ptr).
+    #[inline]
+    pub fn try_get_ptr(&self, addr: LogicalAddress) -> Option<*mut T> {
+        let (page_ptr, item_idx) = self.try_resolve(addr)?;
+        // SAFETY: pointer arithmetic within a valid page allocation.
+        Some(unsafe { page_ptr.add(item_idx) })
     }
 
     /// Frees an item, returning it to the free list for reuse.
@@ -644,27 +695,68 @@ impl<T> MallocFixedPageSize<T> {
     // -----------------------------------------------------------------------
 
     /// Resolve a [`LogicalAddress`] to a `(page_ptr, item_index)` pair.
+    ///
+    /// # Panics
+    ///
+    /// Panics in **all** builds if:
+    /// - The item index is out of bounds (`>= ITEMS_PER_PAGE`).
+    /// - The page index exceeds the directory capacity.
+    /// - The page has not been allocated (null pointer).
+    ///
+    /// For a non-panicking alternative, use [`try_resolve`](Self::try_resolve).
     #[inline]
     fn resolve(&self, addr: LogicalAddress) -> (*mut T, usize) {
         let page_idx = addr.page().0 as usize;
         let item_idx = addr.offset().0 as usize;
-        debug_assert!(
+
+        // Unconditional bounds checks — correctness over performance.
+        assert!(
             item_idx < ITEMS_PER_PAGE,
-            "item index {item_idx} exceeds ITEMS_PER_PAGE {ITEMS_PER_PAGE}",
+            "item index {item_idx} out of bounds (ITEMS_PER_PAGE = {ITEMS_PER_PAGE})",
         );
 
         let dir = self.current_dir();
-        debug_assert!(
+        assert!(
             page_idx < dir.capacity(),
-            "page index {} exceeds directory capacity {}",
-            page_idx,
+            "page index {page_idx} out of bounds (directory capacity = {})",
             dir.capacity(),
         );
 
         let page_ptr = dir.get_page(page_idx);
-        debug_assert!(!page_ptr.is_null(), "page {page_idx} not allocated");
+        assert!(
+            !page_ptr.is_null(),
+            "page {page_idx} not allocated (null pointer in directory)",
+        );
 
         (page_ptr, item_idx)
+    }
+
+    /// Try to resolve a [`LogicalAddress`] to a `(page_ptr, item_index)` pair.
+    ///
+    /// Returns `None` if:
+    /// - The item index is out of bounds (`>= ITEMS_PER_PAGE`).
+    /// - The page index exceeds the directory capacity.
+    /// - The page has not been allocated (null pointer).
+    #[inline]
+    fn try_resolve(&self, addr: LogicalAddress) -> Option<(*mut T, usize)> {
+        let page_idx = addr.page().0 as usize;
+        let item_idx = addr.offset().0 as usize;
+
+        if item_idx >= ITEMS_PER_PAGE {
+            return None;
+        }
+
+        let dir = self.current_dir();
+        if page_idx >= dir.capacity() {
+            return None;
+        }
+
+        let page_ptr = dir.get_page(page_idx);
+        if page_ptr.is_null() {
+            return None;
+        }
+
+        Some((page_ptr, item_idx))
     }
 
     // -----------------------------------------------------------------------
@@ -1400,6 +1492,104 @@ mod tests {
         let mut expected = [a, b, c];
         expected.sort_by_key(|a| a.raw());
         assert_eq!(got, expected, "all deferred frees should be drained");
+    }
+
+    // -- Bounds checking --
+
+    #[test]
+    fn try_get_returns_some_for_valid_address() {
+        let alloc: MallocFixedPageSize<SmallItem> = MallocFixedPageSize::new();
+        let addr = alloc.allocate();
+        assert!(alloc.try_get(addr).is_some());
+    }
+
+    #[test]
+    fn try_get_returns_none_for_oob_item_index() {
+        let alloc: MallocFixedPageSize<SmallItem> = MallocFixedPageSize::new();
+        let _ = alloc.allocate();
+        // Forge an address with item_idx = ITEMS_PER_PAGE (out of bounds).
+        let bad_addr = LogicalAddress::new(Page(0), Offset(ITEMS_PER_PAGE as u32));
+        assert!(alloc.try_get(bad_addr).is_none());
+    }
+
+    #[test]
+    fn try_get_returns_none_for_oob_page_index() {
+        let alloc: MallocFixedPageSize<SmallItem> = MallocFixedPageSize::new();
+        let _ = alloc.allocate();
+        // Forge an address with a page index beyond the directory.
+        let bad_addr = LogicalAddress::new(Page(9999), Offset(0));
+        assert!(alloc.try_get(bad_addr).is_none());
+    }
+
+    #[test]
+    fn try_get_returns_none_for_unallocated_page() {
+        let alloc: MallocFixedPageSize<SmallItem> = MallocFixedPageSize::new();
+        let _ = alloc.allocate();
+        // Page 1 exists in directory capacity but hasn't been allocated.
+        // The directory starts with 16 slots, but only page 0 is populated
+        // after a single allocation.
+        let bad_addr = LogicalAddress::new(Page(5), Offset(0));
+        assert!(alloc.try_get(bad_addr).is_none());
+    }
+
+    #[test]
+    fn try_get_mut_returns_some_for_valid_address() {
+        let alloc: MallocFixedPageSize<SmallItem> = MallocFixedPageSize::new();
+        let addr = alloc.allocate();
+        // SAFETY: single-threaded test.
+        assert!(unsafe { alloc.try_get_mut(addr) }.is_some());
+    }
+
+    #[test]
+    fn try_get_mut_returns_none_for_oob() {
+        let alloc: MallocFixedPageSize<SmallItem> = MallocFixedPageSize::new();
+        let _ = alloc.allocate();
+        let bad_addr = LogicalAddress::new(Page(0), Offset(ITEMS_PER_PAGE as u32));
+        // SAFETY: single-threaded test.
+        assert!(unsafe { alloc.try_get_mut(bad_addr) }.is_none());
+    }
+
+    #[test]
+    fn try_get_ptr_returns_some_for_valid_address() {
+        let alloc: MallocFixedPageSize<SmallItem> = MallocFixedPageSize::new();
+        let addr = alloc.allocate();
+        assert!(alloc.try_get_ptr(addr).is_some());
+    }
+
+    #[test]
+    fn try_get_ptr_returns_none_for_oob() {
+        let alloc: MallocFixedPageSize<SmallItem> = MallocFixedPageSize::new();
+        let _ = alloc.allocate();
+        let bad_addr = LogicalAddress::new(Page(9999), Offset(0));
+        assert!(alloc.try_get_ptr(bad_addr).is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "out of bounds")]
+    fn get_panics_on_oob_item_index() {
+        let alloc: MallocFixedPageSize<SmallItem> = MallocFixedPageSize::new();
+        let _ = alloc.allocate();
+        let bad_addr = LogicalAddress::new(Page(0), Offset(ITEMS_PER_PAGE as u32));
+        let _ = alloc.get(bad_addr);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of bounds")]
+    fn get_panics_on_oob_page_index() {
+        let alloc: MallocFixedPageSize<SmallItem> = MallocFixedPageSize::new();
+        let _ = alloc.allocate();
+        let bad_addr = LogicalAddress::new(Page(9999), Offset(0));
+        let _ = alloc.get(bad_addr);
+    }
+
+    #[test]
+    #[should_panic(expected = "not allocated")]
+    fn get_panics_on_null_page() {
+        let alloc: MallocFixedPageSize<SmallItem> = MallocFixedPageSize::new();
+        let _ = alloc.allocate();
+        // Page 5 is within directory capacity but not allocated.
+        let bad_addr = LogicalAddress::new(Page(5), Offset(0));
+        let _ = alloc.get(bad_addr);
     }
 }
 

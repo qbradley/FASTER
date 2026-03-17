@@ -441,11 +441,12 @@ impl<'a> PinnedPage<'a> {
 
     /// Returns a sub-slice at the given offset and length within the page.
     ///
-    /// Returns `None` if `offset + len` exceeds the page size.
+    /// Returns `None` if `offset + len` exceeds the page size or overflows.
     #[inline]
     pub fn get_slice(&self, offset: usize, len: usize) -> Option<&[u8]> {
+        let end = offset.checked_add(len)?;
         let data = self.frame.as_slice();
-        data.get(offset..offset + len)
+        data.get(offset..end)
     }
 
     /// Returns the page frame size in bytes.
@@ -460,7 +461,8 @@ impl<'a> PinnedPage<'a> {
         self.frame
     }
 
-    /// Returns a raw mutable pointer at the given offset within the page.
+    /// Returns a raw mutable pointer at the given offset within the page,
+    /// or `None` if the offset is out of bounds.
     ///
     /// # Safety
     ///
@@ -468,10 +470,12 @@ impl<'a> PinnedPage<'a> {
     /// (e.g., the page is in the mutable region and the caller owns the
     /// allocation range via the bump allocator).
     #[inline]
-    pub unsafe fn as_mut_ptr_at(&self, offset: usize) -> *mut u8 {
-        debug_assert!(offset < self.frame.size());
-        // SAFETY: frame is pinned, offset is within bounds (caller asserts).
-        unsafe { self.frame.as_mut_ptr().add(offset) }
+    pub unsafe fn as_mut_ptr_at(&self, offset: usize) -> Option<*mut u8> {
+        if offset >= self.frame.size() {
+            return None;
+        }
+        // SAFETY: frame is pinned, offset is within bounds (checked above).
+        Some(unsafe { self.frame.as_mut_ptr().add(offset) })
     }
 }
 

@@ -204,9 +204,14 @@ impl HybridLogAllocator {
         let frame = self.page_table.get_frame(addr.page())?;
         let offset = addr.offset().0 as usize;
 
-        // SAFETY: `offset` is within the page (bounded by page_size which
-        // matches the frame allocation size). The returned pointer is within
-        // the frame's allocation.
+        // Bounds check: offset must be within the page frame.
+        let page_size = frame.size();
+        if offset >= page_size {
+            return None;
+        }
+
+        // SAFETY: `offset` is within bounds (checked above). The returned
+        // pointer is within the frame's allocation.
         Some(unsafe { frame.as_mut_ptr().add(offset) })
     }
 
@@ -239,11 +244,13 @@ impl HybridLogAllocator {
     /// # Bounds checking
     ///
     /// - The address must be above `head_address` (not evicted).
-    /// - `record_size` is clamped to the remaining page space so that
-    ///   writes cannot cross a page boundary.
+    /// - `record_size` must not exceed the remaining page space.
+    /// - `record_size` must be at least `RECORD_HEADER_SIZE`.
     ///
-    /// Returns `None` if the address is below head (page already evicted
-    /// or recycled).
+    /// Returns `None` if:
+    /// - The address is below head (page already evicted or recycled).
+    /// - `record_size` exceeds the remaining space in the page.
+    /// - `record_size` is smaller than `RECORD_HEADER_SIZE`.
     pub fn mutable_record_at(
         &self,
         addr: LogicalAddress,
@@ -256,30 +263,30 @@ impl HybridLogAllocator {
         let offset = addr.offset().0;
         let remaining = page_size.saturating_sub(offset);
 
-        debug_assert!(
-            record_size <= remaining,
-            "mutable_record_at: record_size {} exceeds page remainder {} at offset {}",
-            record_size,
-            remaining,
-            offset,
-        );
-        debug_assert!(
-            record_size as usize >= RECORD_HEADER_SIZE,
-            "mutable_record_at: record_size {} smaller than header ({})",
-            record_size,
-            RECORD_HEADER_SIZE,
-        );
-
-        // Clamp to page boundary — prevents OOB writes even with
-        // corrupted addresses in release builds.
-        let bounded_size = record_size.min(remaining);
+        // Reject records that don't fit or are too small for a header.
+        if record_size > remaining || (record_size as usize) < RECORD_HEADER_SIZE {
+            debug_assert!(
+                record_size <= remaining,
+                "mutable_record_at: record_size {} exceeds page remainder {} at offset {}",
+                record_size,
+                remaining,
+                offset,
+            );
+            debug_assert!(
+                record_size as usize >= RECORD_HEADER_SIZE,
+                "mutable_record_at: record_size {} smaller than header ({})",
+                record_size,
+                RECORD_HEADER_SIZE,
+            );
+            return None;
+        }
 
         // SAFETY:
         // - `ptr` is from `get_physical_address`: valid, 8-byte aligned,
         //   within a live page frame, above head_address.
-        // - `bounded_size <= remaining`: cannot write past page boundary.
+        // - `record_size <= remaining`: cannot write past page boundary.
         // - Accessor lifetime tied to `&self`: cannot outlive allocator.
-        Some(unsafe { MutableRecordAccessor::new(ptr, bounded_size) })
+        Some(unsafe { MutableRecordAccessor::new(ptr, record_size) })
     }
 
     /// Advance the read-only boundary to the current tail address.
