@@ -449,7 +449,9 @@ impl<'a> LogRecordWriter<'a> {
         let size = layout.total_size() as u32;
 
         let addr = self.allocator.try_allocate(size)?;
-        self.allocator.mutable_record_at(addr, size).map(|acc| (addr, acc))
+        self.allocator
+            .mutable_record_at(addr, size)
+            .map(|acc| (addr, acc))
     }
 
     /// Allocate space for a record of the given byte size.
@@ -463,7 +465,9 @@ impl<'a> LogRecordWriter<'a> {
     /// cross a page boundary.
     pub fn allocate_raw(&self, size: u32) -> Option<(LogicalAddress, MutableRecordAccessor<'a>)> {
         let addr = self.allocator.try_allocate(size)?;
-        self.allocator.mutable_record_at(addr, size).map(|acc| (addr, acc))
+        self.allocator
+            .mutable_record_at(addr, size)
+            .map(|acc| (addr, acc))
     }
 
     /// Allocate and write a complete record in one step.

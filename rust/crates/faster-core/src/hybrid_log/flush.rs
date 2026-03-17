@@ -491,7 +491,11 @@ mod tests {
     /// Helper: create a page table and allocate a frame for the given page,
     /// returning it in the specified state.
     fn setup_page_in_state(page: Page, state: PageState) -> Arc<PageTable> {
-        let pt = Arc::new(PageTable::new(TEST_BUFFER_PAGES, TEST_PAGE_SIZE, TEST_SECTOR_SIZE));
+        let pt = Arc::new(PageTable::new(
+            TEST_BUFFER_PAGES,
+            TEST_PAGE_SIZE,
+            TEST_SECTOR_SIZE,
+        ));
         let frame = pt.get_or_allocate_frame(page);
         // Frame starts as Open. Transition to the desired state.
         match state {
@@ -689,7 +693,11 @@ mod tests {
         //
         // We create a PageTable, allocate pages 0-3, seal pages 0-1, and then
         // call flush_page on each to simulate flush_sealed_pages behavior.
-        let pt = Arc::new(PageTable::new(TEST_BUFFER_PAGES, TEST_PAGE_SIZE, TEST_SECTOR_SIZE));
+        let pt = Arc::new(PageTable::new(
+            TEST_BUFFER_PAGES,
+            TEST_PAGE_SIZE,
+            TEST_SECTOR_SIZE,
+        ));
         let dev = NullDevice::new();
         let flusher = PageFlusher::new(TEST_SECTOR_SIZE as u32, TEST_PAGE_SIZE as u32);
 
@@ -779,7 +787,11 @@ mod tests {
     // 8. Flush a page that doesn't exist in the table.
     #[test]
     fn flush_page_not_found() {
-        let pt = Arc::new(PageTable::new(TEST_BUFFER_PAGES, TEST_PAGE_SIZE, TEST_SECTOR_SIZE));
+        let pt = Arc::new(PageTable::new(
+            TEST_BUFFER_PAGES,
+            TEST_PAGE_SIZE,
+            TEST_SECTOR_SIZE,
+        ));
         let dev = NullDevice::new();
         let flusher = PageFlusher::new(TEST_SECTOR_SIZE as u32, TEST_PAGE_SIZE as u32);
 

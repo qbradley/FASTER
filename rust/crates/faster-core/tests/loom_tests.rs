@@ -2381,7 +2381,11 @@ fn f1_free_list_mixed_alloc_free() {
         // Remaining list must contain exactly the other 2 nodes.
         let mut remaining = fl.drain();
         remaining.sort();
-        assert_eq!(remaining.len(), 2, "expected 2 remaining, got {remaining:?}");
+        assert_eq!(
+            remaining.len(),
+            2,
+            "expected 2 remaining, got {remaining:?}"
+        );
 
         // No double-allocation: allocated node must not appear in remaining.
         assert!(

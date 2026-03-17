@@ -226,3 +226,11 @@ Fixed three compaction bugs found by Legolas's disk stress retest (SIGSEGV at T+
 **Bounds checks added:** 6 unconditional runtime checks across 3 files (3 in resolve, 1 in get_physical_address, 1 in mutable_record_at size, 1 in as_mut_ptr_at). Plus overflow protection in get_slice.
 **Results:** 1745 tests pass (1734→1745, +11 bounds tests). Clippy clean.
 **Commit:** `19efbfbb`
+
+### TypedIoContext Double-Free Guard — P2-A (2026-07-25)
+**Impact:** Added release-mode double-free detection to `TypedIoContext::from_raw` and `reclaim`. Previously, the generation-counter guard was debug-only — in release builds a device bug invoking a callback twice would silently corrupt the heap via `Box::from_raw` on freed memory.
+**Files:** `device.rs` — replaced debug-only `ContextEnvelope` with always-present `IoContextEnvelope<T>` carrying an `AtomicU64` sentinel + `ManuallyDrop<T>` data. Added 5 new tests.
+**Key design:** Every I/O context is heap-allocated inside an `IoContextEnvelope { sentinel: AtomicU64, data: ManuallyDrop<T> }`. Both `from_raw()` and `reclaim()` atomically swap `sentinel` from `ALIVE (0x4641_5354_4552_494F)` → `CONSUMED (0xDEAD_DEAD_DEAD_DEAD)`. If the old value isn't `ALIVE`, panic before `Box::from_raw`. The atomic swap serialises concurrent double-callbacks (only one thread observes ALIVE). Debug builds retain generation counter for richer diagnostics.
+**Overhead:** One `AtomicU64` swap (~1ns) on each I/O completion — negligible vs disk I/O latency. One extra `Box::new` per `from_raw` to re-box the extracted data.
+**Results:** 1960 tests pass (faster-core + faster-tokio). Clippy clean. Pre-existing `faster-dst` compile error (unrelated `flush_page` signature change from another agent) does not affect this work.
+**Commit:** `a92e44ff`

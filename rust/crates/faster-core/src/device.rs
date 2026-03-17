@@ -195,8 +195,7 @@ impl<T> TypedIoContext<T> {
     pub fn reclaim(self) -> T {
         // SAFETY: `ptr` was created by `Box::into_raw` in `new()` and points
         // to an `IoContextEnvelope<T>`.
-        let mut envelope =
-            unsafe { Box::from_raw(self.ptr as *mut IoContextEnvelope<T>) };
+        let mut envelope = unsafe { Box::from_raw(self.ptr as *mut IoContextEnvelope<T>) };
 
         let old = envelope
             .sentinel

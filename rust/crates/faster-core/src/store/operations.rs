@@ -500,8 +500,7 @@ pub(crate) fn internal_upsert<F: Functions>(
                     };
 
                     // In-place update via raw or standard path.
-                    let record_size =
-                        safe_read_record_size(found_addr, layout.total_size() as u32);
+                    let record_size = safe_read_record_size(found_addr, layout.total_size() as u32);
                     if let Some(mut accessor) =
                         ctx.allocator.mutable_record_at(found_addr, record_size)
                     {
@@ -840,13 +839,11 @@ pub(crate) fn internal_rmw<F: Functions>(
 
                     // Try in-place update.
                     let record_size = safe_read_record_size(found_addr, layout.total_size() as u32);
-                    let mut accessor = match ctx
-                        .allocator
-                        .mutable_record_at(found_addr, record_size)
-                    {
-                        Some(a) => a,
-                        None => return (OperationStatus::Aborted, Some(context)),
-                    };
+                    let mut accessor =
+                        match ctx.allocator.mutable_record_at(found_addr, record_size) {
+                            Some(a) => a,
+                            None => return (OperationStatus::Aborted, Some(context)),
+                        };
 
                     if F::SUPPORTS_RAW_IN_PLACE {
                         let value_ptr = accessor.value_mut_ptr(&layout);
@@ -1189,13 +1186,11 @@ pub(crate) fn internal_delete<F: Functions>(
 
                     // Set tombstone in-place via atomic CAS on the RecordInfo.
                     let record_size = safe_read_record_size(found_addr, layout.total_size() as u32);
-                    let mut accessor = match ctx
-                        .allocator
-                        .mutable_record_at(found_addr, record_size)
-                    {
-                        Some(a) => a,
-                        None => return (OperationStatus::Aborted, Some(context)),
-                    };
+                    let mut accessor =
+                        match ctx.allocator.mutable_record_at(found_addr, record_size) {
+                            Some(a) => a,
+                            None => return (OperationStatus::Aborted, Some(context)),
+                        };
 
                     // Invoke user callback for cleanup.
                     let mut value: F::Value = accessor.value(&layout);

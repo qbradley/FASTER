@@ -245,3 +245,15 @@ cd rust && cargo bench --bench ycsb -p faster-core -- --nocapture
 **Unsafe reduction:** operations.rs 8→2, record_ops.rs 11→8, log_allocator.rs 3→4. Net: 22→14 (−8). MutableRecordAccessor::new sites: 14→4.
 **Results:** 1734 tests pass. Clippy clean. No performance regression (no new atomics or branches on hot path).
 **Commit:** `8c829953`
+
+### P2-B — Arc-Based Flush Callback Safety (2026-07-25)
+**Impact:** Replaced raw `*const PageTable` in flush callbacks with `Arc<PageTable>`, eliminating drop-order dependency and removing 2 unsafe sites.
+**Files:** `flush.rs` (context struct + callback + `flush_page` signature), `log_allocator.rs` (`page_table` field → `Arc<PageTable>`, added `page_table_arc()`), `kv.rs` (Drop comment), `hybrid_log_mutation_tests.rs` (test updates).
+**Key design decisions:**
+- `HybridLogAllocator.page_table` wrapped in `Arc` — negligible overhead since `page_table()` auto-derefs.
+- Callbacks clone the Arc, holding a strong reference that guarantees validity regardless of `FasterKv` field drop order.
+- `flush_page` takes `&Arc<PageTable>` (communicates "may clone"); `flush_page_sync` unchanged (no callbacks).
+- Removed `unsafe impl Send for FlushCallbackContext` — now auto-derived since all fields are Send.
+**Unsafe reduction:** −1 `unsafe impl Send`, −1 `unsafe { &*ptr }` deref. Net: −2 unsafe sites.
+**Results:** 1745 tests pass. Clippy clean. No performance impact (Arc clone once per page flush, dwarfed by I/O latency).
+**Commit:** `908af7bf`

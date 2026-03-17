@@ -88,7 +88,11 @@ impl HybridLogAllocator {
         let start = LogicalAddress::new(Page(0), Offset(0));
 
         Self {
-            page_table: Arc::new(PageTable::new(buffer_size_pages, page_size as usize, sector_size)),
+            page_table: Arc::new(PageTable::new(
+                buffer_size_pages,
+                page_size as usize,
+                sector_size,
+            )),
             begin_address: AtomicLogicalAddress::new(start),
             head_address: AtomicLogicalAddress::new(start),
             read_only_address: AtomicLogicalAddress::new(start),
