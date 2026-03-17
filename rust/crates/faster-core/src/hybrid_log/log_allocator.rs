@@ -892,4 +892,49 @@ mod tests {
 
         assert_eq!(all_addrs.len(), num_threads * records_per_thread);
     }
+
+    // ── Regression: get_physical_address rejects addresses below head (ABA guard) ──
+    //
+    // Bug: d6f734fd — Compaction scanner SIGSEGV from circular-buffer ABA.
+    // After eviction, frame slots are recycled for newer pages. Without the
+    // head-address bounds check, get_physical_address returns a pointer into
+    // the *wrong* page's data, causing misclassified records and SIGSEGV.
+    //
+    // This test would FAIL if the head_address bounds check were removed
+    // because the address below head would still resolve to a valid frame
+    // (the recycled slot), returning Some instead of None.
+    #[test]
+    fn test_regression_get_physical_address_rejects_below_head() {
+        let alloc = make_allocator();
+
+        // Allocate data on page 0 so the frame is populated.
+        let addr_on_page0 = alloc.try_allocate(64).expect("allocate on page 0");
+        assert!(
+            alloc.get_physical_address(addr_on_page0).is_some(),
+            "address on page 0 should be valid before head advance"
+        );
+
+        // Advance head past page 0. This simulates eviction: page 0's frame
+        // slot can now be recycled for a higher-numbered page.
+        let page1_start = LogicalAddress::new(Page(1), Offset(0));
+        alloc.try_advance_head(page1_start);
+        assert_eq!(alloc.head_address(), page1_start);
+
+        // The address on page 0 is now below head. The frame slot may be
+        // recycled for page (0 + buffer_size). get_physical_address MUST
+        // return None to prevent ABA reads.
+        assert!(
+            alloc.get_physical_address(addr_on_page0).is_none(),
+            "address below head_address must return None (ABA guard)"
+        );
+
+        // Addresses at or above head should still work if their frames exist.
+        // Allocate on page 1 to verify the allocator still functions.
+        alloc.advance_to_next_page();
+        let addr_on_page1 = alloc.try_allocate(64).expect("allocate on page 1");
+        assert!(
+            alloc.get_physical_address(addr_on_page1).is_some(),
+            "address at head should still be valid"
+        );
+    }
 }
