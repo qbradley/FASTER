@@ -233,3 +233,15 @@ cd rust && cargo bench --bench ycsb -p faster-core -- --nocapture
 - Fixed all incorrect comments claiming epoch protection prevents page eviction.
 **Results:** 1734 tests pass (+8 new). Clippy clean. stress_disk 60s @ 16 threads: ~11M ops/s, 0 crashes.
 **Commit:** `96267b56`
+
+### Lifetime-Bound MutableRecordAccessor (P1-A) (2026-07-25)
+**Impact:** Added lifetime parameter to `MutableRecordAccessor<'a>` and safe factory `HybridLogAllocator::mutable_record_at()` with bounds checking. Eliminates raw pointer construction at 10 production+test call sites.
+**Files:** `record_ops.rs` (struct + lifetime), `log_allocator.rs` (factory method), `operations.rs` (5 production + 1 test site migrated), `copier.rs` + `kv.rs` (return type updates), `hybrid_log_mutation_tests.rs` (1 test migrated).
+**Key design decisions:**
+- `PhantomData<&'a ()>` ties accessor to allocator lifetime — compiler prevents dangling pointers.
+- `mutable_record_at()` clamps record_size to page remainder — prevents OOB writes even with corrupted addresses.
+- Mutable region pages don't need PinnedPage (can't be evicted), so lifetime tie is to the allocator, not a pin guard.
+- `unsafe fn new()` retained as escape hatch for raw-buffer tests (miri_tests.rs).
+**Unsafe reduction:** operations.rs 8→2, record_ops.rs 11→8, log_allocator.rs 3→4. Net: 22→14 (−8). MutableRecordAccessor::new sites: 14→4.
+**Results:** 1734 tests pass. Clippy clean. No performance regression (no new atomics or branches on hot path).
+**Commit:** `8c829953`
