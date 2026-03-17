@@ -151,3 +151,38 @@ Implemented SimInstant and yield/sleep hooks behind `#[cfg(feature = "simulation
 
 **Branch:** `rust`
 
+### Small-Pages Feature Flag (2026-03-16)
+Implemented `#[cfg(feature = "small-pages")]` to set `OFFSET_BITS = 16` (64 KB pages) for DST testing:
+
+1. **address.rs:** Cfg-gated `OFFSET_BITS` (25 → 16 under small-pages). Fixed `MAX_PAGE` computation to use u64 arithmetic (avoids `1u32 << 32` overflow when PAGE_BITS=32). Cfg-gated the constants test.
+
+2. **allocator.rs:** Cfg-gated `ITEMS_PER_PAGE_BITS` (20 → 16 under small-pages) to satisfy the `ITEMS_PER_PAGE_BITS ≤ OFFSET_BITS` compile-time assertion. Added `#[allow(clippy::absurd_extreme_comparisons)]` on `bump_allocate` (MAX_PAGE=u32::MAX makes the guard tautological).
+
+3. **log_allocator.rs:** Added `#[allow(clippy::absurd_extreme_comparisons)]` on two SF-7 page overflow guards.
+
+4. **Cargo.toml:** Added `small-pages = []` feature to faster-core and `small-pages = ["faster-core/small-pages"]` to faster-dst.
+
+5. **Test fixes (6 files):** Replaced hardcoded 25-bit offset masks with `MAX_OFFSET`, fixed `make_addr` in hash_index_concurrent to use `from_raw` for offset overflow, scaled buffer_size_pages in mutation/deadlock tests for small-page geometry.
+
+**Verified:** 1722 tests pass (no feature), 1722 tests pass (small-pages), clippy clean both configs, loom 25 tests pass, DST crate builds with small-pages.
+**Branch:** `temp/revert-validation-small-pages`, **Commit:** `3ea5ca81`
+
+### Disk-Backed Forever Stress Test (2026-03-16)
+Created `stress_disk.rs` example — production-realistic stress test using SyncFileDevice on real disk:
+
+1. **SyncFileDevice + lossless mode:** Exercises flush/eviction pipeline on actual NVMe I/O, not InMemoryDevice. No lossy eviction — tests the compaction/GC path.
+
+2. **Bounded working set:** Per-thread VecDeque tracks live keys. When at capacity (max_live_keys / num_threads), deletes oldest key before inserting. Live key count stays exactly at the cap (~50K in tests), preventing disk exhaustion.
+
+3. **YCSB-like workload:** 60% upsert, 20% read, 20% delete across 16 threads (configurable). Each thread owns a disjoint key range partition — no cross-thread conflicts.
+
+4. **Dedicated maintenance thread:** Pumps flush→evict pipeline every 5ms independent of worker threads.
+
+5. **Graceful SIGINT:** Raw libc signal handler sets a static AtomicBool; all threads check it. Final stats printed before exit. process::exit(0) avoids pre-existing SyncFileDevice Drop segfault.
+
+6. **Monitoring:** ops/sec, live key count, upsert/read/delete breakdown, RSS from /proc/self/statm, throughput cliff detection.
+
+7. **Validated:** 20M+ ops/sec sustained, 30s smoke test clean, RSS bounded (~200-370 MB), clippy -D warnings clean.
+
+**Branch:** `rust`, **Commit:** `103a887a`
+
