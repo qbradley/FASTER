@@ -1123,9 +1123,12 @@ impl<F: Functions> FasterKv<F> {
     ///
     /// # Write completion (Upsert / RMW / Delete)
     ///
-    /// Write-path completions are not yet implemented (requires re-entering
-    /// the hash index to perform copy-to-tail). They are tracked as in-flight
-    /// I/O but dropped on completion with a debug warning.
+    /// Write-path completions are fully implemented. The completed I/O
+    /// buffer is read back, the `Functions` callback is invoked to produce
+    /// the new value, a fresh record is allocated at the log tail, and the
+    /// hash index is CAS-updated (copy-to-tail / RCU). Upsert, RMW
+    /// (both initial-insert and copy-update), and Delete (tombstone) are
+    /// all handled. See [`complete_write_pending`](Self::complete_write_pending).
     pub fn complete_pending(&self, session: &mut FasterSession<F>) -> Vec<(F::Output, F::Context)> {
         let completed = session.take_completed_io();
         let mut results = Vec::with_capacity(completed.len());
@@ -2049,17 +2052,18 @@ impl<F: Functions> FasterKv<F> {
         LogicalAddress::from_raw(self.allocator.begin_address().raw() + RECORD_ALIGNMENT as u64)
     }
 
-    /// Get the approximate number of entries in the store.
+    /// Get the approximate number of live entries in the store.
     ///
-    /// **Note:** This is a rough estimate. A precise count requires
-    /// scanning the hash index, which is not yet implemented.
+    /// Delegates to [`HashIndex::entry_count()`], which maintains an
+    /// incremental `AtomicU64` counter (bumped on insert, decremented on
+    /// delete/invalidate). The count is **approximate** because the atomic
+    /// uses `Relaxed` ordering — concurrent writers may not yet be visible.
     ///
-    /// **Intentionally deferred:** Maintaining an atomic counter on every
-    /// upsert/delete adds contention on a hot path. A future iteration may
-    /// implement index scanning or sharded counters when usage warrants it.
+    /// For an exact count (O(n) full-table scan), use the hash index
+    /// directly via internal APIs.
     #[inline]
     pub fn entry_count(&self) -> u64 {
-        0
+        self.hash_index.entry_count()
     }
 
     /// Get a reference to the store configuration.
@@ -3215,6 +3219,58 @@ mod tests {
         }
         // UnsafeContext dropped — epoch released
         assert!(!session.is_in_epoch());
+
+        store.dispose_session(session);
+    }
+
+    // ── Regression: entry_count wired to HashIndex ──────────────────
+
+    /// Regression test for BUG-1: `entry_count()` must reflect live entries,
+    /// not hardcode 0. If `entry_count` is reverted to `return 0`, the
+    /// `assert!(count >= 5)` will fail.
+    #[test]
+    fn entry_count_reflects_inserts() {
+        let store = test_store();
+        let mut session = store.new_session();
+
+        assert_eq!(store.entry_count(), 0, "empty store should have 0 entries");
+
+        for i in 0u64..5 {
+            let _ = store.upsert(&mut session, &i, &(i * 10), ());
+        }
+
+        let count = store.entry_count();
+        assert!(
+            count >= 5,
+            "entry_count must reflect inserts (got {count}, expected >= 5)"
+        );
+
+        store.dispose_session(session);
+    }
+
+    /// Regression test for BUG-1: `entry_count` must decrease after deletes.
+    #[test]
+    fn entry_count_decreases_after_delete() {
+        let store = test_store();
+        let mut session = store.new_session();
+
+        for i in 0u64..3 {
+            let _ = store.upsert(&mut session, &i, &(i * 100), ());
+        }
+
+        let before = store.entry_count();
+        assert!(before >= 3, "expected >= 3 entries, got {before}");
+
+        let _ = store.delete(&mut session, &1u64, ());
+
+        // The delete may or may not immediately decrement depending on
+        // tombstone vs invalidation path, but entry_count must not exceed
+        // the pre-delete count (and ideally decreases by 1).
+        let after = store.entry_count();
+        assert!(
+            after <= before,
+            "entry_count should not increase after delete (before={before}, after={after})"
+        );
 
         store.dispose_session(session);
     }

@@ -81,6 +81,11 @@ pub struct LogRecoveryResult {
     /// `tail_address` since the checkpoint guarantees all pages are on disk.
     pub flushed_until: LogicalAddress,
     /// Number of records scanned during integrity verification.
+    ///
+    /// **Not yet tracked:** Currently always 0. The recovery engine validates
+    /// segment file sizes but does not walk individual records. This field is
+    /// reserved for a future enhancement that performs record-chain integrity
+    /// checks. Do not rely on this value for correctness decisions.
     pub records_scanned: u64,
     /// Number of pages that should be loaded into memory.
     pub pages_loaded: u32,
@@ -1196,7 +1201,8 @@ mod tests {
         let engine = LogRecoveryEngine::new();
         let result = engine.recover_fold_over(&plan, dir.path(), "log.").unwrap();
 
-        // Record scanning is not yet implemented, so count should be 0.
+        // Record scanning is not yet tracked (see `LogRecoveryResult::records_scanned` doc).
+        // TODO(#recovery): update this assertion when record-chain scanning is implemented.
         assert_eq!(result.records_scanned, 0);
     }
 

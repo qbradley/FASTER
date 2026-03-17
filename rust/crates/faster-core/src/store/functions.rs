@@ -245,6 +245,12 @@ pub trait Functions: Send + Sync + 'static {
         info: &UpsertInfo,
     ) {
         let _ = (key, value_ptr, value_len, input, output, info);
+        // SAFETY: This default is unreachable at runtime because call sites
+        // (operations.rs:507, operations.rs:848) are guarded by
+        // `if F::SUPPORTS_RAW_IN_PLACE`, which is `false` by default.
+        // The compiler eliminates the dead branch at monomorphization.
+        // If a new `Functions` impl sets `SUPPORTS_RAW_IN_PLACE = true`,
+        // it MUST override this method or face a runtime panic.
         unreachable!("called upsert_in_place_raw but SUPPORTS_RAW_IN_PLACE is false; this is a bug")
     }
 
@@ -263,6 +269,9 @@ pub trait Functions: Send + Sync + 'static {
         info: &RmwInfo,
     ) -> RmwInPlaceResult {
         let _ = (key, value_ptr, value_len, input, output, info);
+        // SAFETY: Same guard as `upsert_in_place_raw` — call sites
+        // (operations.rs:848) check `F::SUPPORTS_RAW_IN_PLACE` first.
+        // Dead branch is eliminated at monomorphization when the const is false.
         unreachable!("called rmw_in_place_raw but SUPPORTS_RAW_IN_PLACE is false; this is a bug")
     }
 

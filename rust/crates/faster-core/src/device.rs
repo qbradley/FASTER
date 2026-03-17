@@ -361,6 +361,11 @@ pub trait Device: Send + Sync + 'static {
     /// ([`SyncFileDevice`]) yield the current thread to give I/O workers
     /// CPU time. io_uring-based devices can drain their completion queue.
     ///
+    /// The default returns 0, which is correct for **synchronous** device
+    /// implementations where I/O callbacks fire inline during the write
+    /// call. Asynchronous device implementations **must** override this
+    /// method; otherwise, I/O completions will silently be lost.
+    ///
     /// This method is called from [`maintenance()`](crate::store::FasterKv::maintenance)
     /// and from the writer-side retry loop to help drain the flush pipeline
     /// when the buffer is under pressure.
