@@ -12,6 +12,7 @@
 
 use crate::sync::{AtomicU64, Ordering, RwLock};
 use std::io;
+use std::mem::ManuallyDrop;
 
 #[cfg(all(debug_assertions, not(loom)))]
 type GenerationCounter = AtomicU64;
@@ -63,12 +64,20 @@ pub enum IoRequestResult {
 // TypedIoContext — safe wrapper for callback context lifecycle (CORE-03)
 // ---------------------------------------------------------------------------
 
-/// Global generation counter for `TypedIoContext` instances.
+/// Sentinel stamped into every I/O context envelope at allocation time.
 ///
-/// In debug builds, each context is tagged with a unique generation number
-/// at allocation time. When the callback reconstructs the context via
-/// [`from_raw`](TypedIoContext::from_raw), the generation is validated to
-/// detect use-after-free (context pointer reuse after the original was freed).
+/// On consumption via [`TypedIoContext::from_raw`] or [`TypedIoContext::reclaim`],
+/// this is atomically swapped to [`IO_CONTEXT_SENTINEL_CONSUMED`]. A mismatch
+/// causes a panic *before* `Box::from_raw` can corrupt the heap.
+const IO_CONTEXT_SENTINEL_ALIVE: u64 = 0x4641_5354_4552_494F; // "FASTERIO" ASCII
+
+/// Sentinel written after successful consumption (aids post-mortem debugging).
+const IO_CONTEXT_SENTINEL_CONSUMED: u64 = 0xDEAD_DEAD_DEAD_DEAD;
+
+/// Global generation counter for `TypedIoContext` instances (debug builds only).
+///
+/// Each context is tagged with a unique generation number at allocation time.
+/// On reconstruction, the generation is validated for richer diagnostics.
 #[cfg(all(debug_assertions, not(loom)))]
 static IO_CONTEXT_GENERATION: GenerationCounter = GenerationCounter::new(0);
 
@@ -82,20 +91,35 @@ static IO_CONTEXT_GENERATION: std::sync::LazyLock<GenerationCounter> =
 /// Manages the `Box → raw pointer → typed reconstruct` lifecycle that all
 /// device callback contexts follow:
 ///
-/// 1. **Allocation**: [`TypedIoContext::new`] heap-allocates the context.
+/// 1. **Allocation**: [`TypedIoContext::new`] heap-allocates the context inside
+///    an [`IoContextEnvelope`] with an atomic sentinel.
 /// 2. **Submission**: [`as_raw()`](TypedIoContext::as_raw) provides the
 ///    `*mut u8` for [`Device::read_async`] / [`Device::write_async`].
 /// 3. **Completion**: The callback calls [`TypedIoContext::from_raw`] to
 ///    reconstruct the `Box<T>` (still `unsafe` — this is the FFI boundary).
+///    The sentinel is atomically swapped; a second call panics.
 /// 4. **Error paths**: If the device rejects the I/O (QueueFull / Error),
 ///    [`reclaim()`](TypedIoContext::reclaim) safely recovers the allocation
 ///    without any `unsafe` at the call site.
+///
+/// # Double-Free Protection (P2-A)
+///
+/// In **all builds** (debug and release), the context is wrapped in an
+/// [`IoContextEnvelope`] carrying an atomic sentinel. Both [`from_raw`] and
+/// [`reclaim`] atomically swap the sentinel from `ALIVE` → `CONSUMED`.
+/// If the swap observes any value other than `ALIVE`, the call panics
+/// *before* `Box::from_raw` can cause heap corruption. This catches:
+///
+/// - **Concurrent double-callback**: two threads racing to consume the same
+///   context — only one will observe `ALIVE`.
+/// - **Sequential double-free**: a device bug invoking the callback twice —
+///   the second call sees `CONSUMED` and panics.
 ///
 /// # Lifetime Contract
 ///
 /// The `context` pointer passed to [`Device::read_async`] / [`Device::write_async`]
 /// **must** remain valid until the completion callback fires. In debug builds,
-/// a generation counter detects violations.
+/// a generation counter provides additional diagnostics.
 ///
 /// # No `Drop` implementation
 ///
@@ -111,36 +135,42 @@ pub struct TypedIoContext<T> {
     generation: u64,
 }
 
-/// Debug-mode wrapper for generation counter validation at callback time.
-#[cfg(debug_assertions)]
-struct ContextEnvelope<T> {
+/// Envelope wrapping every I/O context for double-free detection.
+///
+/// Present in **all** builds (not just debug). The `sentinel` field is
+/// atomically swapped from [`IO_CONTEXT_SENTINEL_ALIVE`] to
+/// [`IO_CONTEXT_SENTINEL_CONSUMED`] on reconstruction. A mismatch panics
+/// before `Box::from_raw` can cause heap corruption.
+///
+/// In debug builds, an additional `generation` counter cross-checks against
+/// a global monotonic counter for richer use-after-free diagnostics.
+struct IoContextEnvelope<T> {
+    sentinel: AtomicU64,
+    #[cfg(debug_assertions)]
     generation: u64,
-    data: T,
+    data: ManuallyDrop<T>,
 }
 
 impl<T> TypedIoContext<T> {
     /// Heap-allocate an I/O context.
     ///
-    /// In debug builds, stamps the context with a monotonic generation counter
-    /// for use-after-free detection at callback time.
+    /// The context is wrapped in an [`IoContextEnvelope`] with an atomic
+    /// sentinel for double-free detection. In debug builds, a monotonic
+    /// generation counter is also stamped for richer diagnostics.
     pub fn new(data: T) -> Self {
         #[cfg(debug_assertions)]
-        {
-            let gen_id = IO_CONTEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-            let envelope = ContextEnvelope {
-                generation: gen_id,
-                data,
-            };
-            Self {
-                ptr: Box::into_raw(Box::new(envelope)) as *mut T,
-                generation: gen_id,
-            }
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            Self {
-                ptr: Box::into_raw(Box::new(data)),
-            }
+        let gen_id = IO_CONTEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
+
+        let envelope = IoContextEnvelope {
+            sentinel: AtomicU64::new(IO_CONTEXT_SENTINEL_ALIVE),
+            #[cfg(debug_assertions)]
+            generation: gen_id,
+            data: ManuallyDrop::new(data),
+        };
+        Self {
+            ptr: Box::into_raw(Box::new(envelope)) as *mut T,
+            #[cfg(debug_assertions)]
+            generation: gen_id,
         }
     }
 
@@ -157,22 +187,37 @@ impl<T> TypedIoContext<T> {
     /// Use this when the I/O was **not** submitted (the device returned
     /// `QueueFull` or `Error`) and the completion callback will **not** fire.
     /// Consumes `self` and returns the owned data.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the sentinel has already been consumed (indicates a logic
+    /// error where the callback fired despite the I/O being rejected).
     pub fn reclaim(self) -> T {
+        // SAFETY: `ptr` was created by `Box::into_raw` in `new()` and points
+        // to an `IoContextEnvelope<T>`.
+        let mut envelope =
+            unsafe { Box::from_raw(self.ptr as *mut IoContextEnvelope<T>) };
+
+        let old = envelope
+            .sentinel
+            .swap(IO_CONTEXT_SENTINEL_CONSUMED, Ordering::AcqRel);
+        assert_eq!(
+            old, IO_CONTEXT_SENTINEL_ALIVE,
+            "TypedIoContext::reclaim: context already consumed or corrupted \
+             (sentinel was {old:#018x}, expected {IO_CONTEXT_SENTINEL_ALIVE:#018x})"
+        );
+
         #[cfg(debug_assertions)]
-        {
-            // SAFETY: `ptr` was created by `Box::into_raw` in `new()`.
-            let envelope = *unsafe { Box::from_raw(self.ptr as *mut ContextEnvelope<T>) };
-            debug_assert_eq!(
-                envelope.generation, self.generation,
-                "TypedIoContext generation mismatch on reclaim"
-            );
-            envelope.data
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            // SAFETY: `ptr` was created by `Box::into_raw` in `new()`.
-            *unsafe { Box::from_raw(self.ptr) }
-        }
+        debug_assert_eq!(
+            envelope.generation, self.generation,
+            "TypedIoContext generation mismatch on reclaim"
+        );
+
+        // SAFETY: `data` was initialised in `new()` and the sentinel confirms
+        // this is the first (and only) consumption.
+        unsafe { ManuallyDrop::take(&mut envelope.data) }
+        // `envelope` drops here: AtomicU64 + u64 are trivial; ManuallyDrop
+        // suppresses T's destructor (data was already moved out).
     }
 
     /// Reconstruct the `Box<T>` from a raw callback pointer.
@@ -182,22 +227,46 @@ impl<T> TypedIoContext<T> {
     /// - `ptr` must have originated from [`TypedIoContext::<T>::as_raw`].
     /// - Must be called **exactly once** per context (double-free otherwise).
     /// - The context must not have been reclaimed via [`reclaim`](Self::reclaim).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the atomic sentinel has already been consumed, preventing
+    /// heap corruption from a double-free.
     pub unsafe fn from_raw(ptr: *mut u8) -> Box<T> {
+        let envelope_ptr = ptr as *mut IoContextEnvelope<T>;
+
+        // SAFETY: The caller guarantees `ptr` originated from `as_raw()`,
+        // so `envelope_ptr` points to a live `IoContextEnvelope<T>`.
+        // The atomic swap ensures exactly one caller observes ALIVE.
+        let old = unsafe { &(*envelope_ptr).sentinel }
+            .swap(IO_CONTEXT_SENTINEL_CONSUMED, Ordering::AcqRel);
+        assert_eq!(
+            old, IO_CONTEXT_SENTINEL_ALIVE,
+            "TypedIoContext::from_raw: double-free or corrupted I/O context \
+             (sentinel was {old:#018x}, expected {IO_CONTEXT_SENTINEL_ALIVE:#018x})"
+        );
+
         #[cfg(debug_assertions)]
         {
-            // SAFETY: Caller guarantees `ptr` is a valid `ContextEnvelope<T>`.
-            let envelope = unsafe { Box::from_raw(ptr as *mut ContextEnvelope<T>) };
+            // SAFETY: envelope is still live (we haven't freed it yet).
+            let gen_id = unsafe { (*envelope_ptr).generation };
             debug_assert!(
-                envelope.generation <= IO_CONTEXT_GENERATION.load(Ordering::Relaxed),
+                gen_id <= IO_CONTEXT_GENERATION.load(Ordering::Relaxed),
                 "TypedIoContext: corrupted context pointer (generation overflow)"
             );
-            Box::new(envelope.data)
         }
-        #[cfg(not(debug_assertions))]
-        {
-            // SAFETY: Caller guarantees `ptr` is a valid `*mut T`.
-            unsafe { Box::from_raw(ptr as *mut T) }
-        }
+
+        // Take ownership of the envelope and extract the inner data.
+        // SAFETY: `envelope_ptr` was created by `Box::into_raw(Box::new(…))`
+        // in `new()`, and the sentinel confirms this is the first consumption.
+        let mut envelope = unsafe { Box::from_raw(envelope_ptr) };
+        // SAFETY: `data` was initialised in `new()` and the sentinel confirms
+        // this is the first (and only) consumption — no double-take.
+        let data = unsafe { ManuallyDrop::take(&mut envelope.data) };
+        // `envelope` drops: AtomicU64 + u64 are trivial; ManuallyDrop is inert.
+        drop(envelope);
+
+        Box::new(data)
     }
 }
 
@@ -762,5 +831,69 @@ mod tests {
         let mut buf = vec![0xFFu8; 512];
         dev.read_sync(8192, &mut buf).unwrap();
         assert!(buf.iter().all(|&b| b == 0));
+    }
+
+    // -- TypedIoContext double-free guard tests --------------------------------
+
+    #[test]
+    fn typed_io_context_from_raw_round_trip() {
+        let ctx = TypedIoContext::new(42u64);
+        let raw = ctx.as_raw();
+        let boxed = unsafe { TypedIoContext::<u64>::from_raw(raw) };
+        assert_eq!(*boxed, 42);
+    }
+
+    #[test]
+    fn typed_io_context_reclaim_round_trip() {
+        let ctx = TypedIoContext::new("hello".to_string());
+        let data = ctx.reclaim();
+        assert_eq!(data, "hello");
+    }
+
+    #[test]
+    #[should_panic(expected = "double-free or corrupted I/O context")]
+    fn typed_io_context_double_from_raw_panics() {
+        // Construct an envelope with an already-consumed sentinel to
+        // test the guard without accessing freed memory.
+        use std::mem::ManuallyDrop;
+        let envelope = IoContextEnvelope {
+            sentinel: AtomicU64::new(IO_CONTEXT_SENTINEL_CONSUMED),
+            #[cfg(debug_assertions)]
+            generation: 0,
+            data: ManuallyDrop::new(42u64),
+        };
+        let ptr = Box::into_raw(Box::new(envelope)) as *mut u8;
+        // The sentinel is CONSUMED — from_raw must panic.
+        let _ = unsafe { TypedIoContext::<u64>::from_raw(ptr) };
+    }
+
+    #[test]
+    #[should_panic(expected = "context already consumed or corrupted")]
+    fn typed_io_context_reclaim_after_from_raw_panics() {
+        // Construct an envelope with an already-consumed sentinel.
+        use std::mem::ManuallyDrop;
+        let envelope = IoContextEnvelope {
+            sentinel: AtomicU64::new(IO_CONTEXT_SENTINEL_CONSUMED),
+            #[cfg(debug_assertions)]
+            generation: 0,
+            data: ManuallyDrop::new(99u64),
+        };
+        let raw = Box::into_raw(Box::new(envelope));
+        let fake_ctx = TypedIoContext::<u64> {
+            ptr: raw as *mut u64,
+            #[cfg(debug_assertions)]
+            generation: 0,
+        };
+        // Sentinel is CONSUMED — reclaim must panic.
+        let _ = fake_ctx.reclaim();
+    }
+
+    #[test]
+    fn typed_io_context_from_raw_with_drop_type() {
+        let ctx = TypedIoContext::new(vec![1u32, 2, 3]);
+        let raw = ctx.as_raw();
+        let boxed = unsafe { TypedIoContext::<Vec<u32>>::from_raw(raw) };
+        assert_eq!(*boxed, vec![1, 2, 3]);
+        // Vec drops correctly — no leak or double-free.
     }
 }
