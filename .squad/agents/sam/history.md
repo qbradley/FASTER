@@ -234,3 +234,12 @@ Fixed three compaction bugs found by Legolas's disk stress retest (SIGSEGV at T+
 **Overhead:** One `AtomicU64` swap (~1ns) on each I/O completion — negligible vs disk I/O latency. One extra `Box::new` per `from_raw` to re-box the extracted data.
 **Results:** 1960 tests pass (faster-core + faster-tokio). Clippy clean. Pre-existing `faster-dst` compile error (unrelated `flush_page` signature change from another agent) does not affect this work.
 **Commit:** `a92e44ff`
+
+### Fix Silent Data Loss Paths — Audit Finding #1 (2026-03-17)
+Addressed Gandalf's architecture audit finding #1 (silent failure paths). Four locations fixed:
+- **kv.rs L1372/1402/1425/1449:** Replaced `let _ = hash_index.update(...)` with `log::warn!` + `metrics_inc!(write_completion_cas_failures)` on CAS failure. Orphaned-record risk now observable.
+- **kv.rs L1101:** Replaced debug-only `eprintln!` for I/O dispatch failures with unconditional `log::warn!` + `metrics_inc!(io_dispatch_failures)`.
+- **flush.rs L168/187:** Short-write and I/O error in `flush_completion_callback` now logged unconditionally via `log::error!` (previously debug-only or silent).
+- **orchestrator.rs L194:** Added swing guard: if `records_copied > 0 && stats.swung == 0`, abort truncation with new `CompactionError::SwingFailed`. Partial failures (some swung, some failed) emit `log::warn!`.
+Added 3 new metrics counters: `write_completion_cas_failures`, `io_dispatch_failures`, `flush_io_errors` with full snapshot/display/debug/test support.
+**Branch:** `rust`, **Commit:** `d05a2a58`
