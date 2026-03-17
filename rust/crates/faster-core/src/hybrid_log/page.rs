@@ -15,7 +15,7 @@
 
 use core::fmt;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use std::alloc::Layout;
 
 use crate::address::Page;
@@ -81,43 +81,150 @@ impl fmt::Display for PageState {
 // AtomicPageState — lock-free state wrapper
 // ---------------------------------------------------------------------------
 
-/// Atomic wrapper around [`PageState`] for lock-free state transitions.
+/// Packed atomic page state with embedded pin count.
 ///
-/// Uses `AtomicU8` internally. State transitions are performed via CAS
-/// through [`try_transition`](Self::try_transition).
+/// Packs both the [`PageState`] and a concurrent pin count into a single
+/// `AtomicU32` for lock-free CAS operations that atomically check/modify
+/// both fields:
+///
+/// ```text
+/// [pin_count: 28 bits (high)] | [state: 4 bits (low)]
+/// ```
+///
+/// This eliminates the TOCTOU window between checking page state and
+/// modifying the pin count — both happen in a single CAS.
 pub struct AtomicPageState {
-    inner: AtomicU8,
+    inner: AtomicU32,
 }
 
 impl AtomicPageState {
-    /// Create a new `AtomicPageState` with the given initial state.
+    /// Mask for extracting the 4-bit state field.
+    const STATE_MASK: u32 = 0xF;
+    /// Bit shift for the pin count field.
+    const PIN_SHIFT: u32 = 4;
+    /// Value of one pin count unit (1 << PIN_SHIFT).
+    const PIN_ONE: u32 = 1 << 4;
+
+    /// Create a new `AtomicPageState` with the given initial state and
+    /// zero pin count.
     pub fn new(state: PageState) -> Self {
         Self {
-            inner: AtomicU8::new(state as u8),
+            inner: AtomicU32::new(state as u32),
         }
     }
 
-    /// Load the current state.
+    /// Load the current state (ignoring pin count).
     pub fn load(&self, order: Ordering) -> PageState {
         let v = self.inner.load(order);
         // All values stored through our API are valid discriminants.
-        PageState::from_u8(v).expect("AtomicPageState: corrupted discriminant")
+        PageState::from_u8((v & Self::STATE_MASK) as u8)
+            .expect("AtomicPageState: corrupted discriminant")
     }
 
-    /// Store a state unconditionally.
+    /// Load the raw packed value (state + pin count).
+    #[inline]
+    pub fn load_raw(&self, order: Ordering) -> u32 {
+        self.inner.load(order)
+    }
+
+    /// Store a state unconditionally, resetting pin count to zero.
+    ///
+    /// Only safe when pin count is known to be zero (initialization,
+    /// frame allocation before insertion into the table).
     pub fn store(&self, state: PageState, order: Ordering) {
-        self.inner.store(state as u8, order);
+        self.inner.store(state as u32, order);
     }
 
-    /// Attempt an atomic CAS transition from `expected` to `desired`.
+    /// Attempt an atomic CAS transition from `expected` to `desired`,
+    /// preserving the current pin count.
     ///
     /// Returns `true` if the transition succeeded, `false` if the current
-    /// state did not match `expected`.
+    /// state did not match `expected` (or the pin count changed, in which
+    /// case we retry).
     pub fn try_transition(&self, expected: PageState, desired: PageState) -> bool {
+        loop {
+            let old = self.inner.load(Ordering::Acquire);
+            if (old & Self::STATE_MASK) as u8 != expected as u8 {
+                return false;
+            }
+            let new = (old & !Self::STATE_MASK) | (desired as u32);
+            match self.inner.compare_exchange_weak(
+                old,
+                new,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(actual) => {
+                    // State changed underneath us — fail immediately.
+                    if (actual & Self::STATE_MASK) as u8 != expected as u8 {
+                        return false;
+                    }
+                    // Pin count changed but state still matches — retry.
+                    continue;
+                }
+            }
+        }
+    }
+
+    /// Returns the current pin count.
+    #[inline]
+    pub fn pin_count(&self, order: Ordering) -> u32 {
+        self.inner.load(order) >> Self::PIN_SHIFT
+    }
+
+    /// Try to increment the pin count. Fails if the page is in `Free` or
+    /// `Evicted` state (pages in those states cannot be pinned).
+    ///
+    /// Uses a CAS loop to atomically verify the state and bump the count.
+    pub fn try_pin(&self) -> bool {
+        loop {
+            let old = self.inner.load(Ordering::Acquire);
+            let state = (old & Self::STATE_MASK) as u8;
+            match PageState::from_u8(state) {
+                Some(PageState::Free) | Some(PageState::Evicted) | None => return false,
+                _ => {}
+            }
+            let new = old.checked_add(Self::PIN_ONE);
+            let new = match new {
+                Some(v) if v >> Self::PIN_SHIFT > 0 || old >> Self::PIN_SHIFT > 0 => v,
+                _ => return false, // overflow
+            };
+            match self.inner.compare_exchange_weak(
+                old,
+                new,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(_) => continue,
+            }
+        }
+    }
+
+    /// Decrement the pin count. The caller must have a matching `try_pin`.
+    pub fn unpin(&self) {
+        let prev = self.inner.fetch_sub(Self::PIN_ONE, Ordering::Release);
+        debug_assert!(
+            prev >= Self::PIN_ONE,
+            "unpin called with pin_count == 0"
+        );
+    }
+
+    /// Try to transition to `Evicted` from `expected_state`.
+    ///
+    /// Succeeds only if the current state matches `expected_state` **and**
+    /// the pin count is zero. This is the key safety guarantee: a pinned
+    /// page cannot be evicted.
+    pub fn try_evict(&self, expected_state: PageState) -> bool {
+        // We require pin_count == 0, so the full expected value is just
+        // the state discriminant with no pins.
+        let expected_val = expected_state as u32;
+        let desired_val = PageState::Evicted as u32;
         self.inner
             .compare_exchange(
-                expected as u8,
-                desired as u8,
+                expected_val,
+                desired_val,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )
@@ -127,7 +234,11 @@ impl AtomicPageState {
 
 impl fmt::Debug for AtomicPageState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "AtomicPageState({:?})", self.load(Ordering::Relaxed))
+        let raw = self.inner.load(Ordering::Relaxed);
+        let state = PageState::from_u8((raw & Self::STATE_MASK) as u8)
+            .unwrap_or(PageState::Free);
+        let pins = raw >> Self::PIN_SHIFT;
+        write!(f, "AtomicPageState({state:?}, pins={pins})")
     }
 }
 
@@ -309,6 +420,85 @@ impl fmt::Debug for PageFrame {
 }
 
 // ---------------------------------------------------------------------------
+// PinnedPage — RAII guard preventing eviction
+// ---------------------------------------------------------------------------
+
+/// A page frame that cannot be evicted while this guard exists.
+///
+/// Created by [`PageTable::pin_page`]. The guard holds an incremented pin
+/// count on the underlying [`AtomicPageState`]. When dropped, the pin count
+/// is decremented, re-enabling eviction if no other pins remain.
+///
+/// All data access through `PinnedPage` is safe because:
+/// - The pin count prevents [`PageTable::try_evict_frame`] from freeing the
+///   frame (it checks `pin_count == 0` via a single CAS).
+/// - The frame memory is never freed during the `PageTable`'s lifetime;
+///   eviction only transitions state, it does not deallocate.
+pub struct PinnedPage<'a> {
+    frame: &'a PageFrame,
+}
+
+impl<'a> PinnedPage<'a> {
+    /// Returns the full page data as a byte slice.
+    ///
+    /// Safe because the pin prevents eviction and frame deallocation.
+    #[inline]
+    pub fn as_slice(&self) -> &[u8] {
+        self.frame.as_slice()
+    }
+
+    /// Returns a sub-slice at the given offset and length within the page.
+    ///
+    /// Returns `None` if `offset + len` exceeds the page size.
+    #[inline]
+    pub fn get_slice(&self, offset: usize, len: usize) -> Option<&[u8]> {
+        let data = self.frame.as_slice();
+        data.get(offset..offset + len)
+    }
+
+    /// Returns the page frame size in bytes.
+    #[inline]
+    pub fn size(&self) -> usize {
+        self.frame.size()
+    }
+
+    /// Returns a reference to the underlying page frame.
+    #[inline]
+    pub fn frame(&self) -> &PageFrame {
+        self.frame
+    }
+
+    /// Returns a raw mutable pointer at the given offset within the page.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure exclusive write access to the offset range
+    /// (e.g., the page is in the mutable region and the caller owns the
+    /// allocation range via the bump allocator).
+    #[inline]
+    pub unsafe fn as_mut_ptr_at(&self, offset: usize) -> *mut u8 {
+        debug_assert!(offset < self.frame.size());
+        // SAFETY: frame is pinned, offset is within bounds (caller asserts).
+        unsafe { self.frame.as_mut_ptr().add(offset) }
+    }
+}
+
+impl Drop for PinnedPage<'_> {
+    fn drop(&mut self) {
+        self.frame.state().unpin();
+    }
+}
+
+impl fmt::Debug for PinnedPage<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PinnedPage")
+            .field("size", &self.frame.size())
+            .field("state", &self.frame.state())
+            .finish()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PageTable — circular buffer of page frames
 // ---------------------------------------------------------------------------
 
@@ -390,8 +580,9 @@ impl PageTable {
     ///
     /// - `ptr` must be a valid, non-null pointer to a `PageFrame` that was
     ///   created by `Box::into_raw` and stored in this table.
-    /// - The frame must not have been freed (via `Box::from_raw`) and must
-    ///   remain live for the lifetime of `self`.
+    /// - The frame remains live for the lifetime of the `PageTable`. Since
+    ///   eviction only transitions state (does not free or null the pointer),
+    ///   all non-null pointers in the table are valid until `PageTable::drop`.
     #[inline]
     unsafe fn frame_ref(&self, ptr: *mut PageFrame) -> &PageFrame {
         debug_assert!(!ptr.is_null(), "frame_ref called with null pointer");
@@ -420,7 +611,8 @@ impl PageTable {
         } else {
             // SAFETY: Non-null pointers in the table are always valid,
             // heap-allocated `PageFrame`s created by `get_or_allocate_frame`.
-            // The frame lives until explicitly evicted or the table is dropped.
+            // Frames are never freed during the table's lifetime (eviction
+            // only transitions state; see `try_evict_frame`).
             Some(unsafe { self.frame_ref(ptr) })
         }
     }
@@ -493,11 +685,20 @@ impl PageTable {
 
     /// Attempt to evict the frame at the given page slot.
     ///
-    /// Transitions the frame to `Evicted` state and nulls out the slot
-    /// pointer, freeing the frame memory.
+    /// Atomically checks that the page is in `Flushed` state with zero pin
+    /// count, then transitions to `Evicted`. The frame memory is **not**
+    /// freed — it remains in the slot for recycling by
+    /// [`get_or_allocate_frame`]. This guarantees that non-null frame
+    /// pointers are always valid, which is essential for [`pin_page`]
+    /// safety.
     ///
-    /// Returns `Some(())` if eviction succeeded, `None` if the slot was
-    /// already empty.
+    /// Returns `Some(())` if eviction succeeded, `None` if:
+    /// - The slot is empty (null pointer).
+    /// - The page is pinned (`pin_count > 0`).
+    /// - The page is not in `Flushed` state.
+    ///
+    /// [`get_or_allocate_frame`]: PageTable::get_or_allocate_frame
+    /// [`pin_page`]: PageTable::pin_page
     pub fn try_evict_frame(&self, page: Page) -> Option<()> {
         let idx = self.frame_index(page);
 
@@ -506,30 +707,56 @@ impl PageTable {
             return None;
         }
 
-        // SAFETY: Non-null pointers in the table are valid `PageFrame`s
-        // (invariant maintained by get_or_allocate_frame).
+        // SAFETY: Non-null pointers in the table are always valid `PageFrame`s.
+        // Frames are never freed during the PageTable's lifetime — eviction
+        // only transitions state, and recycling reuses the same allocation.
         let frame = unsafe { self.frame_ref(ptr) };
-        frame.state().store(PageState::Evicted, Ordering::Release);
 
-        // Null out the slot. Use CAS to avoid ABA if another thread already
-        // swapped in a different frame.
-        match self.frames[idx].compare_exchange(
-            ptr,
-            core::ptr::null_mut(),
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => {
-                // SAFETY: We successfully removed `ptr` from the table.
-                // No other thread can access it now. Reconstruct Box to free.
-                let _ = unsafe { Box::from_raw(ptr) };
-                Some(())
-            }
-            Err(_) => {
-                // Slot was changed by another thread; leave it alone.
-                None
-            }
+        // Atomically verify pin_count == 0 AND state == Flushed, then
+        // transition to Evicted. If the page is pinned, this CAS fails
+        // and the page is skipped (the key safety guarantee).
+        if frame.state().try_evict(PageState::Flushed) {
+            Some(())
+        } else {
+            None
         }
+    }
+
+    /// Pin a page, preventing eviction while the returned guard is held.
+    ///
+    /// Returns `None` if the slot is empty or the page is in `Free` /
+    /// `Evicted` state (cannot pin a page that is not in memory).
+    ///
+    /// The returned [`PinnedPage`] decrements the pin count on drop,
+    /// re-enabling eviction when all pins are released.
+    pub fn pin_page(&self, page: Page) -> Option<PinnedPage<'_>> {
+        let idx = self.frame_index(page);
+        let ptr = self.frames[idx].load(Ordering::Acquire);
+        if ptr.is_null() {
+            return None;
+        }
+
+        // SAFETY: Non-null pointers in the table are always valid `PageFrame`s.
+        // Frames are never freed during the PageTable's lifetime.
+        let frame = unsafe { self.frame_ref(ptr) };
+
+        // Atomically check that the page is in a pinnable state (not
+        // Free/Evicted) and increment the pin count. If the state is
+        // invalid, try_pin returns false and we return None.
+        if !frame.state().try_pin() {
+            return None;
+        }
+
+        // Double-check: the frame pointer hasn't changed between our load
+        // and the pin. This guards against a narrow ABA window where the
+        // slot was recycled between the pointer load and the CAS.
+        let ptr2 = self.frames[idx].load(Ordering::Acquire);
+        if ptr2 != ptr {
+            frame.state().unpin();
+            return None;
+        }
+
+        Some(PinnedPage { frame })
     }
 
     /// Returns the page size in bytes.
@@ -877,7 +1104,7 @@ mod tests {
         let frame = table.get_or_allocate_frame(Page(0));
         assert_eq!(frame.state().load(Ordering::Relaxed), PageState::Open);
 
-        // Simulate lifecycle: Open → Sealed → Flushing → Flushed → Evicted
+        // Simulate lifecycle: Open → Sealed → Flushing → Flushed
         frame
             .state()
             .try_transition(PageState::Open, PageState::Sealed);
@@ -887,15 +1114,14 @@ mod tests {
         frame
             .state()
             .try_transition(PageState::Flushing, PageState::Flushed);
-        frame
-            .state()
-            .try_transition(PageState::Flushed, PageState::Evicted);
 
-        // Evict: free the memory.
+        // Evict: transitions Flushed → Evicted (frame stays in slot).
         assert!(table.try_evict_frame(Page(0)).is_some());
-        assert!(table.get_frame(Page(0)).is_none());
+        // Frame is still in the slot, but in Evicted state.
+        let frame = table.get_frame(Page(0)).expect("frame still in slot");
+        assert_eq!(frame.state().load(Ordering::Relaxed), PageState::Evicted);
 
-        // Allocate again — new frame at the same slot.
+        // Recycle via get_or_allocate_frame — zeroes and transitions to Open.
         let frame2 = table.get_or_allocate_frame(Page(0));
         assert_eq!(frame2.state().load(Ordering::Relaxed), PageState::Open);
         // Data should be zeroed.
@@ -923,6 +1149,149 @@ mod tests {
     fn page_table_evict_empty_slot_returns_none() {
         let table = PageTable::new(4, 4096, 512);
         assert!(table.try_evict_frame(Page(0)).is_none());
+    }
+
+    // -- Pin count tests ----------------------------------------------------
+
+    #[test]
+    fn pin_count_initial_zero() {
+        let frame = PageFrame::new(4096, 512);
+        assert_eq!(frame.state().pin_count(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn try_pin_rejects_free_and_evicted() {
+        let frame = PageFrame::new(4096, 512);
+        // Free state — cannot pin.
+        assert!(!frame.state().try_pin());
+
+        frame.state().store(PageState::Evicted, Ordering::Relaxed);
+        assert!(!frame.state().try_pin());
+    }
+
+    #[test]
+    fn try_pin_succeeds_on_open_and_flushed() {
+        let frame = PageFrame::new(4096, 512);
+        frame.state().store(PageState::Open, Ordering::Relaxed);
+        assert!(frame.state().try_pin());
+        assert_eq!(frame.state().pin_count(Ordering::Relaxed), 1);
+        frame.state().unpin();
+        assert_eq!(frame.state().pin_count(Ordering::Relaxed), 0);
+
+        frame
+            .state()
+            .try_transition(PageState::Open, PageState::Flushed);
+        assert!(frame.state().try_pin());
+        assert_eq!(frame.state().pin_count(Ordering::Relaxed), 1);
+        frame.state().unpin();
+    }
+
+    #[test]
+    fn multiple_pins_stack() {
+        let frame = PageFrame::new(4096, 512);
+        frame.state().store(PageState::Open, Ordering::Relaxed);
+        assert!(frame.state().try_pin());
+        assert!(frame.state().try_pin());
+        assert!(frame.state().try_pin());
+        assert_eq!(frame.state().pin_count(Ordering::Relaxed), 3);
+        frame.state().unpin();
+        frame.state().unpin();
+        assert_eq!(frame.state().pin_count(Ordering::Relaxed), 1);
+        frame.state().unpin();
+        assert_eq!(frame.state().pin_count(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn try_evict_fails_while_pinned() {
+        let table = PageTable::new(4, 4096, 512);
+        let frame = table.get_or_allocate_frame(Page(0));
+        // Open → Sealed → Flushing → Flushed
+        frame
+            .state()
+            .try_transition(PageState::Open, PageState::Sealed);
+        frame
+            .state()
+            .try_transition(PageState::Sealed, PageState::Flushing);
+        frame
+            .state()
+            .try_transition(PageState::Flushing, PageState::Flushed);
+
+        // Pin the page.
+        let pinned = table.pin_page(Page(0)).expect("should pin Flushed page");
+
+        // Eviction must fail while pinned.
+        assert!(
+            table.try_evict_frame(Page(0)).is_none(),
+            "try_evict must fail while page is pinned"
+        );
+
+        // Drop the pin.
+        drop(pinned);
+
+        // Eviction should now succeed.
+        assert!(table.try_evict_frame(Page(0)).is_some());
+        let frame = table.get_frame(Page(0)).expect("frame still in slot");
+        assert_eq!(frame.state().load(Ordering::Relaxed), PageState::Evicted);
+    }
+
+    #[test]
+    fn pin_page_returns_none_for_evicted() {
+        let table = PageTable::new(4, 4096, 512);
+        let frame = table.get_or_allocate_frame(Page(0));
+        frame
+            .state()
+            .try_transition(PageState::Open, PageState::Sealed);
+        frame
+            .state()
+            .try_transition(PageState::Sealed, PageState::Flushing);
+        frame
+            .state()
+            .try_transition(PageState::Flushing, PageState::Flushed);
+        assert!(table.try_evict_frame(Page(0)).is_some());
+
+        // Cannot pin an evicted page.
+        assert!(table.pin_page(Page(0)).is_none());
+    }
+
+    #[test]
+    fn pinned_page_provides_valid_slice() {
+        let table = PageTable::new(4, 4096, 512);
+        let frame = table.get_or_allocate_frame(Page(0));
+        assert_eq!(frame.state().load(Ordering::Relaxed), PageState::Open);
+
+        let pinned = table.pin_page(Page(0)).expect("should pin Open page");
+        let slice = pinned.as_slice();
+        assert_eq!(slice.len(), 4096);
+        // Freshly allocated frame should be zeroed.
+        assert!(slice.iter().all(|&b| b == 0));
+
+        let sub = pinned.get_slice(100, 50).expect("valid sub-slice");
+        assert_eq!(sub.len(), 50);
+
+        // Out of bounds returns None.
+        assert!(pinned.get_slice(4090, 10).is_none());
+    }
+
+    #[test]
+    fn pin_preserves_state_across_transitions() {
+        let frame = PageFrame::new(4096, 512);
+        frame.state().store(PageState::Open, Ordering::Relaxed);
+        assert!(frame.state().try_pin());
+        assert_eq!(frame.state().pin_count(Ordering::Relaxed), 1);
+
+        // Transition Open → Sealed while pinned.
+        assert!(frame
+            .state()
+            .try_transition(PageState::Open, PageState::Sealed));
+        assert_eq!(frame.state().load(Ordering::Relaxed), PageState::Sealed);
+        assert_eq!(
+            frame.state().pin_count(Ordering::Relaxed),
+            1,
+            "pin count preserved across transition"
+        );
+
+        frame.state().unpin();
+        assert_eq!(frame.state().pin_count(Ordering::Relaxed), 0);
     }
 
     #[test]

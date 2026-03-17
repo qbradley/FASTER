@@ -467,7 +467,7 @@ pub(crate) fn internal_upsert<F: Functions>(
                         if let Some(ptr) = ptr {
                             let record_size =
                                 safe_read_record_size(found_addr, layout.total_size() as u32);
-                            // SAFETY: record is in mutable region, epoch guard held.
+                            // SAFETY: record is in mutable region (above head_address), cannot be evicted.
                             let accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
                             let atomic_ri = accessor.atomic_record_info();
 
@@ -501,16 +501,16 @@ pub(crate) fn internal_upsert<F: Functions>(
                     let ptr = ctx.allocator.get_physical_address(found_addr);
                     if let Some(ptr) = ptr {
                         // SF-15: Verify the address is still in memory after
-                        // obtaining the physical pointer. Epoch protection
-                        // should prevent eviction, but this catches bugs.
+                        // obtaining the physical pointer. The mutable region
+                        // is above head_address, so eviction cannot reach it.
                         debug_assert!(
                             ctx.allocator.is_in_memory(found_addr),
                             "SF-15: address evicted between classify and access"
                         );
                         let record_size =
                             safe_read_record_size(found_addr, layout.total_size() as u32);
-                        // SAFETY: record is in the mutable region and we hold
-                        // epoch protection, so the page frame won't be evicted.
+                        // SAFETY: record is in the mutable region (above head_address),
+                        // so the page frame cannot be evicted. Pinning is not required.
                         let mut accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
 
                         if F::SUPPORTS_RAW_IN_PLACE {
@@ -518,7 +518,7 @@ pub(crate) fn internal_upsert<F: Functions>(
                             let value_len = std::mem::size_of::<F::Value>();
                             let mut output = F::Output::default();
                             // SAFETY: value_ptr points into a mutable-region
-                            // page frame under epoch protection.
+                            // page frame that cannot be evicted (above head).
                             unsafe {
                                 functions.upsert_in_place_raw(
                                     key,
@@ -811,7 +811,7 @@ pub(crate) fn internal_rmw<F: Functions>(
                         if let Some(ptr) = ptr {
                             let record_size =
                                 safe_read_record_size(found_addr, layout.total_size() as u32);
-                            // SAFETY: record is in mutable region, epoch guard held.
+                            // SAFETY: record is in mutable region (above head_address), cannot be evicted.
                             let accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
                             let atomic_ri = accessor.atomic_record_info();
 
@@ -859,13 +859,13 @@ pub(crate) fn internal_rmw<F: Functions>(
                         "SF-15: address evicted between classify and access"
                     );
                     let record_size = safe_read_record_size(found_addr, layout.total_size() as u32);
-                    // SAFETY: record is in mutable region, epoch guard held.
+                    // SAFETY: record is in mutable region (above head_address), cannot be evicted.
                     let mut accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
 
                     if F::SUPPORTS_RAW_IN_PLACE {
                         let value_ptr = accessor.value_mut_ptr(&layout);
                         let value_len = std::mem::size_of::<F::Value>();
-                        // SAFETY: value_ptr in mutable-region page under epoch.
+                        // SAFETY: value_ptr in mutable-region page (above head_address, not evictable).
                         let rmw_result = unsafe {
                             functions.rmw_in_place_raw(
                                 key,
@@ -1208,7 +1208,7 @@ pub(crate) fn internal_delete<F: Functions>(
                     };
 
                     let record_size = safe_read_record_size(found_addr, layout.total_size() as u32);
-                    // SAFETY: record is in mutable region, epoch guard held.
+                    // SAFETY: record is in mutable region (above head_address), cannot be evicted.
                     let mut accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
 
                     // Invoke user callback for cleanup.

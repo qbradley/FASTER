@@ -182,9 +182,15 @@ impl HybridLogAllocator {
     /// The head-address check prevents a circular-buffer ABA hazard: after
     /// eviction, the frame slot (`page % buffer_size`) may be recycled for
     /// a higher-numbered page. Without this guard, callers would silently
-    /// read data from the *wrong* page — leading to misclassified records
-    /// in the compaction scanner and potential use-after-free when frames
-    /// are deallocated during eviction.
+    /// read data from the *wrong* page.
+    ///
+    /// **Note:** This returns a raw pointer with no eviction protection.
+    /// For read paths that may race with eviction, prefer [`pin_page`]
+    /// which returns a [`PinnedPage`] RAII guard that prevents eviction
+    /// while held.
+    ///
+    /// [`pin_page`]: HybridLogAllocator::pin_page
+    /// [`PinnedPage`]: super::page::PinnedPage
     pub fn get_physical_address(&self, addr: LogicalAddress) -> Option<*mut u8> {
         // Bounds check: reject addresses below head — their frame slots
         // may have been recycled for newer pages (ABA in circular buffer).
@@ -200,6 +206,26 @@ impl HybridLogAllocator {
         // matches the frame allocation size). The returned pointer is within
         // the frame's allocation.
         Some(unsafe { frame.as_mut_ptr().add(offset) })
+    }
+
+    /// Pin the page containing the given logical address, preventing eviction.
+    ///
+    /// Returns a [`PinnedPage`] RAII guard that holds an incremented pin
+    /// count on the page. While any pin is held, [`PageTable::try_evict_frame`]
+    /// will skip this page, guaranteeing the frame memory remains valid.
+    ///
+    /// Returns `None` if:
+    /// - The address is below `head_address` (page already evicted).
+    /// - The page frame is not allocated or is in `Free`/`Evicted` state.
+    ///
+    /// [`PinnedPage`]: super::page::PinnedPage
+    /// [`PageTable::try_evict_frame`]: super::page::PageTable::try_evict_frame
+    pub fn pin_page(&self, addr: LogicalAddress) -> Option<super::page::PinnedPage<'_>> {
+        let head = self.head_address.load(Ordering::Acquire);
+        if addr.raw() < head.raw() {
+            return None;
+        }
+        self.page_table.pin_page(addr.page())
     }
 
     /// Advance the read-only boundary to the current tail address.

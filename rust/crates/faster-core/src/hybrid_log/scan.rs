@@ -230,17 +230,16 @@ impl<'a> LogScanIterator<'a> {
     /// Try to read the record at `current` from in-memory pages.
     ///
     /// Returns `None` if the page is not in memory (evicted / on disk).
+    /// Uses [`pin_page`] to prevent eviction during the read — the pin is
+    /// held while record data is copied into the returned [`ScanRecord`].
+    ///
+    /// [`pin_page`]: super::log_allocator::HybridLogAllocator::pin_page
     fn try_read_record(&self, addr: LogicalAddress) -> Option<ScanRecord> {
-        let ptr = self.allocator.get_physical_address(addr)?;
+        let pinned = self.allocator.pin_page(addr)?;
+        let offset = addr.offset().0 as usize;
         let record_size = self.layout.total_size();
 
-        // SAFETY: `get_physical_address` returned a non-null pointer into an
-        // allocated page frame. The offset within the page was validated by
-        // `align_to_record_boundary` to have at least `record_size` bytes
-        // remaining. The pointer is aligned to RECORD_ALIGNMENT (8 bytes)
-        // because all record offsets are multiples of 8 and pages start at
-        // sector-aligned addresses.
-        let slice = unsafe { core::slice::from_raw_parts(ptr as *const u8, record_size) };
+        let slice = pinned.get_slice(offset, record_size)?;
 
         let raw_header = u64::from_le_bytes(
             slice[..RECORD_HEADER_SIZE]
@@ -262,6 +261,7 @@ impl<'a> LogScanIterator<'a> {
             key_data: slice[key_start..key_start + key_size].to_vec(),
             value_data: slice[value_start..value_start + value_size].to_vec(),
         })
+        // PinnedPage dropped here — data was copied into ScanRecord.
     }
 }
 

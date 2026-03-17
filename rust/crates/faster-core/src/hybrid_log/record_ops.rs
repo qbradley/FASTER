@@ -45,14 +45,17 @@ fn safe_record_size(addr: LogicalAddress) -> u32 {
 ///
 /// This is a lightweight handle that holds a raw pointer to a record's
 /// memory location in a page frame. The caller is responsible for ensuring
-/// the record remains valid (i.e., the page frame is in memory and the
-/// epoch guard is held).
+/// the record remains valid (i.e., the page frame is in memory — either
+/// by holding a [`PinnedPage`] guard or because the record is in the
+/// mutable region which cannot be evicted).
 ///
 /// # Not `Send` / `Sync`
 ///
 /// `RecordAccessor` holds a raw pointer to page memory that could be
 /// evicted; it is intentionally `!Send` and `!Sync` (automatic because
 /// `*const u8` is `!Send + !Sync`).
+///
+/// [`PinnedPage`]: super::page::PinnedPage
 pub struct RecordAccessor {
     /// Raw pointer to the start of the record in page memory.
     ptr: *const u8,
@@ -68,10 +71,12 @@ impl RecordAccessor {
     /// - `ptr` must point to valid, readable memory of at least `record_size`
     ///   bytes.
     /// - The memory must remain valid for the lifetime of this accessor (the
-    ///   page frame must be pinned in memory, typically by holding an epoch
-    ///   guard).
+    ///   page frame must be pinned via [`PinnedPage`], or the record must
+    ///   be in the mutable region which is not subject to eviction).
     /// - `ptr` must be 8-byte aligned (records always start at 8-byte
     ///   boundaries).
+    ///
+    /// [`PinnedPage`]: super::page::PinnedPage
     #[inline]
     pub unsafe fn new(ptr: *const u8, record_size: u32) -> Self {
         debug_assert!(!ptr.is_null(), "RecordAccessor: null pointer");
@@ -154,9 +159,18 @@ impl RecordAccessor {
     ///
     /// Returns `None` if the address is not currently in memory.
     ///
-    /// This encapsulates the unsafe pointer construction — the allocator's
-    /// contract guarantees that returned physical pointers are valid, aligned,
-    /// and within allocated page frames.
+    /// **Note:** This does not pin the page — the returned accessor's raw
+    /// pointer could become invalid if the page is evicted. For read paths
+    /// that may race with eviction (compaction scanner, version chain walks
+    /// in the read-only region), prefer [`from_log_pinned`] which holds a
+    /// [`PinnedPage`] guard.
+    ///
+    /// For mutable-region accesses (upsert, RMW, delete), the page cannot
+    /// be evicted because it is above `head_address`, so pinning is not
+    /// required.
+    ///
+    /// [`from_log_pinned`]: RecordAccessor::from_log_pinned
+    /// [`PinnedPage`]: super::page::PinnedPage
     #[inline]
     pub(crate) fn from_log(
         allocator: &HybridLogAllocator,
@@ -167,9 +181,38 @@ impl RecordAccessor {
         // SAFETY: `HybridLogAllocator::get_physical_address` returns a valid
         // pointer within an allocated page frame. Record offsets are always
         // multiples of 8 (RECORD_ALIGNMENT), ensuring 8-byte alignment.
-        // The caller supplies the correct `record_size` for the record at
-        // this address.
+        // The caller is responsible for ensuring the page is not evicted
+        // during the accessor's lifetime (e.g., the record is in the mutable
+        // region, or the caller holds a PinnedPage guard at a higher scope).
         Some(unsafe { Self::new(ptr as *const u8, record_size) })
+    }
+
+    /// Creates a read-only accessor to a record at `addr` with pin
+    /// protection against eviction.
+    ///
+    /// Returns `(PinnedPage, RecordAccessor)` — the caller must keep the
+    /// `PinnedPage` alive for as long as the `RecordAccessor` is used.
+    /// The pin prevents the page from being evicted while the accessor
+    /// is active.
+    ///
+    /// Returns `None` if the address is below `head_address` (evicted) or
+    /// the page frame is not allocated.
+    #[inline]
+    pub(crate) fn from_log_pinned<'a>(
+        allocator: &'a HybridLogAllocator,
+        addr: LogicalAddress,
+        record_size: u32,
+    ) -> Option<(super::page::PinnedPage<'a>, Self)> {
+        let pinned = allocator.pin_page(addr)?;
+        let offset = addr.offset().0 as usize;
+        // SAFETY: The frame is pinned, preventing eviction. The offset is
+        // derived from addr.offset() which is bounded by page_size.
+        // Records start at 8-byte aligned offsets (RECORD_ALIGNMENT).
+        let ptr = unsafe { pinned.frame().as_ptr().add(offset) };
+        // SAFETY: ptr is within the pinned frame (see above), aligned to 8
+        // bytes (record alignment invariant), and valid for record_size bytes.
+        let accessor = unsafe { Self::new(ptr, record_size) };
+        Some((pinned, accessor))
     }
 }
 
@@ -465,12 +508,14 @@ impl<'a> LogRecordReader<'a> {
 
     /// Read the [`RecordInfo`] header at the given address.
     ///
-    /// This is cheaper than [`get_record`](Self::get_record) when only the
-    /// header is needed (e.g., for chain traversal).
+    /// Pins the page during the read to prevent eviction. This is safer
+    /// than [`get_record`] for read-only region accesses that may race
+    /// with the page evictor.
     ///
     /// Returns `None` if the address is not in memory.
     pub fn read_record_info(&self, addr: LogicalAddress) -> Option<RecordInfo> {
-        let accessor = RecordAccessor::from_log(self.allocator, addr, RECORD_HEADER_SIZE as u32)?;
+        let (_pin, accessor) =
+            RecordAccessor::from_log_pinned(self.allocator, addr, RECORD_HEADER_SIZE as u32)?;
         Some(accessor.record_info())
     }
 
@@ -483,7 +528,8 @@ impl<'a> LogRecordReader<'a> {
     /// Returns `None` if the address is not in memory.
     pub fn read_key<K: Key>(&self, addr: LogicalAddress, layout: &RecordLayout) -> Option<K> {
         let record_size = safe_record_size(addr);
-        let accessor = self.get_record(addr, record_size)?;
+        let (_pin, accessor) =
+            RecordAccessor::from_log_pinned(self.allocator, addr, record_size)?;
         Some(accessor.key(layout))
     }
 
@@ -491,12 +537,13 @@ impl<'a> LogRecordReader<'a> {
     ///
     /// Uses page-bounded record sizing so that variable-length records
     /// (where `layout.total_size()` may underestimate the true size)
-    /// are read correctly.
+    /// are read correctly. Pins the page to prevent eviction during read.
     ///
     /// Returns `None` if the address is not in memory.
     pub fn read_value<V: Value>(&self, addr: LogicalAddress, layout: &RecordLayout) -> Option<V> {
         let record_size = safe_record_size(addr);
-        let accessor = self.get_record(addr, record_size)?;
+        let (_pin, accessor) =
+            RecordAccessor::from_log_pinned(self.allocator, addr, record_size)?;
         Some(accessor.value(layout))
     }
 
@@ -520,9 +567,9 @@ impl<'a> LogRecordReader<'a> {
         key: &K,
         layout: &RecordLayout,
     ) -> Option<(RecordInfo, bool)> {
-        // Only the header + key are needed; value_offset covers both.
         let record_size = safe_record_size(addr);
-        let accessor = RecordAccessor::from_log(self.allocator, addr, record_size)?;
+        let (_pin, accessor) =
+            RecordAccessor::from_log_pinned(self.allocator, addr, record_size)?;
         let ri = accessor.record_info();
         let stored_key: K = accessor.key(layout);
         Some((ri, stored_key == *key))
@@ -543,9 +590,9 @@ impl<'a> LogRecordReader<'a> {
         addr: LogicalAddress,
         key: &K,
     ) -> Option<(RecordInfo, bool)> {
-        // Use page-remaining as the access size — records never span pages.
         let record_size = safe_record_size(addr);
-        let accessor = RecordAccessor::from_log(self.allocator, addr, record_size)?;
+        let (_pin, accessor) =
+            RecordAccessor::from_log_pinned(self.allocator, addr, record_size)?;
         let ri = accessor.record_info();
         let key_matches = key.eq_from_bytes(&accessor.as_slice()[KEY_OFFSET..]);
         Some((ri, key_matches))

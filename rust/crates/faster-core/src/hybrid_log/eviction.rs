@@ -119,19 +119,25 @@ impl PageEvictor {
         evicted
     }
 
-    /// Try to evict a single page. Returns `true` if evicted.
+    /// Try to evict a single page. Returns `true` if evicted (or already
+    /// evicted).
     ///
-    /// The page must be in `Flushed` state. The transition is:
-    /// `Flushed → Evicted` (via [`PageTable::try_evict_frame`]).
+    /// The page must be in `Flushed` state for a new eviction. Pages already
+    /// in `Evicted` state are treated as successfully evicted.
+    /// [`PageTable::try_evict_frame`] will fail if the page is pinned
+    /// (pin_count > 0), in which case this page is skipped.
     fn try_evict_page(&self, page: Page, page_table: &PageTable) -> bool {
         match page_table.get_frame(page) {
             Some(frame) => {
                 let state = frame.state().load(Ordering::Acquire);
-                if state == PageState::Flushed {
-                    // try_evict_frame transitions to Evicted and frees the frame.
-                    page_table.try_evict_frame(page).is_some()
-                } else {
-                    false
+                match state {
+                    PageState::Flushed => {
+                        // try_evict_frame atomically checks pin_count == 0
+                        // and transitions Flushed → Evicted.
+                        page_table.try_evict_frame(page).is_some()
+                    }
+                    PageState::Evicted => true, // already evicted
+                    _ => false,
                 }
             }
             None => {
@@ -347,8 +353,10 @@ mod tests {
         let evicted = evictor.evict_pages(&alloc);
         assert_eq!(evicted, 1);
 
-        // Frame should be gone (evicted and freed).
-        assert!(page_table.get_frame(Page(0)).is_none());
+        // Frame stays in slot (eviction no longer frees memory), but state
+        // should be Evicted.
+        let frame = page_table.get_frame(Page(0)).expect("frame still in slot");
+        assert_eq!(frame.state().load(Ordering::Acquire), PageState::Evicted);
     }
 
     // 4. evict_skips_non_flushed — Sealed page should not be evicted
@@ -424,9 +432,10 @@ mod tests {
         let evicted = evictor.evict_pages(&alloc);
         assert_eq!(evicted, 3);
 
-        // All 3 pages should be evicted.
+        // All 3 pages should be in Evicted state (frames stay in slot).
         for p in 0..3 {
-            assert!(page_table.get_frame(Page(p)).is_none());
+            let frame = page_table.get_frame(Page(p)).expect("frame still in slot");
+            assert_eq!(frame.state().load(Ordering::Acquire), PageState::Evicted);
         }
     }
 

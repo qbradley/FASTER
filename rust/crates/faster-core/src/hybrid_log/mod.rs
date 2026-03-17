@@ -46,7 +46,7 @@ pub mod scan; // contains unsafe: raw pointer slice in scan iterator
 pub use eviction::{EvictionPolicy, PageEvictor};
 pub use flush::{FlushBatchResult, FlushError, FlushRequest, PageFlusher};
 pub use log_allocator::HybridLogAllocator;
-pub use page::{AtomicPageState, PageFrame, PageState, PageTable};
+pub use page::{AtomicPageState, PageFrame, PageState, PageTable, PinnedPage};
 pub use record_ops::{
     LogRecordReader, LogRecordWriter, MutableRecordAccessor, RecordAccessor, VersionChainIterator,
 };
