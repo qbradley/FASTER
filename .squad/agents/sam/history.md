@@ -198,3 +198,16 @@ Closed the loop on bounded lossless disk operation. The compaction pipeline was 
 **Verified:** 1726 tests pass, clippy -D warnings clean, doc tests pass.
 **Branch:** `rust`, **Commit:** `762bc3bd`
 
+### Compaction SIGSEGV Fix (2026-03-17)
+Fixed three compaction bugs found by Legolas's disk stress retest (SIGSEGV at T+30s under 16-thread load):
+
+1. **SIGSEGV (critical):** Root cause was circular-buffer ABA hazard in `get_physical_address()`. After eviction, frame slots (`page % buffer_size`) get recycled for newer pages. The compaction scanner called `get_physical_address(old_addr)` for on-disk pages and received a valid pointer to the *wrong* page's frame. Concurrently, writer threads calling `maintenance()` inline (from `allocate_at_tail` retry) could evict and free frames the scanner was reading → use-after-free → SIGSEGV. Fix: (A) Added head_address bounds check to `get_physical_address()` — returns None for addresses below head. (B) Limited `compact()` scan range to `[head_address, safe_read_only)` so scanner only touches in-memory pages.
+
+2. **95% throughput cliff (severe):** Compaction ran synchronously inside `maintenance()`, blocking the flush/evict pipeline for seconds. Writer threads stalled on buffer-full retries because no maintenance could run. Fix: (A) `maybe_compact()` uses `try_lock` instead of blocking lock. (B) Capped scan range to 4 pages per cycle so maintenance returns quickly between compaction chunks.
+
+3. **170K-line log spam (minor):** Tombstone warning fired every 1024 entries. Changed to power-of-two intervals (~20 messages total).
+
+**Verified:** 1726 tests pass, clippy -D warnings clean, stress_disk runs 5+ min (300s) under 16-thread load without crash. Throughput ~20-24M ops/s sustained, RSS bounded at ~7.8 GB.
+**Branch:** `rust`, **Commit:** `d6f734fd`
+
+
