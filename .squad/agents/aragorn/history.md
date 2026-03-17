@@ -195,3 +195,27 @@ cd rust && cargo bench --bench ycsb -p faster-core -- --nocapture
 - Batching atomic counter updates (flush every 256 ops) eliminates contention on global counters at 4+ threads.
 - Throughput cliff detection (ThroughputMonitor) catches "slow deadlocks" that pass correctness checks but have collapsed throughput. Pattern: AtomicU64 counter + periodic window snapshots + post-warmup cliff assertion at 10% of peak.
 - For timed stress tests, window duration must be chosen so that test_duration / window_duration > warmup_windows + 1 to get at least one checked window. E.g., 10s test needs ≤2s windows with 2 warmup windows.
+
+### Safe Page Access Design Deep Dive (2026-07-24)
+**Impact:** Comprehensive analysis of unsafe surface area in page frame access path, triggered by Sam's compaction SIGSEGV fix.  
+**Key finding:** Epoch protection does NOT prevent page eviction — it only coordinates drain callbacks. Code comments claiming otherwise are incorrect. Frame memory is freed immediately via `Box::from_raw()` during eviction with no epoch deferral.  
+**Sam's fix analysis:** Head-address bounds check mitigates the ABA bug but has a TOCTOU window (~10-50ns) between check and frame access where eviction can race.  
+**Inventory:** ~36 unsafe blocks across 5 files (page.rs, log_allocator.rs, record_ops.rs, scan.rs); 9 on the hot read/write path; 5 in the critical address→pointer→data chain.  
+**Options evaluated:** (A) Epoch-guarded handle — unsound without epoch semantic changes; (B) Arc<PageFrame> — 30%+ throughput loss from atomic contention; (C) Scoped page pin — sound, <3% overhead, per-slot pin count; (D) Safe wrapper with double-check — defense-in-depth, <2% overhead, not formally sound.  
+**Recommendation:** Option D now (immediate hardening, ~200 lines), Option C next sprint (formal soundness, ~800 lines across 8 files). Combined state+pin_count packed atomic (3-bit state + 29-bit pin count) eliminates TOCTOU in pin implementation.  
+**Output:** `.squad/decisions/inbox/aragorn-safe-page-access-design.md`
+
+### ThreadSanitizer Strategy for Compaction Scanner Race (2026-07-24)
+**Impact:** TSan test infrastructure for detecting the scanner-evictor use-after-free race.
+**Files:** `tests/tsan_compaction.rs`, `tests/tsan_suppressions.txt`, `tests/README.md`, `scripts/run-tsan.sh`
+**Architecture:** Three tests exercise different race vectors: primary scanner-vs-eviction, 4-writer production-like, and lossy-mode begin_address advance. Each uses a dedicated maintenance thread (evictor) running concurrently with a compaction thread (scanner) while writer threads create continuous buffer pressure. Tests are `#[ignore]` tier-2 and require `cargo +nightly` with `RUSTFLAGS="-Z sanitizer=thread"`.
+**Key insight:** With 32 MiB pages and synchronous InMemoryDevice, the flush-to-evict window within `maintenance()` is nanoseconds under normal execution. TSan's 5-15× instrumentation overhead widens this to microseconds, making the race detectable. The suppression file excludes known-safe benign races in epoch counters and RecordInfo atomics.
+**Commit:** `4675d33a`
+
+## Learnings
+
+- TSan requires nightly Rust (`cargo +nightly`) and `RUSTFLAGS="-Z sanitizer=thread"`.
+- Page size is 2^25 = 32 MiB — filling multiple pages requires ~1.4M records each at 24 bytes/record. Tests need 10+ seconds to generate enough data for page transitions.
+- With synchronous I/O (InMemoryDevice), `maintenance()` flushes + evicts in a single call. The race window between `shift_read_only_to_tail` and `evict_pages` is too narrow for normal execution but TSan widens it.
+- TSan suppression files use pattern matching on function/symbol names: `race:epoch` suppresses all races in functions containing "epoch".
+- `RUST_TEST_THREADS=1` recommended with TSan to avoid test-level parallelism interference.
