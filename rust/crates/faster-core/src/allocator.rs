@@ -74,7 +74,13 @@ use crate::epoch::EpochTable;
 
 /// Number of bits for the item index within a page.
 /// Each page holds 2^20 = 1,048,576 items, matching C++ `FixedPageAddress::kOffsetBits`.
+#[cfg(not(feature = "small-pages"))]
 pub const ITEMS_PER_PAGE_BITS: u32 = 20;
+
+/// Number of bits for the item index within a page (small-pages variant).
+/// Reduced to fit within 64 KB pages (OFFSET_BITS=16).
+#[cfg(feature = "small-pages")]
+pub const ITEMS_PER_PAGE_BITS: u32 = 16;
 
 /// Number of items per allocator page.
 pub const ITEMS_PER_PAGE: usize = 1 << ITEMS_PER_PAGE_BITS;

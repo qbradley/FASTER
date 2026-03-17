@@ -52,7 +52,12 @@ use serde::{Deserialize, Serialize};
 pub const ADDRESS_BITS: u32 = 48;
 
 /// Number of bits used for the offset within a page.
+#[cfg(feature = "small-pages")]
+pub const OFFSET_BITS: u32 = 16; // 64 KB pages for DST
+
+/// Number of bits used for the offset within a page.
 /// Default 25 → page size of 2^25 = 32 MB.
+#[cfg(not(feature = "small-pages"))]
 pub const OFFSET_BITS: u32 = 25;
 
 /// Number of bits used for the page index: `ADDRESS_BITS - OFFSET_BITS`.
@@ -62,7 +67,7 @@ pub const PAGE_BITS: u32 = ADDRESS_BITS - OFFSET_BITS; // 23
 pub const MAX_OFFSET: u32 = (1u32 << OFFSET_BITS) - 1;
 
 /// Maximum valid page number: `(1 << PAGE_BITS) - 1`.
-pub const MAX_PAGE: u32 = (1u32 << PAGE_BITS) - 1;
+pub const MAX_PAGE: u32 = ((1u64 << PAGE_BITS) - 1) as u32;
 
 /// Maximum raw address value (48 bits set): `(1 << ADDRESS_BITS) - 1`.
 pub const MAX_ADDRESS: u64 = (1u64 << ADDRESS_BITS) - 1;
@@ -516,10 +521,19 @@ mod tests {
         assert_eq!(LogicalAddress::ZERO.raw(), 0);
         // Bit constants
         assert_eq!(ADDRESS_BITS, 48);
-        assert_eq!(OFFSET_BITS, 25);
-        assert_eq!(PAGE_BITS, 23);
-        assert_eq!(MAX_OFFSET, (1u32 << 25) - 1);
-        assert_eq!(MAX_PAGE, (1u32 << 23) - 1);
+        #[cfg(not(feature = "small-pages"))]
+        {
+            assert_eq!(OFFSET_BITS, 25);
+            assert_eq!(PAGE_BITS, 23);
+            assert_eq!(MAX_OFFSET, (1u32 << 25) - 1);
+            assert_eq!(MAX_PAGE, (1u32 << 23) - 1);
+        }
+        #[cfg(feature = "small-pages")]
+        {
+            assert_eq!(OFFSET_BITS, 16);
+            assert_eq!(PAGE_BITS, 32);
+            assert_eq!(MAX_OFFSET, (1u32 << 16) - 1);
+        }
     }
 
     // -- Page/Offset extraction --

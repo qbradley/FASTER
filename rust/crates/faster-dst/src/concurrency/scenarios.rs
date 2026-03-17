@@ -26,11 +26,14 @@ pub static ALL_SCENARIOS: &[(&str, ScenarioFactory)] = &[
 ///
 /// Validates that the runner + SimDeviceV2 path works end-to-end without
 /// any concurrency pressure.  Should always pass.
+///
+/// With small-pages (64 KB): 4 pages = 256 KB buffer.
+/// 10K ops with Uniform(50K) ≈ 9K unique keys × 24 bytes = 216 KB (fits).
 pub fn single_writer_baseline_config(seed: u64) -> (ScenarioConfig, ScenarioAssertions) {
     let config = ScenarioConfig {
         num_writers: 1,
-        ops_per_writer: 5_000,
-        buffer_pool_pages: 16,
+        ops_per_writer: 10_000,
+        buffer_pool_pages: 4,
         key_dist: KeyDist::Uniform { range: 50_000 },
         lossy: false,
         io: SimIoConfig {
@@ -52,14 +55,18 @@ pub fn single_writer_baseline_config(seed: u64) -> (ScenarioConfig, ScenarioAsse
 
 /// High contention baseline: many writers competing for limited buffer.
 ///
-/// 16 writers fight over 32 buffer pool pages with moderate queue depth.
-/// Validates the system doesn't deadlock under heavy write contention.
+/// 16 writers fight over 8 buffer pool pages with moderate queue depth.
+/// Large key range (10M) ensures heavy allocation pressure with minimal
+/// in-place update hits.
+///
+/// With small-pages (64 KB): 8 pages = 512 KB buffer.
+/// 16 × 20K ops × 24 bytes = 7.68 MB — forces ~15× buffer worth of flushes.
 pub fn multi_writer_saturation_config(seed: u64) -> (ScenarioConfig, ScenarioAssertions) {
     let config = ScenarioConfig {
         num_writers: 16,
-        ops_per_writer: 2_000,
-        buffer_pool_pages: 32,
-        key_dist: KeyDist::Uniform { range: 100_000 },
+        ops_per_writer: 20_000,
+        buffer_pool_pages: 8,
+        key_dist: KeyDist::Uniform { range: 500_000 },
         lossy: false,
         io: SimIoConfig {
             queue_depth: 8,
@@ -81,21 +88,62 @@ pub fn multi_writer_saturation_config(seed: u64) -> (ScenarioConfig, ScenarioAss
 
 /// Bug 1 reproduction: Pipeline deadlock under high I/O back-pressure.
 ///
-/// 8 writers, small buffer pool (16 pages), tight queue_depth (4), high
-/// latency.  The pipeline fills up, QueueFull cascades, flush can't make
-/// progress.  This is the scenario that catches the multi-writer flush
-/// pipeline deadlock under resource exhaustion.
+/// 8 writers, tiny buffer pool (4 pages), tight queue_depth (4), high
+/// latency.  Large key range (10M) ensures virtually no in-place updates —
+/// every op allocates a new record, creating continuous flush/eviction
+/// pressure that exercises the pipeline deadlock bug path.
+///
+/// With small-pages (64 KB): 4 pages = 256 KB buffer.
+/// 8 × 50K ops × 24 bytes = 9.6 MB — forces ~37× buffer worth of flushes.
 pub fn pipeline_deadlock_config(seed: u64) -> (ScenarioConfig, ScenarioAssertions) {
     let config = ScenarioConfig {
         num_writers: 8,
-        ops_per_writer: 5_000,
-        buffer_pool_pages: 16,
-        key_dist: KeyDist::Uniform { range: 50_000 },
+        ops_per_writer: 50_000,
+        buffer_pool_pages: 4,
+        key_dist: KeyDist::Uniform { range: 500_000 },
         lossy: false,
         io: SimIoConfig {
             queue_depth: 4,
             base_latency_ns: 10_000_000,     // 10 ms — high latency
             latency_jitter_ns: 5_000_000,    // 5 ms jitter
+            seed,
+            ..SimIoConfig::default()
+        },
+        maintenance_interval: 20,
+        seed,
+    };
+
+    let assertions = ScenarioAssertions {
+        all_writers_complete: true,
+        no_deadlock: true,
+        max_stall_ns: Some(10_000_000_000), // 10 s simulated time
+        // With healthy pipeline, all 400K ops succeed.
+        // Broken pipeline: < 5% succeed (mostly aborted).
+        min_total_ops: Some(200_000),
+        ..ScenarioAssertions::default()
+    };
+
+    (config, assertions)
+}
+
+/// Bug 2 reproduction: Lossy truncate starvation under write lock.
+///
+/// Lossy mode, moderate writers, O(n) truncate charging via virtual time.
+/// Large key range (10M) ensures virtually no in-place updates — every
+/// op allocates, creating continuous buffer pressure.
+///
+/// With small-pages (64 KB): 4 pages = 256 KB buffer.
+/// 4 × 50K ops × 24 bytes = 4.8 MB — forces ~19× buffer worth of flushes.
+pub fn lossy_truncate_starvation_config(seed: u64) -> (ScenarioConfig, ScenarioAssertions) {
+    let config = ScenarioConfig {
+        num_writers: 4,
+        ops_per_writer: 50_000,
+        buffer_pool_pages: 4,
+        key_dist: KeyDist::Uniform { range: 500_000 },
+        lossy: true,
+        io: SimIoConfig {
+            queue_depth: 8,
+            truncate_ns_per_byte: 1,
             seed,
             ..SimIoConfig::default()
         },
@@ -106,39 +154,10 @@ pub fn pipeline_deadlock_config(seed: u64) -> (ScenarioConfig, ScenarioAssertion
     let assertions = ScenarioAssertions {
         all_writers_complete: true,
         no_deadlock: true,
-        max_stall_ns: Some(10_000_000_000), // 10 s simulated time
-        ..ScenarioAssertions::default()
-    };
-
-    (config, assertions)
-}
-
-/// Bug 2 reproduction: Lossy truncate starvation under write lock.
-///
-/// Lossy mode, moderate writers, O(n) truncate charging via virtual time.
-/// The truncate cost (1 ns/byte) slows the simulated clock, starving
-/// writers that are waiting for buffer space to be reclaimed.
-pub fn lossy_truncate_starvation_config(seed: u64) -> (ScenarioConfig, ScenarioAssertions) {
-    let config = ScenarioConfig {
-        num_writers: 4,
-        ops_per_writer: 10_000,
-        buffer_pool_pages: 8,
-        key_dist: KeyDist::Uniform { range: 100_000 },
-        lossy: true,
-        io: SimIoConfig {
-            queue_depth: 8,
-            truncate_ns_per_byte: 1,
-            seed,
-            ..SimIoConfig::default()
-        },
-        maintenance_interval: 100,
-        seed,
-    };
-
-    let assertions = ScenarioAssertions {
-        all_writers_complete: true,
-        no_deadlock: true,
         max_stall_ns: Some(15_000_000_000), // 15 s simulated time
+        // With healthy pipeline, all 200K ops succeed.
+        // Broken pipeline: < 5% succeed (mostly aborted).
+        min_total_ops: Some(100_000),
         ..ScenarioAssertions::default()
     };
 

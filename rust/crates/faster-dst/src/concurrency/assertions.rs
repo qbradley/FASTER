@@ -30,6 +30,9 @@ pub struct ScenarioAssertions {
     pub all_writers_complete: bool,
     /// No thread should appear stuck (stall exceeding watchdog).
     pub no_deadlock: bool,
+    /// Minimum total successful ops across all writers.
+    /// Catches degraded throughput from broken flush/eviction pipeline.
+    pub min_total_ops: Option<u64>,
 }
 
 impl Default for ScenarioAssertions {
@@ -41,6 +44,7 @@ impl Default for ScenarioAssertions {
             max_sim_duration_ns: None,
             all_writers_complete: true,
             no_deadlock: true,
+            min_total_ops: None,
         }
     }
 }
@@ -112,6 +116,19 @@ impl ScenarioAssertions {
                         ),
                     });
                 }
+            }
+        }
+
+        if let Some(min) = self.min_total_ops {
+            if stats.total_ops < min {
+                failures.push(AssertionFailure {
+                    name: "min_total_ops",
+                    message: format!(
+                        "total_ops {} < required {} ({}% success rate — flush/eviction pipeline broken?)",
+                        stats.total_ops, min,
+                        stats.total_ops * 100 / min.max(1)
+                    ),
+                });
             }
         }
 

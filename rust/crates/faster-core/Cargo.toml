@@ -11,7 +11,7 @@ keywords = ["kv-store", "hash-map", "concurrent", "epoch", "hybrid-log"]
 categories.workspace = true
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(feature, values("tracing", "metrics", "simulation"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(feature, values("tracing", "metrics", "simulation", "small-pages"))'] }
 
 [lints.clippy]
 undocumented_unsafe_blocks = "deny"
@@ -43,6 +43,8 @@ loom = ["dep:loom"]
 tracing = ["dep:tracing"]
 # Enable deterministic simulation testing (cooperative scheduler, simulated time/channels)
 simulation = []
+# Enable small 64 KB pages (OFFSET_BITS=16) for DST; production default is 32 MB
+small-pages = []
 
 [[bench]]
 name = "core_benchmarks"
