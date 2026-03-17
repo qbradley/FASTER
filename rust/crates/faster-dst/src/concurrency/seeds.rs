@@ -1,6 +1,6 @@
 use rand::Rng;
-use rand_chacha::ChaCha20Rng;
 use rand::SeedableRng;
+use rand_chacha::ChaCha20Rng;
 
 /// Seeds from regressions — each caught a real bug. **Never remove entries.**
 pub mod regression {

@@ -216,9 +216,18 @@ impl std::fmt::Debug for SimDeviceV2 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SimDeviceV2")
             .field("config", &self.config)
-            .field("total_submitted", &self.total_submitted.load(Ordering::Relaxed))
-            .field("total_completed", &self.total_completed.load(Ordering::Relaxed))
-            .field("total_queue_full", &self.total_queue_full.load(Ordering::Relaxed))
+            .field(
+                "total_submitted",
+                &self.total_submitted.load(Ordering::Relaxed),
+            )
+            .field(
+                "total_completed",
+                &self.total_completed.load(Ordering::Relaxed),
+            )
+            .field(
+                "total_queue_full",
+                &self.total_queue_full.load(Ordering::Relaxed),
+            )
             .field("pending_count", &self.pending_count())
             .finish()
     }
@@ -460,7 +469,9 @@ mod tests {
     use std::time::Duration;
 
     /// Helper: create a device + clock + storage with the given config.
-    fn make_device(config: SimIoConfig) -> (SimDeviceV2, Arc<SimulatedClock>, Arc<SimulatedStorage>) {
+    fn make_device(
+        config: SimIoConfig,
+    ) -> (SimDeviceV2, Arc<SimulatedClock>, Arc<SimulatedStorage>) {
         let clock = Arc::new(SimulatedClock::new());
         let storage = SimulatedStorage::new();
         let device = SimDeviceV2::new(config, Arc::clone(&clock), Arc::clone(&storage));
@@ -512,7 +523,11 @@ mod tests {
 
         // First 4 should be Submitted.
         for r in &results[..4] {
-            assert!(matches!(r, IoRequestResult::Submitted), "expected Submitted, got {:?}", r);
+            assert!(
+                matches!(r, IoRequestResult::Submitted),
+                "expected Submitted, got {:?}",
+                r
+            );
         }
         // 5th should be QueueFull.
         assert!(
@@ -645,7 +660,10 @@ mod tests {
         let run3 = run_and_collect(99); // different seed
 
         assert_eq!(run1, run2, "Same seed must produce identical latencies");
-        assert_ne!(run1, run3, "Different seeds should produce different latencies");
+        assert_ne!(
+            run1, run3,
+            "Different seeds should produce different latencies"
+        );
     }
 
     // ── Test 5: truncate_until charges virtual time ────────────────────
@@ -687,9 +705,8 @@ mod tests {
         let data = [0u8; 512];
 
         for i in 0..5u64 {
-            let _ = unsafe {
-                device.write_async(data.as_ptr(), i * 512, 512, status_callback, ctx)
-            };
+            let _ =
+                unsafe { device.write_async(data.as_ptr(), i * 512, 512, status_callback, ctx) };
         }
 
         let n = device.poll_completions();
@@ -719,16 +736,21 @@ mod tests {
         let data = [0u8; 512];
 
         for i in 0..100u64 {
-            let _ = unsafe {
-                device.write_async(data.as_ptr(), i * 512, 512, status_callback, ctx)
-            };
+            let _ =
+                unsafe { device.write_async(data.as_ptr(), i * 512, 512, status_callback, ctx) };
         }
 
         device.poll_completions();
 
         let results = statuses.lock().unwrap();
-        let errors = results.iter().filter(|s| matches!(s, IoStatus::Error(_))).count();
-        let successes = results.iter().filter(|s| matches!(s, IoStatus::Success)).count();
+        let errors = results
+            .iter()
+            .filter(|s| matches!(s, IoStatus::Error(_)))
+            .count();
+        let successes = results
+            .iter()
+            .filter(|s| matches!(s, IoStatus::Success))
+            .count();
 
         // With 50% rate over 100 trials, should get both (extremely unlikely to be all one).
         assert!(errors > 0, "Expected some errors with 50% fault rate");
@@ -823,9 +845,7 @@ mod tests {
         let counter = AtomicU32::new(0);
         let ctx = &counter as *const AtomicU32 as *mut u8;
 
-        let r = unsafe {
-            device.read_async(0, buf.as_mut_ptr(), 13, counting_callback, ctx)
-        };
+        let r = unsafe { device.read_async(0, buf.as_mut_ptr(), 13, counting_callback, ctx) };
         assert!(matches!(r, IoRequestResult::CompletedSync));
         // Callback already fired synchronously.
         assert_eq!(counter.load(Ordering::Relaxed), 1);
@@ -851,9 +871,7 @@ mod tests {
         let counter = AtomicU32::new(0);
         let ctx = &counter as *const AtomicU32 as *mut u8;
 
-        let r = unsafe {
-            device.read_async(0, buf.as_mut_ptr(), 11, counting_callback, ctx)
-        };
+        let r = unsafe { device.read_async(0, buf.as_mut_ptr(), 11, counting_callback, ctx) };
         assert!(matches!(r, IoRequestResult::Submitted));
         // Callback NOT yet fired.
         assert_eq!(counter.load(Ordering::Relaxed), 0);

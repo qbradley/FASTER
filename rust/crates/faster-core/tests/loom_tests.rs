@@ -1876,10 +1876,7 @@ mod flush_pipeline {
     /// device returns QueueFull, we break immediately — the page that failed
     /// stays in Flushing (it was CAS'd but not submitted), and all subsequent
     /// pages stay Sealed.
-    pub fn flush_sealed_pages(
-        table: &PageTable,
-        device: &QueueFullDevice,
-    ) -> FlushBatchResult {
+    pub fn flush_sealed_pages(table: &PageTable, device: &QueueFullDevice) -> FlushBatchResult {
         let mut flushed = 0u32;
         let mut queue_full = false;
 
@@ -1917,12 +1914,9 @@ mod flush_pipeline {
 
     /// I/O completion callback: transitions page Flushing → Flushed.
     pub fn complete_io(table: &PageTable, page_idx: usize) {
-        table.pages[page_idx].compare_exchange(
-            FLUSHING,
-            FLUSHED,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ).expect("completion callback must find page in Flushing state");
+        table.pages[page_idx]
+            .compare_exchange(FLUSHING, FLUSHED, Ordering::AcqRel, Ordering::Acquire)
+            .expect("completion callback must find page in Flushing state");
     }
 }
 
@@ -1943,7 +1937,10 @@ fn e1_flush_pipeline_queue_full_break() {
         let result = flush_pipeline::flush_sealed_pages(&table, &device);
 
         // Should have flushed exactly 2 pages, then hit QueueFull.
-        assert_eq!(result.flushed, 2, "must flush exactly 2 pages before QueueFull");
+        assert_eq!(
+            result.flushed, 2,
+            "must flush exactly 2 pages before QueueFull"
+        );
         assert!(result.queue_full, "must signal QueueFull to caller");
 
         // Pages 0 and 1: successfully submitted → Flushing (awaiting callback).
@@ -2075,10 +2072,7 @@ mod allocator_retry {
     /// When the buffer is full, yields to other threads (giving maintenance
     /// a chance to flush) and retries up to MAX_RETRIES times. If the buffer
     /// is still full after all retries, returns RetryExhausted.
-    pub fn try_allocate_bounded(
-        buffer: &BufferState,
-        retry_counter: &AtomicU32,
-    ) -> AllocResult {
+    pub fn try_allocate_bounded(buffer: &BufferState, retry_counter: &AtomicU32) -> AllocResult {
         for _attempt in 0..MAX_RETRIES {
             retry_counter.fetch_add(1, Ordering::SeqCst);
 
@@ -2107,11 +2101,9 @@ fn e2_allocator_retry_bounded() {
 
         let b = Arc::clone(&buffer);
         let r = Arc::clone(&retry_count);
-        let result = thread::spawn(move || {
-            allocator_retry::try_allocate_bounded(&b, &r)
-        })
-        .join()
-        .unwrap();
+        let result = thread::spawn(move || allocator_retry::try_allocate_bounded(&b, &r))
+            .join()
+            .unwrap();
 
         // Writer must give up after bounded retries, not spin forever.
         assert_eq!(
@@ -2149,9 +2141,8 @@ fn e2_allocator_retry_succeeds_after_maintenance() {
         // Writer thread: retries allocation.
         let b_writer = Arc::clone(&buffer);
         let r_writer = Arc::clone(&retry_count);
-        let writer = thread::spawn(move || {
-            allocator_retry::try_allocate_bounded(&b_writer, &r_writer)
-        });
+        let writer =
+            thread::spawn(move || allocator_retry::try_allocate_bounded(&b_writer, &r_writer));
 
         maintenance.join().unwrap();
         let result = writer.join().unwrap();

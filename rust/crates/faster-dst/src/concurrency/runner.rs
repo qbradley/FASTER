@@ -9,15 +9,15 @@
 //! Same [`ScenarioConfig::seed`] ⇒ identical key sequence, identical I/O
 //! latencies, identical completion order, identical stats.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 
-use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
 use faster_core::sim_time;
+use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
 
 use crate::clock::SimulatedClock;
 use crate::device::SimulatedStorage;
@@ -127,9 +127,11 @@ impl DstRunner {
             ..FasterKvConfig::default()
         };
 
-        let store = Arc::new(
-            FasterKv::new(kv_config, SimpleFunctions::<u64, u64>::default(), device),
-        );
+        let store = Arc::new(FasterKv::new(
+            kv_config,
+            SimpleFunctions::<u64, u64>::default(),
+            device,
+        ));
 
         // ── 4. Stats + abort flag ──────────────────────────────────
         let stats = Arc::new(StatsCollector::new(self.config.num_writers));
@@ -153,9 +155,8 @@ impl DstRunner {
                     sim_time::install_sim_clock(Arc::clone(&time_nanos));
 
                     let mut session = store.new_session();
-                    let mut rng = ChaCha8Rng::seed_from_u64(
-                        config.seed.wrapping_add(writer_id as u64),
-                    );
+                    let mut rng =
+                        ChaCha8Rng::seed_from_u64(config.seed.wrapping_add(writer_id as u64));
                     let mut seq_counter: u64 = 0;
                     let value: u64 = 0xCAFE_0000 + writer_id as u64;
 
@@ -259,8 +260,7 @@ impl DstRunner {
         let watchdog_handle = std::thread::Builder::new()
             .name("dst-watchdog".into())
             .spawn(move || {
-                let wd = Watchdog::new(max_stall, max_total, wd_abort)
-                    .with_poll_interval(wd_poll);
+                let wd = Watchdog::new(max_stall, max_total, wd_abort).with_poll_interval(wd_poll);
                 wd.run(&wd_progress)
             })
             .expect("failed to spawn watchdog thread");
@@ -397,7 +397,10 @@ mod tests {
                     assertion, stats.total_ops
                 );
             }
-            RunOutcome::Deadlock { blocked_info, stats } => {
+            RunOutcome::Deadlock {
+                blocked_info,
+                stats,
+            } => {
                 panic!(
                     "deadlock detected: {} (total_ops={})",
                     blocked_info, stats.total_ops
@@ -452,10 +455,7 @@ mod tests {
         };
 
         assert_eq!(s1.total_ops, s2.total_ops, "deterministic ops count");
-        assert_eq!(
-            s1.per_writer_ops, s2.per_writer_ops,
-            "per-writer ops match"
-        );
+        assert_eq!(s1.per_writer_ops, s2.per_writer_ops, "per-writer ops match");
     }
 
     /// Watchdog fires on artificially short stall budget.

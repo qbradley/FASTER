@@ -44,10 +44,10 @@
 //! All tests are `#[ignore]` because TSan requires nightly and adds 5-15×
 //! overhead. They compile and link under stable Rust as regular ignored tests.
 
+use faster_core::InMemoryDevice;
 use faster_core::grow::GrowConfig;
 use faster_core::hybrid_log::eviction::EvictionPolicy;
 use faster_core::store::{FasterKv, FasterKvConfig, SimpleFunctions};
-use faster_core::InMemoryDevice;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;

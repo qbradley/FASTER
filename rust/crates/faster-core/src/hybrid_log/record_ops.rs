@@ -528,8 +528,7 @@ impl<'a> LogRecordReader<'a> {
     /// Returns `None` if the address is not in memory.
     pub fn read_key<K: Key>(&self, addr: LogicalAddress, layout: &RecordLayout) -> Option<K> {
         let record_size = safe_record_size(addr);
-        let (_pin, accessor) =
-            RecordAccessor::from_log_pinned(self.allocator, addr, record_size)?;
+        let (_pin, accessor) = RecordAccessor::from_log_pinned(self.allocator, addr, record_size)?;
         Some(accessor.key(layout))
     }
 
@@ -542,8 +541,7 @@ impl<'a> LogRecordReader<'a> {
     /// Returns `None` if the address is not in memory.
     pub fn read_value<V: Value>(&self, addr: LogicalAddress, layout: &RecordLayout) -> Option<V> {
         let record_size = safe_record_size(addr);
-        let (_pin, accessor) =
-            RecordAccessor::from_log_pinned(self.allocator, addr, record_size)?;
+        let (_pin, accessor) = RecordAccessor::from_log_pinned(self.allocator, addr, record_size)?;
         Some(accessor.value(layout))
     }
 
@@ -568,8 +566,7 @@ impl<'a> LogRecordReader<'a> {
         layout: &RecordLayout,
     ) -> Option<(RecordInfo, bool)> {
         let record_size = safe_record_size(addr);
-        let (_pin, accessor) =
-            RecordAccessor::from_log_pinned(self.allocator, addr, record_size)?;
+        let (_pin, accessor) = RecordAccessor::from_log_pinned(self.allocator, addr, record_size)?;
         let ri = accessor.record_info();
         let stored_key: K = accessor.key(layout);
         Some((ri, stored_key == *key))
@@ -591,8 +588,7 @@ impl<'a> LogRecordReader<'a> {
         key: &K,
     ) -> Option<(RecordInfo, bool)> {
         let record_size = safe_record_size(addr);
-        let (_pin, accessor) =
-            RecordAccessor::from_log_pinned(self.allocator, addr, record_size)?;
+        let (_pin, accessor) = RecordAccessor::from_log_pinned(self.allocator, addr, record_size)?;
         let ri = accessor.record_info();
         let key_matches = key.eq_from_bytes(&accessor.as_slice()[KEY_OFFSET..]);
         Some((ri, key_matches))

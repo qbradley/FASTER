@@ -28,9 +28,9 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use faster_core::compaction::policy::LogSizeBudgetPolicy;
 use faster_core::grow::GrowConfig;
 use faster_core::hybrid_log::EvictionPolicy;
-use faster_core::compaction::policy::LogSizeBudgetPolicy;
 use faster_core::{FasterKv, FasterKvConfig, SimpleFunctions, SyncFileDevice};
 
 type Store = FasterKv<SimpleFunctions<u64, u64>>;
@@ -49,7 +49,10 @@ fn install_sigint_handler() {
     // SAFETY: `signal()` is a standard C library function. We register a
     // handler that only performs an atomic store, which is signal-safe.
     unsafe {
-        libc::signal(libc::SIGINT, sigint_handler as *const () as libc::sighandler_t);
+        libc::signal(
+            libc::SIGINT,
+            sigint_handler as *const () as libc::sighandler_t,
+        );
     }
 }
 
@@ -393,10 +396,7 @@ fn main() {
         println!("  Cleaning up {}...", storage_dir_for_cleanup.display());
         let _ = std::fs::remove_dir_all(&storage_dir_for_cleanup);
     } else {
-        println!(
-            "  Data retained at {}",
-            storage_dir_for_cleanup.display()
-        );
+        println!("  Data retained at {}", storage_dir_for_cleanup.display());
     }
 
     // Exit via process::exit to avoid potential segfault in SyncFileDevice
@@ -471,13 +471,9 @@ fn worker_with_sampling(
         local_ops += 1;
 
         if local_ops % FLUSH_INTERVAL == 0 {
-            counters
-                .upserts
-                .fetch_add(local_upserts, Ordering::Relaxed);
+            counters.upserts.fetch_add(local_upserts, Ordering::Relaxed);
             counters.reads.fetch_add(local_reads, Ordering::Relaxed);
-            counters
-                .deletes
-                .fetch_add(local_deletes, Ordering::Relaxed);
+            counters.deletes.fetch_add(local_deletes, Ordering::Relaxed);
             // Thread 0 publishes approximate global live key count.
             if thread_id == 0 {
                 sampler.store(
@@ -495,13 +491,9 @@ fn worker_with_sampling(
         }
     }
 
-    counters
-        .upserts
-        .fetch_add(local_upserts, Ordering::Relaxed);
+    counters.upserts.fetch_add(local_upserts, Ordering::Relaxed);
     counters.reads.fetch_add(local_reads, Ordering::Relaxed);
-    counters
-        .deletes
-        .fetch_add(local_deletes, Ordering::Relaxed);
+    counters.deletes.fetch_add(local_deletes, Ordering::Relaxed);
 
     store.complete_pending_sync(&mut session);
     store.dispose_session(session);

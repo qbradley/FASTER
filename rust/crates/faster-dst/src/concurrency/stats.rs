@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// Aggregated statistics from a completed scenario execution.
@@ -196,10 +196,7 @@ mod tests {
             collector.record_op(0, 2_000_000_000 + i * 100_000_000);
         }
 
-        let stats = collector.finalize(
-            Duration::from_secs(3),
-            Duration::from_millis(100),
-        );
+        let stats = collector.finalize(Duration::from_secs(3), Duration::from_millis(100));
 
         assert_eq!(stats.total_ops, 20);
         // Minimum bucket has 3 ops
@@ -219,10 +216,7 @@ mod tests {
         collector.record_op(1, 1_000_000_000);
         collector.record_op(1, 4_000_000_000);
 
-        let stats = collector.finalize(
-            Duration::from_secs(5),
-            Duration::from_millis(50),
-        );
+        let stats = collector.finalize(Duration::from_secs(5), Duration::from_millis(50));
 
         // Max gap: 4s - 1s = 3s
         assert_eq!(stats.max_stall, Duration::from_secs(3));
@@ -239,10 +233,7 @@ mod tests {
         collector.record_abort(1, 400);
         collector.record_abort(1, 500);
 
-        let stats = collector.finalize(
-            Duration::from_nanos(500),
-            Duration::from_nanos(500),
-        );
+        let stats = collector.finalize(Duration::from_nanos(500), Duration::from_nanos(500));
 
         assert_eq!(stats.total_ops, 2);
         assert_eq!(stats.total_aborts, 3);
@@ -251,10 +242,7 @@ mod tests {
     #[test]
     fn empty_collector() {
         let collector = StatsCollector::new(4);
-        let stats = collector.finalize(
-            Duration::from_secs(0),
-            Duration::from_secs(0),
-        );
+        let stats = collector.finalize(Duration::from_secs(0), Duration::from_secs(0));
         assert_eq!(stats.total_ops, 0);
         assert_eq!(stats.throughput_min_1s, 0.0);
         assert_eq!(stats.max_stall, Duration::from_nanos(0));

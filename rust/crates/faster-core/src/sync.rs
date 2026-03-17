@@ -103,9 +103,9 @@ pub(crate) use std::thread;
 pub(crate) use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(feature = "simulation")]
-pub(crate) use std::time::{Duration, SystemTime, UNIX_EPOCH};
-#[cfg(feature = "simulation")]
 pub(crate) use crate::sim_time::SimInstant as Instant;
+#[cfg(feature = "simulation")]
+pub(crate) use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // ============================================================
 // Channel abstractions (not affected by loom for our purposes)

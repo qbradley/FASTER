@@ -11,8 +11,8 @@
 use std::cell::RefCell;
 use std::fmt;
 use std::ops::{Add, Sub};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 // ── Thread-local clock reference ────────────────────────────────────
@@ -130,8 +130,7 @@ impl Add<Duration> for SimInstant {
     type Output = SimInstant;
 
     fn add(self, rhs: Duration) -> SimInstant {
-        self.checked_add(rhs)
-            .expect("SimInstant::add overflow")
+        self.checked_add(rhs).expect("SimInstant::add overflow")
     }
 }
 
@@ -139,8 +138,7 @@ impl Sub<Duration> for SimInstant {
     type Output = SimInstant;
 
     fn sub(self, rhs: Duration) -> SimInstant {
-        self.checked_sub(rhs)
-            .expect("SimInstant::sub underflow")
+        self.checked_sub(rhs).expect("SimInstant::sub underflow")
     }
 }
 

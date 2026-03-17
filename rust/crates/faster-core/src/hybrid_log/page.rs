@@ -148,12 +148,10 @@ impl AtomicPageState {
                 return false;
             }
             let new = (old & !Self::STATE_MASK) | (desired as u32);
-            match self.inner.compare_exchange_weak(
-                old,
-                new,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
+            match self
+                .inner
+                .compare_exchange_weak(old, new, Ordering::AcqRel, Ordering::Acquire)
+            {
                 Ok(_) => return true,
                 Err(actual) => {
                     // State changed underneath us — fail immediately.
@@ -190,12 +188,10 @@ impl AtomicPageState {
                 Some(v) if v >> Self::PIN_SHIFT > 0 || old >> Self::PIN_SHIFT > 0 => v,
                 _ => return false, // overflow
             };
-            match self.inner.compare_exchange_weak(
-                old,
-                new,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
+            match self
+                .inner
+                .compare_exchange_weak(old, new, Ordering::AcqRel, Ordering::Acquire)
+            {
                 Ok(_) => return true,
                 Err(_) => continue,
             }
@@ -205,10 +201,7 @@ impl AtomicPageState {
     /// Decrement the pin count. The caller must have a matching `try_pin`.
     pub fn unpin(&self) {
         let prev = self.inner.fetch_sub(Self::PIN_ONE, Ordering::Release);
-        debug_assert!(
-            prev >= Self::PIN_ONE,
-            "unpin called with pin_count == 0"
-        );
+        debug_assert!(prev >= Self::PIN_ONE, "unpin called with pin_count == 0");
     }
 
     /// Try to transition to `Evicted` from `expected_state`.
@@ -235,8 +228,7 @@ impl AtomicPageState {
 impl fmt::Debug for AtomicPageState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let raw = self.inner.load(Ordering::Relaxed);
-        let state = PageState::from_u8((raw & Self::STATE_MASK) as u8)
-            .unwrap_or(PageState::Free);
+        let state = PageState::from_u8((raw & Self::STATE_MASK) as u8).unwrap_or(PageState::Free);
         let pins = raw >> Self::PIN_SHIFT;
         write!(f, "AtomicPageState({state:?}, pins={pins})")
     }
@@ -1280,9 +1272,11 @@ mod tests {
         assert_eq!(frame.state().pin_count(Ordering::Relaxed), 1);
 
         // Transition Open → Sealed while pinned.
-        assert!(frame
-            .state()
-            .try_transition(PageState::Open, PageState::Sealed));
+        assert!(
+            frame
+                .state()
+                .try_transition(PageState::Open, PageState::Sealed)
+        );
         assert_eq!(frame.state().load(Ordering::Relaxed), PageState::Sealed);
         assert_eq!(
             frame.state().pin_count(Ordering::Relaxed),

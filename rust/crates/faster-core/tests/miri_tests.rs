@@ -1665,11 +1665,8 @@ mod miri_compaction_scanner {
         let addr_v2 = writer.write_record(&info_v2, &key, &200u64).unwrap();
 
         // Swing hash index to point at V2.
-        let updated = faster_core::hash::bucket::HashBucketEntry::new(
-            committed_v1.tag(),
-            addr_v2,
-            false,
-        );
+        let updated =
+            faster_core::hash::bucket::HashBucketEntry::new(committed_v1.tag(), addr_v2, false);
         hash_index.update(result.slot, committed_v1, updated);
 
         let end = alloc.tail_address();

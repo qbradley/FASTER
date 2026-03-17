@@ -71,10 +71,7 @@ impl ScenarioAssertions {
             if stall_ns > max_ns {
                 failures.push(AssertionFailure {
                     name: "max_stall_ns",
-                    message: format!(
-                        "max stall {}ns > allowed {}ns",
-                        stall_ns, max_ns
-                    ),
+                    message: format!("max stall {}ns > allowed {}ns", stall_ns, max_ns),
                 });
             }
         }
@@ -84,10 +81,7 @@ impl ScenarioAssertions {
             if sim_ns > max_sim_ns {
                 failures.push(AssertionFailure {
                     name: "max_sim_duration_ns",
-                    message: format!(
-                        "sim duration {}ns > watchdog {}ns",
-                        sim_ns, max_sim_ns
-                    ),
+                    message: format!("sim duration {}ns > watchdog {}ns", sim_ns, max_sim_ns),
                 });
             }
         }

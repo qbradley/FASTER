@@ -4,8 +4,8 @@
 //! budget.  Sets a shared abort flag if either limit is breached so
 //! that writer and scheduler threads can exit gracefully.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Outcome of a watchdog run.
@@ -37,11 +37,7 @@ impl Watchdog {
     /// * `max_stall_wall` – abort if no op completes for this wall-clock duration.
     /// * `max_total_wall` – abort if the scenario exceeds this wall-clock duration.
     /// * `abort` – shared flag; watchdog sets it on violation.
-    pub fn new(
-        max_stall_wall: Duration,
-        max_total_wall: Duration,
-        abort: Arc<AtomicBool>,
-    ) -> Self {
+    pub fn new(max_stall_wall: Duration, max_total_wall: Duration, abort: Arc<AtomicBool>) -> Self {
         Self {
             max_stall_wall,
             max_total_wall,

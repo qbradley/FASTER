@@ -14,7 +14,9 @@ use faster_dst::concurrency::seeds::canary;
 /// Returns the number of failures.
 fn run_scenario_on_canary_seeds(
     name: &str,
-    factory: fn(u64) -> (
+    factory: fn(
+        u64,
+    ) -> (
         faster_dst::concurrency::config::ScenarioConfig,
         faster_dst::concurrency::assertions::ScenarioAssertions,
     ),
@@ -68,7 +70,8 @@ fn run_scenario_on_canary_seeds(
 
 #[test]
 fn dst_single_writer_baseline() {
-    let failures = run_scenario_on_canary_seeds("single_writer_baseline", single_writer_baseline_config);
+    let failures =
+        run_scenario_on_canary_seeds("single_writer_baseline", single_writer_baseline_config);
     assert_eq!(
         failures, 0,
         "single_writer_baseline: {failures} seed(s) failed — see output above for reproduction commands"
@@ -77,7 +80,8 @@ fn dst_single_writer_baseline() {
 
 #[test]
 fn dst_multi_writer_saturation() {
-    let failures = run_scenario_on_canary_seeds("multi_writer_saturation", multi_writer_saturation_config);
+    let failures =
+        run_scenario_on_canary_seeds("multi_writer_saturation", multi_writer_saturation_config);
     assert_eq!(
         failures, 0,
         "multi_writer_saturation: {failures} seed(s) failed — see output above for reproduction commands"
@@ -106,8 +110,10 @@ fn dst_bug1_pipeline_deadlock() {
 #[test]
 #[ignore = "tier-2: DST concurrency scenario — lossy truncate starvation bug exercise"]
 fn dst_bug2_lossy_truncate_starvation() {
-    let failures =
-        run_scenario_on_canary_seeds("lossy_truncate_starvation", lossy_truncate_starvation_config);
+    let failures = run_scenario_on_canary_seeds(
+        "lossy_truncate_starvation",
+        lossy_truncate_starvation_config,
+    );
     if failures > 0 {
         eprintln!(
             "lossy_truncate_starvation: {failures}/{} seeds triggered the bug path (expected for unfixed bugs)",

@@ -19,7 +19,10 @@ pub static ALL_SCENARIOS: &[(&str, ScenarioFactory)] = &[
     ("single_writer_baseline", single_writer_baseline_config),
     ("multi_writer_saturation", multi_writer_saturation_config),
     ("pipeline_deadlock", pipeline_deadlock_config),
-    ("lossy_truncate_starvation", lossy_truncate_starvation_config),
+    (
+        "lossy_truncate_starvation",
+        lossy_truncate_starvation_config,
+    ),
 ];
 
 /// Correctness baseline: single writer, no contention.
@@ -104,8 +107,8 @@ pub fn pipeline_deadlock_config(seed: u64) -> (ScenarioConfig, ScenarioAssertion
         lossy: false,
         io: SimIoConfig {
             queue_depth: 4,
-            base_latency_ns: 10_000_000,     // 10 ms — high latency
-            latency_jitter_ns: 5_000_000,    // 5 ms jitter
+            base_latency_ns: 10_000_000,  // 10 ms — high latency
+            latency_jitter_ns: 5_000_000, // 5 ms jitter
             seed,
             ..SimIoConfig::default()
         },
@@ -173,9 +176,18 @@ mod tests {
         for &(name, factory) in ALL_SCENARIOS {
             let (config, assertions) = factory(42);
             assert!(config.num_writers > 0, "{name}: num_writers must be > 0");
-            assert!(config.ops_per_writer > 0, "{name}: ops_per_writer must be > 0");
-            assert!(config.buffer_pool_pages > 0, "{name}: buffer_pool_pages must be > 0");
-            assert!(assertions.all_writers_complete, "{name}: all_writers_complete should be true");
+            assert!(
+                config.ops_per_writer > 0,
+                "{name}: ops_per_writer must be > 0"
+            );
+            assert!(
+                config.buffer_pool_pages > 0,
+                "{name}: buffer_pool_pages must be > 0"
+            );
+            assert!(
+                assertions.all_writers_complete,
+                "{name}: all_writers_complete should be true"
+            );
         }
     }
 

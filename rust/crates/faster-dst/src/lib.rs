@@ -122,15 +122,14 @@ pub use campaign::SeedCampaign;
 pub use channel::SimChannel;
 pub use clock::SimulatedClock;
 pub use concurrency::{
-    CampaignFailure, ConcurrencyCampaignReport, DstRunner, RunOutcome, RunnerConfig,
-    ALL_SCENARIOS, run_concurrency_campaign,
+    ALL_SCENARIOS, CampaignFailure, ConcurrencyCampaignReport, DstRunner, RunOutcome, RunnerConfig,
+    run_concurrency_campaign,
 };
 pub use crash::{
     CrashRecoveryResult, CrashRecoveryRunner, CrashScenario, CrashSchedule, CrashScheduleRef,
     CrashTrigger,
 };
 pub use device::{SimulatedDevice, SimulatedStorage};
-pub use sim_device_v2::{SimDeviceV2, SimIoConfig};
 pub use fault::{CheckpointPhase, CompactionPhase, CrashPoint, FaultConfig, RecoveryPhase};
 pub use harness::SimulationHarness;
 pub use invariant::{
@@ -141,6 +140,7 @@ pub use report::{CampaignReport, ScenarioFailure};
 pub use runtime::SimulationRuntime;
 pub use scenario::ScenarioTemplate;
 pub use scheduler::DeterministicScheduler;
+pub use sim_device_v2::{SimDeviceV2, SimIoConfig};
 pub use sim_store::{CrudOp, CrudResult, SimulatedFasterKv, spawn_crud_worker};
 pub use task::{BlockReason, SchedulerResult, SimTask, TaskAction, TaskContext, TaskId};
 pub use trace::{IoOp, SimulationTrace, TraceEvent};
