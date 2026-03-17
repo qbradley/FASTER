@@ -22,9 +22,11 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::address::{AtomicLogicalAddress, LogicalAddress, MAX_PAGE, OFFSET_BITS, Offset, Page};
 use crate::device::Device;
+use crate::record::RECORD_HEADER_SIZE;
 use crate::recovery::log_recovery::LogRecoveryResult;
 
 use super::page::{PageState, PageTable};
+use super::record_ops::MutableRecordAccessor;
 
 // ---------------------------------------------------------------------------
 // HybridLogAllocator
@@ -226,6 +228,58 @@ impl HybridLogAllocator {
             return None;
         }
         self.page_table.pin_page(addr.page())
+    }
+
+    /// Returns a bounds-checked [`MutableRecordAccessor`] for a record in
+    /// the mutable region at `addr`.
+    ///
+    /// The accessor's lifetime is tied to this allocator reference,
+    /// preventing the raw pointer from outliving the backing page frame.
+    ///
+    /// # Bounds checking
+    ///
+    /// - The address must be above `head_address` (not evicted).
+    /// - `record_size` is clamped to the remaining page space so that
+    ///   writes cannot cross a page boundary.
+    ///
+    /// Returns `None` if the address is below head (page already evicted
+    /// or recycled).
+    pub fn mutable_record_at(
+        &self,
+        addr: LogicalAddress,
+        record_size: u32,
+    ) -> Option<MutableRecordAccessor<'_>> {
+        let ptr = self.get_physical_address(addr)?;
+
+        // Bounds check: record must fit within the page.
+        let page_size = 1u32 << OFFSET_BITS;
+        let offset = addr.offset().0;
+        let remaining = page_size.saturating_sub(offset);
+
+        debug_assert!(
+            record_size <= remaining,
+            "mutable_record_at: record_size {} exceeds page remainder {} at offset {}",
+            record_size,
+            remaining,
+            offset,
+        );
+        debug_assert!(
+            record_size as usize >= RECORD_HEADER_SIZE,
+            "mutable_record_at: record_size {} smaller than header ({})",
+            record_size,
+            RECORD_HEADER_SIZE,
+        );
+
+        // Clamp to page boundary — prevents OOB writes even with
+        // corrupted addresses in release builds.
+        let bounded_size = record_size.min(remaining);
+
+        // SAFETY:
+        // - `ptr` is from `get_physical_address`: valid, 8-byte aligned,
+        //   within a live page frame, above head_address.
+        // - `bounded_size <= remaining`: cannot write past page boundary.
+        // - Accessor lifetime tied to `&self`: cannot outlive allocator.
+        Some(unsafe { MutableRecordAccessor::new(ptr, bounded_size) })
     }
 
     /// Advance the read-only boundary to the current tail address.

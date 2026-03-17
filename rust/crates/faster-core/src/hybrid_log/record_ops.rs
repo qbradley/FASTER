@@ -14,6 +14,8 @@
 //! | [`LogRecordReader`] | Read records from in-memory pages |
 //! | [`VersionChainIterator`] | Walk the `previous_address` chain |
 
+use core::marker::PhantomData;
+
 use crate::address::{LogicalAddress, OFFSET_BITS};
 use crate::record::{
     AtomicRecordInfo, KEY_OFFSET, Key, RECORD_HEADER_SIZE, RecordInfo, RecordLayout, Value,
@@ -224,28 +226,40 @@ impl RecordAccessor {
 /// allocated records that need to be populated, or for in-place updates
 /// to values in the mutable region.
 ///
+/// The lifetime `'a` ties this accessor to the allocator (or page frame)
+/// that owns the underlying memory, preventing the raw pointer from
+/// outliving its source. Prefer constructing via
+/// [`HybridLogAllocator::mutable_record_at`] which performs bounds
+/// checking and binds the lifetime automatically.
+///
 /// # Not `Send` / `Sync`
 ///
-/// `MutableRecordAccessor` holds a raw pointer to page memory that could
-/// be evicted; it is intentionally `!Send` and `!Sync`.
-pub struct MutableRecordAccessor {
+/// `MutableRecordAccessor` holds a raw pointer to page memory; it is
+/// intentionally `!Send` and `!Sync`.
+pub struct MutableRecordAccessor<'a> {
     /// Raw pointer to the start of the record.
     ptr: *mut u8,
     /// Total record size in bytes.
     record_size: u32,
+    /// Ties this accessor's validity to the lifetime of the backing
+    /// page memory (allocator or page frame).
+    _lifetime: PhantomData<&'a ()>,
 }
 
-impl MutableRecordAccessor {
+impl<'a> MutableRecordAccessor<'a> {
     /// Creates a new `MutableRecordAccessor`.
     ///
     /// # Safety
     ///
     /// - `ptr` must point to valid, writable memory of at least `record_size`
     ///   bytes.
-    /// - The memory must remain valid for the lifetime of this accessor.
+    /// - The memory must remain valid for lifetime `'a`.
     /// - `ptr` must be 8-byte aligned.
     /// - No other references to this memory region may exist concurrently
     ///   (exclusive access).
+    ///
+    /// Prefer [`HybridLogAllocator::mutable_record_at`] which binds the
+    /// lifetime and adds bounds checking automatically.
     #[inline]
     pub unsafe fn new(ptr: *mut u8, record_size: u32) -> Self {
         debug_assert!(!ptr.is_null(), "MutableRecordAccessor: null pointer");
@@ -257,7 +271,11 @@ impl MutableRecordAccessor {
             record_size as usize >= RECORD_HEADER_SIZE,
             "MutableRecordAccessor: record_size smaller than header"
         );
-        Self { ptr, record_size }
+        Self {
+            ptr,
+            record_size,
+            _lifetime: PhantomData,
+        }
     }
 
     // ── Read methods (delegated to an immutable view) ───────────────
@@ -417,29 +435,21 @@ impl<'a> LogRecordWriter<'a> {
     /// required number of bytes, and returns both the logical address and a
     /// mutable accessor to the newly allocated region.
     ///
+    /// The returned accessor's lifetime is tied to the allocator, preventing
+    /// the raw pointer from outliving its backing page frame.
+    ///
     /// Returns `None` if the allocator is sealed or if the record would
     /// cross a page boundary. The caller handles page advance and retries.
     pub fn allocate_record<K: Key, V: Value>(
         &self,
         key: &K,
         value: &V,
-    ) -> Option<(LogicalAddress, MutableRecordAccessor)> {
+    ) -> Option<(LogicalAddress, MutableRecordAccessor<'a>)> {
         let layout = RecordLayout::for_kv(key, value);
         let size = layout.total_size() as u32;
 
         let addr = self.allocator.try_allocate(size)?;
-        let ptr = self.allocator.get_physical_address(addr)?;
-
-        // SAFETY: The allocator guarantees that:
-        // 1. `addr` points to freshly allocated space of `size` bytes within a
-        //    valid page frame (get_or_allocate_frame was called by try_allocate).
-        // 2. The offset is a multiple of RECORD_ALIGNMENT (8) because all record
-        //    sizes are multiples of 8 and allocation is bump-sequential from
-        //    page-aligned start.
-        // 3. We have exclusive access — the region was just bumped past the old
-        //    tail and is not yet visible to readers.
-        let accessor = unsafe { MutableRecordAccessor::new(ptr, size) };
-        Some((addr, accessor))
+        self.allocator.mutable_record_at(addr, size).map(|acc| (addr, acc))
     }
 
     /// Allocate space for a record of the given byte size.
@@ -451,14 +461,9 @@ impl<'a> LogRecordWriter<'a> {
     ///
     /// Returns `None` if the allocator is sealed or if the record would
     /// cross a page boundary.
-    pub fn allocate_raw(&self, size: u32) -> Option<(LogicalAddress, MutableRecordAccessor)> {
+    pub fn allocate_raw(&self, size: u32) -> Option<(LogicalAddress, MutableRecordAccessor<'a>)> {
         let addr = self.allocator.try_allocate(size)?;
-        let ptr = self.allocator.get_physical_address(addr)?;
-
-        // SAFETY: Same guarantees as `allocate_record` — freshly allocated,
-        // 8-byte-aligned space within a valid page frame with exclusive access.
-        let accessor = unsafe { MutableRecordAccessor::new(ptr, size) };
-        Some((addr, accessor))
+        self.allocator.mutable_record_at(addr, size).map(|acc| (addr, acc))
     }
 
     /// Allocate and write a complete record in one step.
@@ -776,9 +781,9 @@ mod tests {
         assert_eq!(rv, 100);
 
         // Update value in place via a new mutable accessor.
-        let ptr = alloc.get_physical_address(addr).expect("phys addr");
-        // SAFETY: ptr is valid, 8-byte aligned, and we control access in this test.
-        let mut mut_acc = unsafe { MutableRecordAccessor::new(ptr, layout.total_size() as u32) };
+        let mut mut_acc = alloc
+            .mutable_record_at(addr, layout.total_size() as u32)
+            .expect("phys addr");
         mut_acc.write_value(&updated, &layout);
 
         // Verify updated value.

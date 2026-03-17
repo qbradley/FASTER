@@ -1453,7 +1453,7 @@ impl<F: Functions> FasterKv<F> {
         &self,
         key: &K,
         value: &V,
-    ) -> Option<(LogicalAddress, crate::hybrid_log::MutableRecordAccessor)> {
+    ) -> Option<(LogicalAddress, crate::hybrid_log::MutableRecordAccessor<'_>)> {
         if let Some(pair) = allocate_at_tail(&self.allocator, key, value, None) {
             return Some(pair);
         }

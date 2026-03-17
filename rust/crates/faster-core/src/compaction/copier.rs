@@ -207,12 +207,12 @@ impl<'a> RecordCopier<'a> {
     /// Try to allocate `size` bytes, retrying once across a page boundary.
     ///
     /// Mirrors the two-phase pattern from `store::operations::allocate_at_tail`.
-    fn allocate_with_retry(
-        writer: &LogRecordWriter<'_>,
+    fn allocate_with_retry<'w>(
+        writer: &LogRecordWriter<'w>,
         allocator: &HybridLogAllocator,
         size: u32,
         record_size: usize,
-    ) -> Result<(LogicalAddress, MutableRecordAccessor), CopyError> {
+    ) -> Result<(LogicalAddress, MutableRecordAccessor<'w>), CopyError> {
         // First attempt.
         if let Some(result) = writer.allocate_raw(size) {
             return Ok(result);

@@ -1120,12 +1120,9 @@ fn mutable_accessor_zero_clears_record() {
     assert_eq!(ri.checkpoint_version(), 1);
 
     // Zero the record via a new mutable accessor
-    let ptr = alloc.get_physical_address(addr).expect("phys");
-    // SAFETY: `ptr` is a valid physical address from the allocator, and `total_size()` matches
-    // the record layout at that address.
-    let mut mut_acc = unsafe {
-        faster_core::hybrid_log::MutableRecordAccessor::new(ptr, layout.total_size() as u32)
-    };
+    let mut mut_acc = alloc
+        .mutable_record_at(addr, layout.total_size() as u32)
+        .expect("phys");
     mut_acc.zero();
 
     // All bytes should now be zero

@@ -210,18 +210,21 @@ const MAX_ALLOC_RETRIES: u32 = 32;
 /// Allocate a new record at the log tail, handling page-boundary
 /// crossing (advance to next page + bounded retry).
 ///
-/// On success returns `(LogicalAddress, MutableRecordAccessor)`.
+/// On success returns `(LogicalAddress, MutableRecordAccessor<'a>)`.
+///
+/// The accessor's lifetime is tied to the allocator reference, preventing
+/// dangling pointers to evicted page memory.
 ///
 /// When the buffer is full (SF-10), the function calls `on_alloc_failure`
 /// (typically [`FasterKv::maintenance`]) in a bounded retry loop with
 /// [`thread::yield_now`] between attempts, giving I/O worker threads
 /// CPU time to complete flushes and free pages.
-pub(crate) fn allocate_at_tail<K: Key, V: Value>(
-    allocator: &HybridLogAllocator,
+pub(crate) fn allocate_at_tail<'a, K: Key, V: Value>(
+    allocator: &'a HybridLogAllocator,
     key: &K,
     value: &V,
     on_alloc_failure: Option<&dyn Fn()>,
-) -> Option<(LogicalAddress, MutableRecordAccessor)> {
+) -> Option<(LogicalAddress, MutableRecordAccessor<'a>)> {
     let writer = LogRecordWriter::new(allocator);
 
     // First attempt — may fail if the record would cross a page boundary.
@@ -463,12 +466,11 @@ pub(crate) fn internal_upsert<F: Functions>(
                     // Sealed records: attempt revivification (CAS-unseal for
                     // in-place update) before falling back to copy-to-tail.
                     let was_revivified = if ri.is_sealed() {
-                        let ptr = ctx.allocator.get_physical_address(found_addr);
-                        if let Some(ptr) = ptr {
-                            let record_size =
-                                safe_read_record_size(found_addr, layout.total_size() as u32);
-                            // SAFETY: record is in mutable region (above head_address), cannot be evicted.
-                            let accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
+                        let record_size =
+                            safe_read_record_size(found_addr, layout.total_size() as u32);
+                        if let Some(accessor) =
+                            ctx.allocator.mutable_record_at(found_addr, record_size)
+                        {
                             let atomic_ri = accessor.atomic_record_info();
 
                             // CAS: clear sealed bit. Only one thread wins.
@@ -498,21 +500,11 @@ pub(crate) fn internal_upsert<F: Functions>(
                     };
 
                     // In-place update via raw or standard path.
-                    let ptr = ctx.allocator.get_physical_address(found_addr);
-                    if let Some(ptr) = ptr {
-                        // SF-15: Verify the address is still in memory after
-                        // obtaining the physical pointer. The mutable region
-                        // is above head_address, so eviction cannot reach it.
-                        debug_assert!(
-                            ctx.allocator.is_in_memory(found_addr),
-                            "SF-15: address evicted between classify and access"
-                        );
-                        let record_size =
-                            safe_read_record_size(found_addr, layout.total_size() as u32);
-                        // SAFETY: record is in the mutable region (above head_address),
-                        // so the page frame cannot be evicted. Pinning is not required.
-                        let mut accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
-
+                    let record_size =
+                        safe_read_record_size(found_addr, layout.total_size() as u32);
+                    if let Some(mut accessor) =
+                        ctx.allocator.mutable_record_at(found_addr, record_size)
+                    {
                         if F::SUPPORTS_RAW_IN_PLACE {
                             let value_ptr = accessor.value_mut_ptr(&layout);
                             let value_len = std::mem::size_of::<F::Value>();
@@ -807,12 +799,11 @@ pub(crate) fn internal_rmw<F: Functions>(
                     // Sealed records: attempt revivification (CAS-unseal
                     // for in-place update) before falling back to copy-to-tail.
                     let was_revivified = if ri.is_sealed() {
-                        let ptr = ctx.allocator.get_physical_address(found_addr);
-                        if let Some(ptr) = ptr {
-                            let record_size =
-                                safe_read_record_size(found_addr, layout.total_size() as u32);
-                            // SAFETY: record is in mutable region (above head_address), cannot be evicted.
-                            let accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
+                        let record_size =
+                            safe_read_record_size(found_addr, layout.total_size() as u32);
+                        if let Some(accessor) =
+                            ctx.allocator.mutable_record_at(found_addr, record_size)
+                        {
                             let atomic_ri = accessor.atomic_record_info();
 
                             if atomic_ri.try_revivify(ri).is_ok() {
@@ -848,19 +839,14 @@ pub(crate) fn internal_rmw<F: Functions>(
                     };
 
                     // Try in-place update.
-                    let ptr = match ctx.allocator.get_physical_address(found_addr) {
-                        Some(p) => p,
+                    let record_size = safe_read_record_size(found_addr, layout.total_size() as u32);
+                    let mut accessor = match ctx
+                        .allocator
+                        .mutable_record_at(found_addr, record_size)
+                    {
+                        Some(a) => a,
                         None => return (OperationStatus::Aborted, Some(context)),
                     };
-
-                    // SF-15: Verify the address is still in memory.
-                    debug_assert!(
-                        ctx.allocator.is_in_memory(found_addr),
-                        "SF-15: address evicted between classify and access"
-                    );
-                    let record_size = safe_read_record_size(found_addr, layout.total_size() as u32);
-                    // SAFETY: record is in mutable region (above head_address), cannot be evicted.
-                    let mut accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
 
                     if F::SUPPORTS_RAW_IN_PLACE {
                         let value_ptr = accessor.value_mut_ptr(&layout);
@@ -1202,14 +1188,14 @@ pub(crate) fn internal_delete<F: Functions>(
                     }
 
                     // Set tombstone in-place via atomic CAS on the RecordInfo.
-                    let ptr = match ctx.allocator.get_physical_address(found_addr) {
-                        Some(p) => p,
+                    let record_size = safe_read_record_size(found_addr, layout.total_size() as u32);
+                    let mut accessor = match ctx
+                        .allocator
+                        .mutable_record_at(found_addr, record_size)
+                    {
+                        Some(a) => a,
                         None => return (OperationStatus::Aborted, Some(context)),
                     };
-
-                    let record_size = safe_read_record_size(found_addr, layout.total_size() as u32);
-                    // SAFETY: record is in mutable region (above head_address), cannot be evicted.
-                    let mut accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
 
                     // Invoke user callback for cleanup.
                     let mut value: F::Value = accessor.value(&layout);
@@ -1615,10 +1601,10 @@ mod tests {
 
     /// Helper: seal the record at the given address.
     fn seal_record_at(alloc: &HybridLogAllocator, addr: LogicalAddress) {
-        let ptr = alloc.get_physical_address(addr).expect("address in memory");
         let record_size = safe_read_record_size(addr, 8 + 8 + 8);
-        // SAFETY: ptr is valid from get_physical_address, record_size matches the record layout.
-        let accessor = unsafe { MutableRecordAccessor::new(ptr, record_size) };
+        let accessor = alloc
+            .mutable_record_at(addr, record_size)
+            .expect("address in memory");
         let atomic_ri = accessor.atomic_record_info();
         assert!(atomic_ri.try_seal().is_ok(), "seal should succeed");
     }
