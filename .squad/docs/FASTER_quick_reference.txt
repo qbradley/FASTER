@@ -1,0 +1,330 @@
+================================================================================
+FASTER RUST CRATE: PENDING I/O & HASH INDEX QUICK REFERENCE
+================================================================================
+
+FILE LOCATIONS:
+- Base path: /home/azureuser/FASTER/rust/crates/faster-core/src/
+
+KEY FILES:
+  Status                  status.rs                   25.9 KB
+  Pending I/O Manager     store/pending_io.rs         1.06 KB (lines 1-1061)
+  Session State           store/session.rs            1.61 KB (lines 1-1611)
+  CRUD Operations         store/operations.rs         1.80 KB (lines 1-1799)
+  Hash Index (Wrapper)    hash/index.rs              58.2 KB
+  Hash Table (Core)       hash/table.rs              58.0 KB
+  Hash Bucket Layout      hash/bucket.rs             77.1 KB
+  Overflow Pool           hash/overflow.rs           10.9 KB
+  Main Store              store/kv.rs                3.10 KB (lines 1-3104)
+
+================================================================================
+SECTION 1: STATUS ARRAY
+================================================================================
+
+NO TRADITIONAL STATUS ARRAY EXISTS.
+
+Instead: OperationStatus enum returned directly
+  - Location: /status.rs:64-140
+  - Size: 1-4 bytes per operation (not stored in array)
+  - Variants: Ok, Pending, NotFound, Created, InPlaceUpdated, CopyUpdated, Deleted, Aborted
+  - Pending ops tracked in session Vec instead
+
+KEY INSIGHT: Operations return status immediately; pending ops enqueued in:
+  - session.pending_ops: Vec<PendingOperation<F>>
+  - session.io_contexts: Vec<PendingIoContext<F>>
+
+================================================================================
+SECTION 2: PENDING I/O MANAGER
+================================================================================
+
+FLOW:
+  Operation returns Pending
+    ↓ (enqueued)
+  PendingOperation in session.pending_ops
+    ↓ (dispatched)
+  PendingIoManager::issue_read() → PendingIoContext
+    ↓ (device callback)
+  Arc<AtomicBool> completion flag set
+    ↓ (polled)
+  try_complete() → CompletedIo
+    ↓ (retried)
+  Operation continues with data in memory
+
+DATA STRUCTURES:
+
+1. PendingOperation<F> (lines 154-169)
+   - Size: Variable (~48 B for u64/u64)
+   - Fields: op_type, key, input, context, address, layout, key_hash
+   - Stored in: session.pending_ops: Vec
+
+2. PendingIoContext<F> (lines 248-394)
+   - Size: ~160 B per context (excluding buffer)
+   - Fields:
+     * id: u64 (unique ID)
+     * created_at: Instant (timeout tracking)
+     * operation: PendingOperation<F>
+     * buffer: Option<AlignedBuffer> (8-64 KB)
+     * completed: Arc<AtomicBool> ← Device callback writes here
+     * io_status: Arc<Mutex<Option<IoStatus>>>
+     * bytes_transferred: Arc<AtomicU32>
+   - Stored in: session.io_contexts: Vec
+   - Polling: is_completed() uses Acquire ordering
+
+3. CompletedIo<F> (lines 191-239)
+   - Contains operation + buffer + record_offset + status
+   - Returned after device callback fires and poll succeeds
+
+4. PendingIoManager (lines 403-576)
+   - Owns BufferPool (sector-aligned, 8 KB chunks)
+   - Manages page_size, sector_size, config
+   - Methods:
+     * issue_read() - async read with Arc-shared completion state
+     * issue_read_sync() - blocking read
+
+DEVICE CALLBACK:
+  - Location: lines 173-182
+  - Runs on device I/O thread
+  - Sets: completed = true, io_status = status, bytes_transferred = bytes
+  - Uses: Ordering::Release for visibility
+
+POLLING:
+  - session.take_completed_io(): O(n) linear scan + drain
+  - Location: /store/session.rs:304-317
+  - Rebuilds still_pending vec with incomplete contexts
+
+O(N) OPERATIONS:
+  1. drain_pending_ops() - returns and clears pending_ops vec
+  2. take_completed_io() - filters completed vs pending I/O
+  3. wait_for_all_io() - spin-waits for all contexts (BLOCKING!)
+
+================================================================================
+SECTION 3: HASH INDEX
+================================================================================
+
+STRUCTURE:
+
+HashIndex
+├─ table: HashTable (primary buckets)
+├─ epoch: Arc<EpochTable> (GC coordination)
+├─ version: AtomicU32 (grows toggled)
+└─ live_entry_count: AtomicU64 (diagnostic)
+
+BUCKET LAYOUT (64 bytes = 1 cache line):
+  Offset:  0    8   16   24   32   40   48   56   64
+           ┌────┬────┬────┬────┬────┬────┬────┬────┐
+           │E0  │E1  │E2  │E3  │E4  │E5  │E6  │OVF │
+           │8B  │8B  │8B  │8B  │8B  │8B  │8B  │8B │
+           └────┴────┴────┴────┴────┴────┴────┴────┘
+  - 7 entries + 1 overflow pointer per bucket
+  - Cache-aligned to prevent straddling cache lines
+
+BUCKET ENTRY (64-bit packed):
+  Bits: 63     62     61..48        47..0
+        ┌──────┬──────┬────────────┬──────────────┐
+        │Tent  │Rsvd  │ Tag (14)   │ Address (48) │
+        └──────┴──────┴────────────┴──────────────┘
+  - Tentative (1 bit): Entry being inserted concurrently
+  - Tag (14 bits): Hash fingerprint for fast rejection (1/16384 FP rate)
+  - Address (48 bits): LogicalAddress in hybrid log
+  - Size: Exactly 8 bytes, atomic operations via AtomicU64
+
+CONSTANTS:
+  - BUCKET_NUM_ENTRIES = 7
+  - HashBucket size = 64 bytes
+  - HashTable.MIN_LOG2_SIZE = 1 (2 buckets)
+  - HashTable.MAX_LOG2_SIZE = 30 (2^30 ≈ 1 billion buckets = 64 GB)
+
+SIZE EXAMPLE (2^16 buckets):
+  - Primary buckets: 65,536 × 64 B = 4 MB
+  - Overflow pool: Grows on demand (initial = 64 MB)
+
+TWO-PHASE INSERT PROTOCOL:
+  Phase 1: CAS(EMPTY → TENTATIVE | entry) - reserves slot atomically
+  Phase 2: CAS(TENTATIVE | old → COMMITTED | new) - makes visible to readers
+  Abort: CAS(TENTATIVE | entry → EMPTY) - if insert failed
+
+LOOKUP:
+  1. Hash key to get bucket index: hash & (num_buckets - 1)
+  2. Load entry with Acquire ordering
+  3. Compare tag (14-bit) first (fast reject)
+  4. If tag matches, chase address into log
+  5. Follow overflow chain if no match in primary bucket
+
+FILES:
+  - /hash/bucket.rs: HashBucketEntry, AtomicHashBucketEntry, HashBucket
+  - /hash/table.rs: HashTable, FindOrCreateResult
+  - /hash/index.rs: HashIndex (epoch-wrapped), find, find_or_create, update
+  - /hash/overflow.rs: OverflowBucketPool
+
+================================================================================
+SECTION 4: GARBAGE COLLECTION & MAINTENANCE
+================================================================================
+
+INVALIDATE_ENTRIES_IN_RANGE (Page Eviction):
+  Location: /hash/index.rs:427-480
+  Purpose: Remove entries whose addresses fall in [begin, end)
+  Complexity: O(num_buckets × avg_overflow_chain_depth × 7)
+             = O(n total entries) in typical case
+  Algorithm:
+    for each bucket:
+      for each entry in bucket:
+        if entry.address in [begin, end):
+          CAS(entry → EMPTY) with AcqRel on success
+      follow overflow chain
+  Returns: count of invalidated entries
+  Decrements: live_entry_count by invalidated count (Relaxed)
+
+CLEANUP_TENTATIVE_ENTRIES_FOR_RECOVERY (Recovery):
+  Location: /hash/index.rs:559-603
+  Purpose: Remove stale tentative entries left by crashes
+  ⚠️  MUST ONLY be called during recovery (no active inserts)
+  ⚠️  UNSAFE to call concurrently with find_or_create()
+       → Can silently delete live tentative entries
+       → Commit CAS fails, record lost with no error
+  Complexity: O(n total entries)
+  Algorithm: Same as invalidate_entries_in_range but checks is_tentative()
+
+ORDERING:
+  - Load: Acquire (see fully-committed entries)
+  - CAS success: AcqRel (publish removal)
+  - CAS failure: Relaxed (skip, entry concurrent modified)
+
+================================================================================
+SECTION 5: ATOMIC PATTERNS
+================================================================================
+
+Bucket Entry Lookup (Hottest Path):
+  entry.load(Ordering::Acquire);      // See record in log
+  if entry.tag() != search_tag { ... } // Fast-reject on tag mismatch
+
+CAS (Insert Tentative/Commit):
+  atomic.compare_exchange(
+    old, new,
+    Ordering::AcqRel,  // Acquire prior state + Release new entry
+    Ordering::Acquire, // Failed CAS needs to see actual value
+  )
+
+Overflow Chain:
+  overflow_addr.load(Ordering::Acquire);  // See overflow bucket init
+
+I/O Completion:
+  completed.store(true, Ordering::Release);  // Device callback
+  completed.load(Ordering::Acquire);        // Poller
+
+Entry Count:
+  live_entry_count.fetch_add/sub(_, Ordering::Relaxed);
+  // Loose consistency, diagnostic only
+
+================================================================================
+SECTION 6: SESSION STATE
+================================================================================
+
+FasterSession<F> Fields:
+  - pending_ops: Vec<PendingOperation<F>>      // Un-dispatched
+  - io_contexts: Vec<PendingIoContext<F>>      // In-flight
+  - epoch_thread: EpochThread
+  - epoch_table: Arc<EpochTable>
+  - serial_number: u64
+  - in_epoch: bool
+  - _not_send: PhantomData<*const ()>          // Thread-affine
+
+Key Methods:
+  enqueue_pending(op)      - Add to pending_ops
+  drain_pending_ops()      - Return & clear pending_ops (O(n))
+  enqueue_io_context(ctx)  - Add to io_contexts
+  take_completed_io()      - Poll & filter (O(n))
+  wait_for_all_io()        - Spin-wait for completion (BLOCKING)
+  pending_count()          - O(1): len(pending_ops) + len(io_contexts)
+  cancel_pending(id)       - O(n): find by ID
+  cancel_all_expired()     - O(n): filter timeout-expired
+
+SessionStats:
+  - operations_completed: u64
+  - pending_count: usize
+  - current_serial: u64
+
+================================================================================
+SECTION 7: SCALING TABLE
+================================================================================
+
+Component              Structure                      Grows When           O(n) Operation
+─────────────────────────────────────────────────────────────────────────────────────
+OperationStatus        Enum                          Never                N/A
+pending_ops            Vec<PendingOperation<F>>     Disk hits            drain() O(n)
+io_contexts            Vec<PendingIoContext<F>>     I/O issued           take_completed_io() O(n)
+Hash Table             Box<[HashBucket; 2^log2]>   Table grow (rare)    find() O(1)–O(chain)
+Overflow Pool          Page allocator                Overflow chains     get() O(1)
+live_entry_count       AtomicU64                     Every insert/del     N/A
+Invalidate            Full table scan               Page eviction        O(n entries)
+Cleanup               Full table scan               Recovery             O(n entries)
+
+================================================================================
+CRITICAL CODE LOCATIONS (file:line)
+================================================================================
+
+Status Tracking:
+  ✓ /status.rs:64-140          → OperationStatus enum
+
+Pending I/O:
+  ✓ /store/pending_io.rs:1-100           → Config & error types
+  ✓ /store/pending_io.rs:154-182         → Callback function
+  ✓ /store/pending_io.rs:191-239         → CompletedIo struct
+  ✓ /store/pending_io.rs:248-394         → PendingIoContext struct
+  ✓ /store/pending_io.rs:403-576         → PendingIoManager
+
+Session Pending Queues:
+  ✓ /store/session.rs:76-83             → SessionStats
+  ✓ /store/session.rs:154-169           → PendingOperation
+  ✓ /store/session.rs:190-212           → FasterSession struct (pending_ops, io_contexts)
+  ✓ /store/session.rs:276-289           → enqueue_pending & drain_pending_ops
+  ✓ /store/session.rs:296-317           → enqueue_io_context & take_completed_io
+  ✓ /store/session.rs:329-350           → wait_for_all_io (BLOCKING!)
+
+Hash Entry & Bucket:
+  ✓ /hash/bucket.rs:100-247             → HashBucketEntry (64-bit packed)
+  ✓ /hash/bucket.rs:334-415             → AtomicHashBucketEntry
+  ✓ /hash/bucket.rs:465-550             → HashBucket layout (64 B)
+
+Hash Index Operations:
+  ✓ /hash/index.rs:103-180              → HashIndex struct
+  ✓ /hash/index.rs:213-241              → find, prefetch, find_or_create
+  ✓ /hash/index.rs:348-361              → update (CAS)
+  ✓ /hash/index.rs:427-480              → invalidate_entries_in_range (GC)
+  ✓ /hash/index.rs:559-603              → cleanup_tentative_entries_for_recovery
+
+Store Main:
+  ✓ /store/kv.rs:1-100                  → FasterKv struct definition
+  ✓ /store/mod.rs                        → Module exports
+
+================================================================================
+KEY TAKEAWAYS
+================================================================================
+
+1. NO STATUS ARRAY
+   - Status returned as enum, never stored in array
+   - Pending ops tracked in session Vecs instead
+
+2. TWO-LEVEL PENDING QUEUE
+   - pending_ops: waiting for I/O dispatch
+   - io_contexts: in-flight I/O with Arc-shared completion flags
+
+3. HASH INDEX IS COMPLETELY LOCK-FREE
+   - All operations use atomic CAS on 64-bit entries
+   - Overflow chains extend buckets dynamically
+   - Full table scans (GC) are O(n) but batch operations
+
+4. ATOMIC ORDERING ON CAS: AcqRel
+   - Acquire: see prior writes to slot
+   - Release: publish new entry to subsequent readers
+
+5. SCALING CONCERNS
+   - take_completed_io() is O(n I/O contexts)
+   - invalidate_entries_in_range() is O(n total entries)
+   - cleanup_tentative() is O(n total entries)
+   - wait_for_all_io() SPINS (busy-wait, blocking!)
+
+6. BUFFER MANAGEMENT
+   - I/O reads use sector-aligned buffers from pool
+   - 8 KB minimum per read (line 36)
+   - Buffers returned after completion (line 572-574)
+
+================================================================================

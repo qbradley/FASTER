@@ -408,6 +408,7 @@ dependencies = [
  "crc32fast",
  "criterion",
  "crossbeam-utils",
+ "libc",
  "log",
  "loom",
  "proptest",

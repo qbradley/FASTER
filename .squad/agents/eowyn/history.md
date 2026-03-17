@@ -295,3 +295,28 @@ Produced eowyn-dst-v2-technical-design.md (60KB, 1753 lines) — detailed core A
 
 **Branches:** `rust` (all phases)
 
+---
+
+### 2026-03-18: DST Scenarios Tuned for Small-Pages Buffer Pressure
+
+**What:** Tuned DST concurrency scenario workloads so they exceed buffer capacity by 15-37× when compiled with `--features small-pages` (OFFSET_BITS=16, 64 KB pages). Added `min_total_ops` assertion to detect degraded throughput from broken flush/eviction pipeline. Implemented the `small-pages` feature flag in `faster-core` (address.rs, allocator.rs, Cargo.toml).
+
+**Files:**
+- `rust/crates/faster-core/Cargo.toml` — added `small-pages` feature
+- `rust/crates/faster-core/src/address.rs` — cfg-gated OFFSET_BITS, fixed MAX_PAGE overflow
+- `rust/crates/faster-core/src/allocator.rs` — cfg-gated ITEMS_PER_PAGE_BITS
+- `rust/crates/faster-dst/Cargo.toml` — forward `small-pages` feature
+- `rust/crates/faster-dst/src/concurrency/assertions.rs` — added `min_total_ops` assertion
+- `rust/crates/faster-dst/src/concurrency/scenarios.rs` — tuned buffer sizes, key ranges, ops counts
+
+**Validation:**
+- With fixes: all 4 scenarios × 5 seeds = 20/20 PASS (100% success rate)
+- With reverted deadlock fixes: pipeline_deadlock 5/5 FAIL (7% success rate), lossy_truncate 5/5 FAIL
+- Revert scope: removed `poll_completions()` from maintenance, disabled buffer-pressure detection, changed eviction continue→break
+
+**Key Insight:** Record size is 24 bytes (not 48). Uniform key distribution with small range allows in-place updates that bypass allocation. Fixed by using Uniform(500K) range with 200K-400K total ops, ensuring <2% collision rate. Added `min_total_ops` assertion because writers complete quickly with Aborted ops — throughput degradation (not stall) is the observable failure mode.
+
+**Learned:** DstRunner's scheduler thread provides an alternate maintenance path that masks some deadlock patterns. The critical revert is removing `poll_completions()` from `maintenance()` — without it, Flushing→Flushed transitions never fire, and the entire flush/eviction pipeline stalls.
+
+**Commit:** c7e0023b
+

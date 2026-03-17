@@ -1,0 +1,303 @@
+================================================================================
+FASTER-RUST CODEBASE FILE REFERENCE FOR COMPACTION SCANNER
+================================================================================
+
+ROOT: /home/azureuser/FASTER/rust/crates/faster-core/src/
+
+================================================================================
+1. ADDRESS TYPES
+================================================================================
+
+FILE: address.rs (26.5 KB)
+  Line 50-72:   Constants (ADDRESS_BITS, OFFSET_BITS, MAX_OFFSET, etc.)
+  Line 94:      Page newtype struct
+  Line 128:     Offset newtype struct
+  Line 184:     LogicalAddress struct
+  Line 198:     LogicalAddress::INVALID constant
+  Line 201:     LogicalAddress::ZERO constant
+  Line 204:     LogicalAddress::MIN_VALID constant
+  Line 208:     LogicalAddress::MAX constant
+  Line 226:     LogicalAddress::new() constructor
+  Line 248:     LogicalAddress::from_raw()
+  Line 254:     LogicalAddress::raw()
+  Line 269:     LogicalAddress::page()
+  Line 284:     LogicalAddress::offset()
+  Line 303:     LogicalAddress::is_valid()
+  Line 309:     LogicalAddress::is_null()
+  Line 318:     LogicalAddress::in_read_cache()
+
+================================================================================
+2. RECORD FORMAT
+================================================================================
+
+FILE: record/mod.rs (1.8 KB)
+  Line 25-33:   Re-exports of record types
+
+FILE: record/record_info.rs (27.4 KB)
+  Line 9-25:    Bit layout diagram
+  Line 34-53:   Bit mask constants
+  Line 79:      RecordInfo struct definition
+  Line 99:      RecordInfo::new() constructor
+  Line 139:     RecordInfo::from_raw()
+  Line 145:     RecordInfo::raw()
+  Line 151:     RecordInfo::is_null()
+  Line 168:     RecordInfo::previous_address()
+  Line 184:     RecordInfo::checkpoint_version()
+  Line 193:     RecordInfo::is_invalid()
+  Line 202:     RecordInfo::is_tombstone()
+  Line 210:     RecordInfo::is_final()
+  Line 216:     RecordInfo::with_invalid()
+  Line 222:     RecordInfo::with_tombstone()
+  Line 234:     RecordInfo::with_previous_address()
+  Line 335:     AtomicRecordInfo struct definition
+
+FILE: record/layout.rs (20 KB)
+  Line 24:      RECORD_HEADER_SIZE constant (8)
+  Line 31:      RECORD_ALIGNMENT constant (8)
+  Line 52:      pad_alignment() function
+  Line 98:      RecordLayout struct definition
+  Line 119:     RecordLayout::compute()
+  Line 135:     RecordLayout::for_kv()
+  Line 141:     RecordLayout::key_offset()
+  Line 147:     RecordLayout::value_offset()
+  Line 153:     RecordLayout::total_size()
+  Line 187:     write_record() function
+  Line 219:     read_record_info() function
+  Line 234:     read_key() function
+  Line 244:     read_value() function
+  Line 253:     record_size() function
+
+================================================================================
+3. HYBRID LOG (LOG ALLOCATOR & RECORD ACCESS)
+================================================================================
+
+FILE: hybrid_log/mod.rs (2.8 KB)
+  Line 36-54:   Module structure and re-exports
+
+FILE: hybrid_log/log_allocator.rs (29.4 KB)
+  Line 37-61:   HybridLogAllocator struct definition
+  Line 71:      HybridLogAllocator::new()
+  Line 105:     HybridLogAllocator::try_allocate()
+  Line 174:     HybridLogAllocator::get_physical_address()
+  Line 194:     HybridLogAllocator::shift_read_only_to_tail()
+  Line 234:     HybridLogAllocator::is_mutable()
+  Line 243:     HybridLogAllocator::is_safe_read_only()
+  Line 251:     HybridLogAllocator::is_in_memory()
+  Line 259:     HybridLogAllocator::tail_address()
+  Line 265:     HybridLogAllocator::read_only_address()
+  Line 271:     HybridLogAllocator::head_address()
+  Line 277:     HybridLogAllocator::begin_address()
+  Line 282:     HybridLogAllocator::seal()
+  Line 288:     HybridLogAllocator::page_table()
+  Line 298:     HybridLogAllocator::advance_to_next_page()
+  Line 356:     HybridLogAllocator::page_size()
+
+FILE: hybrid_log/record_ops.rs (32.6 KB)
+  Line 39-44:   RecordAccessor struct definition
+  Line 59:      RecordAccessor::new() [unsafe]
+  Line 74:      RecordAccessor::record_info()
+  Line 84:      RecordAccessor::atomic_record_info()
+  Line 93:      RecordAccessor::key<K>()
+  Line 99:      RecordAccessor::value<V>()
+  Line 108:     RecordAccessor::key_ref()
+  Line 118:     RecordAccessor::value_ref()
+  Line 124:     RecordAccessor::as_slice()
+  Line 131:     RecordAccessor::record_size()
+  Line 144:     RecordAccessor::from_log() [safe wrapper]
+  Line 171-176: MutableRecordAccessor struct definition
+  Line 190:     MutableRecordAccessor::new() [unsafe]
+  Line 207:     MutableRecordAccessor::record_info()
+  Line 217:     MutableRecordAccessor::atomic_record_info()
+  Line 226:     MutableRecordAccessor::key<K>()
+  Line 232:     MutableRecordAccessor::value<V>()
+  Line 238:     MutableRecordAccessor::key_ref()
+  Line 244:     MutableRecordAccessor::value_ref()
+  Line 250:     MutableRecordAccessor::value_mut_ptr()
+  Line 256:     MutableRecordAccessor::as_slice()
+  Line 264:     MutableRecordAccessor::record_size()
+  Line 272:     MutableRecordAccessor::write_record_info()
+  Line 278:     MutableRecordAccessor::write_key()
+  Line 286:     MutableRecordAccessor::write_value()
+  Line 295:     MutableRecordAccessor::write_full_record()
+  Line 520:     VersionChainIterator struct definition
+  Line 525:     VersionChainIterator::new()
+  Line 529:     VersionChainIterator::next() [iterator impl]
+
+FILE: hybrid_log/scan.rs (27.1 KB)
+  Line 42:      ScanOptions struct definition
+  Line 62:      ScanOptions::default()
+  Line 84:      ScanRecord struct definition
+  Line 107:     ScanRecord::key_bytes()
+  Line 112:     ScanRecord::value_bytes()
+  Line 138:     LogScanIterator struct definition
+  Line 167:     LogScanIterator::new()
+  Line 268-300: LogScanIterator::next() [iterator impl]
+
+FILE: hybrid_log/page.rs (30.8 KB)
+  Line 28:      DEFAULT_SECTOR_SIZE constant (512)
+  Line 31:      DEFAULT_PAGE_SIZE constant (2^OFFSET_BITS = 33,554,432)
+  Line 43-56:   PageState enum (Free, Open, Sealed, Flushing, Flushed, Evicted)
+  Line 88-100:  AtomicPageState struct
+
+================================================================================
+4. HASH INDEX
+================================================================================
+
+FILE: hash/mod.rs (1.8 KB)
+  Line 1-54:    Module documentation and re-exports
+
+FILE: hash/index.rs (380+ KB)
+  Line 103-116: HashIndex struct definition
+  Line 143:     HashIndex::new()
+  Line 173:     HashIndex::with_epoch()
+  Line 205:     HashIndex::register_thread()
+  Line 239:     HashIndex::find()
+  Line 271:     HashIndex::find_or_create()
+  Line 323:     HashIndex::update()
+  Line 341:     HashIndex::invalidate_entries_in_range()
+
+FILE: hash/table.rs (310+ KB)
+  Line 66-76:   FindOrCreateResult struct
+  Line 103-117: HashTable struct definition
+  Line 142:     HashTable::new()
+  Line 150+:    HashTable::find_entry()
+  Line 200+:    HashTable::find_or_create_entry()
+  Line 250+:    HashTable::update_entry()
+
+FILE: hash/bucket.rs (1370+ lines)
+  Line 65:      TAG_BITS constant (14)
+  Line 69:      ADDRESS_BITS constant (48)
+  Line 138:     HashBucketEntry struct definition
+  Line 144:     HashBucketEntry::EMPTY constant
+  Line 160:     HashBucketEntry::new()
+  Line 179:     HashBucketEntry::from_raw()
+  Line 185:     HashBucketEntry::raw()
+  Line 194:     HashBucketEntry::address()
+  Line 206:     HashBucketEntry::tag()
+  Line 216:     HashBucketEntry::is_tentative()
+  Line 225:     HashBucketEntry::is_empty()
+  Line 234:     HashBucketEntry::with_tentative()
+  Line 244:     HashBucketEntry::without_tentative()
+  Line 334:     AtomicHashBucketEntry struct definition
+  Line 339:     AtomicHashBucketEntry::new()
+  Line 352:     AtomicHashBucketEntry::load()
+  Line 365:     AtomicHashBucketEntry::store()
+  Line 400:     AtomicHashBucketEntry::compare_exchange()
+  Line 463:     BUCKET_NUM_ENTRIES constant (7)
+  Line 510:     HashBucket struct definition
+  Line 541:     HashBucket::entry()
+
+================================================================================
+5. STORE OPERATIONS
+================================================================================
+
+FILE: store/mod.rs (2.9 KB)
+  Line 47-66:   Module structure and re-exports
+
+FILE: store/kv.rs (92.5 KB)
+  Line 90:      RecoveryInfo struct
+  Line 106-132: FasterKvConfig struct
+  Line 150-175: FasterKv struct definition
+  Line 200-202: Sync impl for FasterKv
+  Line 203-273: FasterKv::drop()
+  Line 276-295: FasterKv::builder()
+  Line 317:     FasterKv::new()
+  Line 369:     FasterKv::new_session()
+  Line 377:     FasterKv::dispose_session()
+  Line 405:     FasterKv::session_scope()
+  Line 502:     FasterKv::upsert_simple()
+  Line 534:     FasterKv::read_simple()
+  Line 566:     FasterKv::delete_simple()
+  Line 731:     FasterKv::read()
+  Line 773:     FasterKv::upsert()
+  Line 813:     FasterKv::rmw()
+  Line 853:     FasterKv::delete()
+
+FILE: store/session.rs (55.9 KB)
+  Line 74:      SessionStats struct
+  Line 105:     CompletePendingResult struct
+  Line 133:     PendingOpType enum
+  Line 150+:    PendingOperation struct
+  Line 196-211: FasterSession struct definition
+  Line 215:     FasterSession::new()
+  Line 239:     FasterSession::begin_unsafe()
+  Line 250:     FasterSession::end_unsafe()
+  Line 262:     FasterSession::next_serial()
+  Line 275:     FasterSession::enqueue_pending()
+  Line 286:     FasterSession::drain_pending_ops()
+  Line 295:     FasterSession::enqueue_io_context()
+  Line 303:     FasterSession::take_completed_io()
+  Line 328:     FasterSession::wait_for_all_io()
+
+FILE: store/functions.rs (23.3 KB)
+  Line 19:      RmwInPlaceResult enum
+  Line 54:      Functions trait definition
+  Line 73:      Functions::read()
+  Line 97:      Functions::upsert()
+  Line 114:     SUPPORTS_RAW_IN_PLACE constant
+  Line 122:     Functions::upsert_in_place_raw() [unsafe]
+  Line 139:     Functions::rmw_in_place_raw() [unsafe]
+  Line 150+:    SimpleFunctions struct definition
+  Line 200+:    CounterFunctions struct definition
+
+================================================================================
+6. TESTS
+================================================================================
+
+FILE: tests/integration_basics.rs
+  Line 26:      address_to_record_info_round_trip()
+  Line 57:      record_info_mutation_chain()
+  Line 88:      allocator_store_and_read_record()
+  Line 125:     allocator_multiple_records_independent()
+
+FILE: tests/e2e_tests.rs (full end-to-end examples)
+FILE: tests/common/mod.rs (test utilities)
+
+================================================================================
+7. EPOCH & MEMORY MANAGEMENT (Supporting)
+================================================================================
+
+FILE: epoch.rs (EpochTable, EpochThread, EpochGuard)
+FILE: allocator.rs (MallocFixedPageSize and other allocators)
+FILE: device.rs (Device trait for I/O)
+
+================================================================================
+KEY CONSTANTS QUICK LOOKUP
+================================================================================
+
+OFFSET_BITS = 25                                      (address.rs:56)
+PAGE_BITS = 23                                        (address.rs:59)
+ADDRESS_BITS = 48                                     (address.rs:52)
+MAX_OFFSET = 33,554,431 (2^25 - 1)                   (address.rs:62)
+MAX_PAGE = 8,388,607 (2^23 - 1)                      (address.rs:65)
+MAX_ADDRESS = 281,474,976,710,655 (2^48 - 1)        (address.rs:68)
+READ_CACHE_BIT = 1 << 47                            (address.rs:72)
+
+RECORD_HEADER_SIZE = 8                               (record/layout.rs:24)
+RECORD_ALIGNMENT = 8                                 (record/layout.rs:31)
+
+PREVIOUS_ADDR_MASK = 0x0000_FFFF_FFFF_FFFF           (record/record_info.rs:35)
+VERSION_SHIFT = 48                                   (record/record_info.rs:38)
+VERSION_MASK = 0x1FFF_0000_0000_0000                 (record/record_info.rs:41)
+MAX_VERSION = 8191 (2^13 - 1)                        (record/record_info.rs:44)
+INVALID_BIT = 1 << 61                                (record/record_info.rs:47)
+TOMBSTONE_BIT = 1 << 62                              (record/record_info.rs:50)
+FINAL_BIT = 1 << 63                                  (record/record_info.rs:53)
+
+DEFAULT_SECTOR_SIZE = 512                            (hybrid_log/page.rs:28)
+DEFAULT_PAGE_SIZE = 33,554,432 (1 << 25)            (hybrid_log/page.rs:31)
+
+TAG_BITS = 14                                        (hash/bucket.rs:67)
+ADDRESS_BITS = 48                                    (hash/bucket.rs:70)
+TAG_SHIFT = 48                                       (hash/bucket.rs:73)
+ADDRESS_MASK = 0xFF_FFFF_FFFF_FFFF                  (hash/bucket.rs:76)
+TAG_MASK = 0x3FFF_0000_0000_0000                     (hash/bucket.rs:79)
+MAX_TAG = 16383 (2^14 - 1)                          (hash/bucket.rs:82)
+TENTATIVE_BIT = 1 << 63                              (hash/bucket.rs:88)
+RESERVED_BIT = 1 << 62                               (hash/bucket.rs:94)
+
+BUCKET_NUM_ENTRIES = 7                               (hash/bucket.rs:463)
+
+================================================================================
+END OF FILE REFERENCE
+================================================================================
