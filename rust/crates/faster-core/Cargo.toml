@@ -30,6 +30,7 @@ serde_json = { workspace = true }
 proptest = { workspace = true }
 criterion = { workspace = true }
 tempfile = "3"
+libc = "0.2"
 
 [features]
 default = []
