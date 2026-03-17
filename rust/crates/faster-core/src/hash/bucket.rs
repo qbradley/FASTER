@@ -137,6 +137,11 @@ const RESERVED_BIT: u64 = 1u64 << 62;
 #[repr(transparent)]
 pub struct HashBucketEntry(u64);
 
+// Layout assertions: HashBucketEntry is read/written as raw bytes inside
+// HashBucket (on-disk checkpoint format). Changing size breaks serialization.
+const _: () = assert!(core::mem::size_of::<HashBucketEntry>() == 8);
+const _: () = assert!(core::mem::align_of::<HashBucketEntry>() == 8);
+
 impl HashBucketEntry {
     /// An empty entry — all zeros. This is the sentinel for "slot is free".
     ///
@@ -334,6 +339,11 @@ impl fmt::Display for HashBucketEntry {
 #[repr(transparent)]
 pub struct AtomicHashBucketEntry(AtomicU64);
 
+// Layout assertions: AtomicHashBucketEntry forms the 7-entry array inside
+// HashBucket. Each must be exactly 8 bytes so 7×8 + 8 (overflow) = 64.
+const _: () = assert!(core::mem::size_of::<AtomicHashBucketEntry>() == 8);
+const _: () = assert!(core::mem::align_of::<AtomicHashBucketEntry>() == 8);
+
 impl AtomicHashBucketEntry {
     /// Creates a new `AtomicHashBucketEntry` with the given initial value.
     pub const fn new(entry: HashBucketEntry) -> Self {
@@ -512,7 +522,10 @@ pub struct HashBucket {
     overflow_address: AtomicLogicalAddress,
 }
 
-// Compile-time layout assertions.
+// Compile-time layout assertions: HashBucket is serialized as raw [u8; 64] in
+// checkpoint/index_writer.rs and deserialized via copy_nonoverlapping in
+// recovery/index_recovery.rs. Changing size or alignment breaks the on-disk
+// checkpoint format and causes data loss on recovery.
 const _: () = assert!(core::mem::size_of::<HashBucket>() == 64);
 const _: () = assert!(core::mem::align_of::<HashBucket>() == 64);
 

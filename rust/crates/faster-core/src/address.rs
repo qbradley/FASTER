@@ -188,6 +188,12 @@ impl fmt::Display for Offset {
 #[repr(transparent)]
 pub struct LogicalAddress(u64);
 
+// Layout assertions: LogicalAddress is packed into HashBucketEntry (48-bit
+// field) and serialized as part of HashBucket's on-disk checkpoint format.
+// Changing size breaks bucket serialization and hash index recovery.
+const _: () = assert!(core::mem::size_of::<LogicalAddress>() == 8);
+const _: () = assert!(core::mem::align_of::<LogicalAddress>() == 8);
+
 /// Mask for the lower 48 address bits.
 const ADDRESS_MASK: u64 = MAX_ADDRESS;
 
@@ -390,6 +396,12 @@ impl From<LogicalAddress> for u64 {
 /// ```
 #[repr(transparent)]
 pub struct AtomicLogicalAddress(AtomicU64);
+
+// Layout assertions: AtomicLogicalAddress is the overflow_address field in
+// HashBucket (8th slot). Must be exactly 8 bytes so the bucket totals 64 bytes.
+// Changing size breaks the on-disk checkpoint format.
+const _: () = assert!(core::mem::size_of::<AtomicLogicalAddress>() == 8);
+const _: () = assert!(core::mem::align_of::<AtomicLogicalAddress>() == 8);
 
 impl AtomicLogicalAddress {
     /// Creates a new `AtomicLogicalAddress` with the given initial value.

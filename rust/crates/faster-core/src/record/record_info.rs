@@ -87,6 +87,12 @@ const FINAL_BIT: u64 = 1u64 << 63;
 #[repr(transparent)]
 pub struct RecordInfo(u64);
 
+// Layout assertions: RecordInfo is the 8-byte header at the start of every log
+// record, read via pointer casts in record_ops.rs. Changing size breaks the
+// on-disk record format and pointer reinterpretation as AtomicRecordInfo.
+const _: () = assert!(core::mem::size_of::<RecordInfo>() == 8);
+const _: () = assert!(core::mem::align_of::<RecordInfo>() == 8);
+
 impl RecordInfo {
     /// Creates a new `RecordInfo` with the given field values.
     ///
@@ -344,6 +350,12 @@ impl fmt::Display for RecordInfo {
 /// ```
 #[repr(transparent)]
 pub struct AtomicRecordInfo(AtomicU64);
+
+// Layout assertions: AtomicRecordInfo is created by pointer-casting a raw
+// `*const u8` in record_ops.rs (lines ~110, ~299). Must match RecordInfo in
+// size so the cast is valid. Changing layout breaks CAS on record headers.
+const _: () = assert!(core::mem::size_of::<AtomicRecordInfo>() == 8);
+const _: () = assert!(core::mem::align_of::<AtomicRecordInfo>() == 8);
 
 impl AtomicRecordInfo {
     /// Creates a new `AtomicRecordInfo` with the given initial value.
