@@ -1871,7 +1871,7 @@ impl<F: Functions> FasterKv<F> {
         }
 
         let policy = self.compaction_policy.as_ref()?;
-        let stats = collect_stats(&self.allocator);
+        let stats = collect_stats::<F::Key, F::Value>(&self.allocator, &self.hash_index);
 
         if !policy.should_compact(&stats) {
             return None;

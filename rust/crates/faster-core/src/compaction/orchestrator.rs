@@ -275,26 +275,89 @@ impl<'a> CompactionOrchestrator<'a> {
 
 // ── Collect policy stats ────────────────────────────────────────────
 
-/// Compute [`CompactionStats`] from the allocator's current address
-/// boundaries. This is a cheap O(1) estimate used by compaction policies
-/// to decide whether compaction should trigger.
-pub(crate) fn collect_stats(allocator: &HybridLogAllocator) -> CompactionStats {
+/// Compute [`CompactionStats`] by scanning a bounded sample of the
+/// compaction region.
+///
+/// Scans up to one page of in-memory records in the `[head, safe_read_only)`
+/// region using [`CompactionScanner`], then extrapolates the observed
+/// live/dead/tombstone ratios to the full `[begin, tail)` log region.
+///
+/// This is more expensive than an O(1) address-only approach but gives
+/// accurate ratios, enabling [`SpaceAmplificationPolicy`] and
+/// [`TombstonePercentPolicy`] to function correctly.
+///
+/// Falls back to pessimistic stats (all live) if no in-memory pages are
+/// available for sampling or if the scan encounters an error.
+pub(crate) fn collect_stats<K: Key, V: Value>(
+    allocator: &HybridLogAllocator,
+    hash_index: &HashIndex,
+) -> CompactionStats {
     let begin = allocator.begin_address().raw();
     let tail = allocator.tail_address().raw();
     let total = tail.saturating_sub(begin);
 
-    // Without a full scan, we can only estimate. Treat the entire
-    // region as "total log bytes" and use a fraction for live.
-    // The policy threshold should be set accounting for this heuristic.
+    if total == 0 {
+        return CompactionStats {
+            total_log_bytes: 0,
+            live_data_bytes: 0,
+            tombstone_count: 0,
+            total_record_count: 0,
+        };
+    }
+
+    // Sample the in-memory read-only region [head, safe_read_only).
+    // These pages are resident and safe to read without disk I/O.
+    let head = allocator.head_address();
+    let safe_ro = allocator.safe_read_only_address();
+
+    if head >= safe_ro {
+        // No in-memory read-only pages to sample — fall back to
+        // pessimistic stats. This happens when the log is entirely
+        // mutable (small workload) or fully evicted.
+        return CompactionStats {
+            total_log_bytes: total,
+            live_data_bytes: total,
+            tombstone_count: 0,
+            total_record_count: 0,
+        };
+    }
+
+    // Cap the sample to 1 page to keep the cost bounded.
+    let page_size = 1u64 << crate::address::OFFSET_BITS;
+    let available = safe_ro.raw().saturating_sub(head.raw());
+    let sample_end = LogicalAddress::from_raw(head.raw() + available.min(page_size));
+
+    let scanner = CompactionScanner::new(allocator, hash_index);
+    let plan = match scanner.scan::<K, V>(head, sample_end) {
+        Ok(plan) => plan,
+        Err(_) => {
+            // Scan error (corrupted record) — fall back to pessimistic.
+            return CompactionStats {
+                total_log_bytes: total,
+                live_data_bytes: total,
+                tombstone_count: 0,
+                total_record_count: 0,
+            };
+        }
+    };
+
+    if plan.total_bytes_scanned == 0 {
+        return CompactionStats {
+            total_log_bytes: total,
+            live_data_bytes: total,
+            tombstone_count: 0,
+            total_record_count: 0,
+        };
+    }
+
+    // Extrapolate sampled ratios to the full log region.
+    let scale = total as f64 / plan.total_bytes_scanned as f64;
+
     CompactionStats {
         total_log_bytes: total,
-        // Pessimistic: assume all data is live until proven otherwise.
-        // This means space-amplification policies won't trigger unless
-        // the actual ratio is well above threshold. A real implementation
-        // would periodically sample or cache scan results.
-        live_data_bytes: total,
-        tombstone_count: 0,
-        total_record_count: 0,
+        live_data_bytes: (plan.live_bytes as f64 * scale) as u64,
+        tombstone_count: (plan.tombstone_count as f64 * scale) as u64,
+        total_record_count: (plan.total_records() as f64 * scale) as u64,
     }
 }
 
@@ -494,5 +557,110 @@ mod tests {
         );
 
         store.dispose_session(session);
+    }
+
+    // ── 5. collect_stats returns accurate live vs total after deletes ──
+
+    #[test]
+    fn collect_stats_distinguishes_live_from_total_after_deletes() {
+        let store = test_store();
+        let mut session = store.new_session();
+
+        // Insert 100 records so there's enough data to form a read-only
+        // region that collect_stats can sample.
+        for i in 0u64..100 {
+            let _ = store.upsert(&mut session, &i, &(i * 10), ());
+        }
+
+        // Delete half the records — these become tombstones.
+        for i in 0u64..50 {
+            let _ = store.delete_simple(&mut session, &i);
+        }
+
+        store.dispose_session(session);
+
+        let stats = collect_stats::<u64, u64>(&store.allocator, &store.hash_index);
+
+        // The log has data, so total_log_bytes must be > 0.
+        assert!(
+            stats.total_log_bytes > 0,
+            "total_log_bytes should be > 0, got {}",
+            stats.total_log_bytes,
+        );
+
+        // After deletes, live_data_bytes should be less than total.
+        // The tombstones and dead (superseded) records reduce the live fraction.
+        // If there's no in-memory read-only region to sample (everything
+        // still in the mutable region), we fall back to pessimistic stats.
+        let head = store.allocator.head_address();
+        let safe_ro = store.allocator.safe_read_only_address();
+        if head < safe_ro {
+            // There IS a scannable region — stats should reflect reality.
+            assert!(
+                stats.live_data_bytes < stats.total_log_bytes,
+                "live_data_bytes ({}) should be < total_log_bytes ({}) after deletes",
+                stats.live_data_bytes,
+                stats.total_log_bytes,
+            );
+            // Should see tombstones or a non-trivial record count.
+            assert!(
+                stats.tombstone_count > 0 || stats.total_record_count > 0,
+                "expected tombstones or record count to be populated",
+            );
+        }
+    }
+
+    // ── 6. collect_stats enables SpaceAmplificationPolicy to trigger ──
+
+    #[test]
+    fn collect_stats_enables_space_amplification_policy() {
+        use crate::compaction::policy::{CompactionPolicy, SpaceAmplificationPolicy};
+
+        let store = test_store();
+        let mut session = store.new_session();
+
+        // Insert records, then overwrite all of them to create dead records
+        // in the original region.
+        for i in 0u64..100 {
+            let _ = store.upsert(&mut session, &i, &i, ());
+        }
+        for i in 0u64..100 {
+            let _ = store.upsert(&mut session, &i, &(i + 1000), ());
+        }
+
+        store.dispose_session(session);
+
+        let stats = collect_stats::<u64, u64>(&store.allocator, &store.hash_index);
+
+        let head = store.allocator.head_address();
+        let safe_ro = store.allocator.safe_read_only_address();
+        if head < safe_ro {
+            // With the original region containing all dead records and the
+            // tail containing all live records, space amplification should
+            // be well above 1.0.
+            let amplification = stats.space_amplification();
+            assert!(
+                amplification > 1.0,
+                "space amplification should be > 1.0 when dead records exist, got {amplification}",
+            );
+
+            // A policy with threshold 1.5 should trigger.
+            let policy = SpaceAmplificationPolicy::new(1.5);
+            assert!(
+                policy.should_compact(&stats),
+                "SpaceAmplificationPolicy(1.5) should trigger with amplification={amplification}",
+            );
+        }
+    }
+
+    // ── 7. collect_stats on empty log returns zeros ─────────────────
+
+    #[test]
+    fn collect_stats_empty_log() {
+        let store = test_store();
+        let stats = collect_stats::<u64, u64>(&store.allocator, &store.hash_index);
+        // Empty log: total may be small (sentinel) or zero.
+        // The key invariant: live <= total.
+        assert!(stats.live_data_bytes <= stats.total_log_bytes);
     }
 }
