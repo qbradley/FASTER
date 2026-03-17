@@ -219,3 +219,17 @@ cd rust && cargo bench --bench ycsb -p faster-core -- --nocapture
 - With synchronous I/O (InMemoryDevice), `maintenance()` flushes + evicts in a single call. The race window between `shift_read_only_to_tail` and `evict_pages` is too narrow for normal execution but TSan widens it.
 - TSan suppression files use pattern matching on function/symbol names: `race:epoch` suppresses all races in functions containing "epoch".
 - `RUST_TEST_THREADS=1` recommended with TSan to avoid test-level parallelism interference.
+
+### Scoped Page Pin — Option C Implementation (2026-07-24)
+**Impact:** Implemented PinnedPage RAII guard (Option C from safe-page-access design analysis) with packed [pin_count:28 | state:4] AtomicU32 CAS. Joint work with Sam.
+**Files:** `page.rs` (PackedPageState, PinnedPage, pin_page, pin-aware try_evict_frame), `log_allocator.rs` (pin_page), `scan.rs` (zero-unsafe scanner), `record_ops.rs` (from_log_pinned, pinned reader methods), `eviction.rs` (pin-respecting eviction), `operations.rs` (epoch comment corrections).
+**Key design decisions:**
+- Packed state+pin_count in single AtomicU32 eliminates TOCTOU between state check and pin increment.
+- Eviction marks Flushed→Evicted but does NOT free frames or null slots — frames are recycled in-place by get_or_allocate_frame. This guarantees non-null frame pointers are always valid, making pin_page's unsafe frame_ref sound.
+- try_evict uses strict CAS (expected = Flushed state, pin_count == 0) — pinned pages are atomically skipped.
+- Scanner (crash site) migrated to PinnedPage: zero production unsafe blocks in scan.rs.
+- LogRecordReader methods (read_record_info, read_key, read_value, read_header_and_match_key*) use from_log_pinned for eviction-safe reads in the read-only region.
+- Mutable-region writes in operations.rs retain raw path — pinning unnecessary since pages above head_address cannot be evicted.
+- Fixed all incorrect comments claiming epoch protection prevents page eviction.
+**Results:** 1734 tests pass (+8 new). Clippy clean. stress_disk 60s @ 16 threads: ~11M ops/s, 0 crashes.
+**Commit:** `96267b56`

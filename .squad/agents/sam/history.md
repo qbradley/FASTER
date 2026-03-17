@@ -211,3 +211,10 @@ Fixed three compaction bugs found by Legolas's disk stress retest (SIGSEGV at T+
 **Branch:** `rust`, **Commit:** `d6f734fd`
 
 
+
+### Scoped Page Pin — Option C Implementation (2026-07-24)
+**Impact:** Implemented PinnedPage RAII guard with packed state+pin_count atomic CAS to eliminate use-after-free race in page frame access path. Joint work with Aragorn.
+**Files:** `page.rs` (PackedPageState, PinnedPage, pin_page, try_evict with pin check), `log_allocator.rs` (pin_page), `scan.rs` (pin-protected reads), `record_ops.rs` (from_log_pinned, pinned reader methods), `eviction.rs` (pin-aware eviction), `operations.rs` (comment fixes), `mod.rs` (PinnedPage export).
+**Key design:** Eviction no longer frees frame memory — frames stay in slots for recycling, guaranteeing all non-null frame pointers are always valid. try_evict_frame atomically checks pin_count == 0 via single CAS. Scanner (the SIGSEGV crash site) now has zero production unsafe blocks.
+**Results:** 1734 tests pass (1726→1734, +8 pin tests). Clippy clean. stress_disk 60s @ 16 threads: ~11M ops/s sustained, no crash.
+**Commit:** `96267b56`
