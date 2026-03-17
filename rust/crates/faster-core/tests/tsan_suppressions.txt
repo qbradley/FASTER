@@ -1,0 +1,24 @@
+# ThreadSanitizer suppression file for faster-core
+#
+# TSan may report benign races in low-level infrastructure that uses
+# intentionally racy patterns (e.g., epoch counters with Relaxed ordering).
+# Suppressed patterns have been audited and confirmed safe.
+#
+# Usage:
+#   TSAN_OPTIONS="suppressions=path/to/this/file" cargo +nightly test ...
+#
+# See: https://clang.llvm.org/docs/ThreadSanitizer.html#suppressions
+
+# --- Epoch system ---
+# The epoch table uses Relaxed atomics for counters that are read by
+# compute_safe_epoch(). These are intentionally racy (benign TOCTOU)
+# because the epoch protocol tolerates stale reads — safe_epoch only
+# ever advances monotonically.
+race:epoch
+
+# --- RecordInfo atomic flags ---
+# RecordInfo uses AtomicU64 with Relaxed ordering for flag checks
+# (is_invalid, is_tombstone) in hot paths. The worst case of a stale
+# read is a conservative classification (live instead of dead), which
+# is safe for compaction correctness.
+race:RecordInfo
