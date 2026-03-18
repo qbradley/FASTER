@@ -1,8 +1,8 @@
 // src/log.rs
 
+use dashmap::DashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use dashmap::DashMap;
 
 /// Represents a record in the HyperLog.
 pub struct Record {
@@ -40,7 +40,9 @@ impl Log {
     /// Reads a record from the log efficiently using the in-memory index.
     pub fn read_record(&self, key: usize) -> Option<Vec<u8>> {
         if let Some(pos) = self.index.get(&key) {
-            self.records.get(&pos).map(|entry| entry.value().clone().value)
+            self.records
+                .get(&pos)
+                .map(|entry| entry.value().clone().value)
         } else {
             None
         }
