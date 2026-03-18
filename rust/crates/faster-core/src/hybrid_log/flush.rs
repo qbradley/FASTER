@@ -218,6 +218,47 @@ impl PageFlusher {
         }
     }
 
+    /// Shared preparation logic for flushing a page.
+    ///
+    /// Looks up the frame, transitions `Sealed → Flushing`, computes the
+    /// sector-aligned write size and device offset, and writes the CRC
+    /// trailer into the page frame's padding region.
+    ///
+    /// Returns `Ok(Some((frame, write_size, device_offset)))` if the page is
+    /// ready for I/O, `Ok(None)` if already flushing or flushed, or an error
+    /// if the page is in an unexpected state.
+    fn prepare_flush<'a>(
+        &self,
+        page: Page,
+        page_table: &'a PageTable,
+        valid_bytes: u32,
+    ) -> Result<Option<(&'a super::page::PageFrame, u32, u64)>, FlushError> {
+        let frame = page_table
+            .get_frame(page)
+            .ok_or(FlushError::PageNotFound(page))?;
+
+        // Try to transition Sealed → Flushing.
+        if !frame
+            .state()
+            .try_transition(PageState::Sealed, PageState::Flushing)
+        {
+            let current = frame.state().load(Ordering::Acquire);
+            if current == PageState::Flushing || current == PageState::Flushed {
+                return Ok(None);
+            }
+            return Err(FlushError::InvalidPageState {
+                page,
+                state: current,
+            });
+        }
+
+        let write_size = PageTrailer::write_size(valid_bytes, self.sector_size, self.page_size);
+        let offset = self.device_offset(page);
+        self.write_crc_trailer(frame, valid_bytes, write_size);
+
+        Ok(Some((frame, write_size, offset)))
+    }
+
     /// Attempt to flush a single page to the device asynchronously.
     ///
     /// 1. Gets the page frame from the page table.
@@ -235,33 +276,10 @@ impl PageFlusher {
         valid_bytes: u32,
     ) -> Result<bool, FlushError> {
         trace_span!("flush_page", page = ?page, valid_bytes = valid_bytes);
-        let frame = page_table
-            .get_frame(page)
-            .ok_or(FlushError::PageNotFound(page))?;
-
-        // Try to transition Sealed → Flushing.
-        if !frame
-            .state()
-            .try_transition(PageState::Sealed, PageState::Flushing)
-        {
-            let current = frame.state().load(Ordering::Acquire);
-            if current == PageState::Flushing || current == PageState::Flushed {
-                return Ok(false); // Already flushing/flushed — not an error.
-            }
-            return Err(FlushError::InvalidPageState {
-                page,
-                state: current,
-            });
-        }
-
-        // Compute sector-aligned write size (with room for CRC trailer)
-        // and device offset.
-        let write_size = PageTrailer::write_size(valid_bytes, self.sector_size, self.page_size);
-        let offset = self.device_offset(page);
-
-        // Compute CRC-32C over the valid data range and write the trailer
-        // into the page frame's padding region.
-        self.write_crc_trailer(frame, valid_bytes, write_size);
+        let (frame, write_size, offset) = match self.prepare_flush(page, page_table, valid_bytes)? {
+            Some(info) => info,
+            None => return Ok(false),
+        };
 
         // Heap-allocate the callback context via TypedIoContext (manages the
         // Box → raw → typed lifecycle safely). The Arc clone keeps the
@@ -328,30 +346,10 @@ impl PageFlusher {
         device: &dyn Device,
         valid_bytes: u32,
     ) -> Result<bool, FlushError> {
-        let frame = page_table
-            .get_frame(page)
-            .ok_or(FlushError::PageNotFound(page))?;
-
-        // Try to transition Sealed → Flushing.
-        if !frame
-            .state()
-            .try_transition(PageState::Sealed, PageState::Flushing)
-        {
-            let current = frame.state().load(Ordering::Acquire);
-            if current == PageState::Flushing || current == PageState::Flushed {
-                return Ok(false);
-            }
-            return Err(FlushError::InvalidPageState {
-                page,
-                state: current,
-            });
-        }
-
-        let write_size = PageTrailer::write_size(valid_bytes, self.sector_size, self.page_size);
-        let offset = self.device_offset(page);
-
-        // Compute CRC-32C and write the trailer into the frame's padding.
-        self.write_crc_trailer(frame, valid_bytes, write_size);
+        let (frame, write_size, offset) = match self.prepare_flush(page, page_table, valid_bytes)? {
+            Some(info) => info,
+            None => return Ok(false),
+        };
 
         let source = &frame.as_slice()[..write_size as usize];
 

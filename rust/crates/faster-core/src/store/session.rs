@@ -718,15 +718,7 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
             output,
             context,
         );
-        if status == crate::status::OperationStatus::Pending {
-            store.dispatch_pending_io(self.session);
-            crate::status::OperationOutcome::pending()
-        } else {
-            crate::status::OperationOutcome::completed(
-                status,
-                recovered_ctx.expect("context must be returned on non-Pending path"),
-            )
-        }
+        store.finalize_operation(self.session, status, recovered_ctx)
     }
 
     /// Upsert a key-value pair within epoch-amortized protection.
@@ -758,15 +750,7 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         };
         let (status, recovered_ctx) =
             internal_upsert(&ctx, self.session, &store.functions, key, input, context);
-        if status == crate::status::OperationStatus::Pending {
-            store.dispatch_pending_io(self.session);
-            crate::status::OperationOutcome::pending()
-        } else {
-            crate::status::OperationOutcome::completed(
-                status,
-                recovered_ctx.expect("context must be returned on non-Pending path"),
-            )
-        }
+        store.finalize_operation(self.session, status, recovered_ctx)
     }
 
     /// Read-modify-write a key within epoch-amortized protection.
@@ -806,15 +790,7 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
             output,
             context,
         );
-        if status == crate::status::OperationStatus::Pending {
-            store.dispatch_pending_io(self.session);
-            crate::status::OperationOutcome::pending()
-        } else {
-            crate::status::OperationOutcome::completed(
-                status,
-                recovered_ctx.expect("context must be returned on non-Pending path"),
-            )
-        }
+        store.finalize_operation(self.session, status, recovered_ctx)
     }
 
     /// Delete a key within epoch-amortized protection.
@@ -844,15 +820,7 @@ impl<'a, F: Functions> UnsafeContext<'a, F> {
         };
         let (status, recovered_ctx) =
             internal_delete(&ctx, self.session, &store.functions, key, context);
-        if status == crate::status::OperationStatus::Pending {
-            store.dispatch_pending_io(self.session);
-            crate::status::OperationOutcome::pending()
-        } else {
-            crate::status::OperationOutcome::completed(
-                status,
-                recovered_ctx.expect("context must be returned on non-Pending path"),
-            )
-        }
+        store.finalize_operation(self.session, status, recovered_ctx)
     }
 }
 

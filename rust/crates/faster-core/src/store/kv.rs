@@ -269,23 +269,9 @@ impl<F: Functions> Drop for FasterKv<F> {
         let tail_page = self.allocator.tail_address().page().0;
 
         // Step 1: Flush remaining sealed pages synchronously.
-        for p in head_page..=tail_page {
-            let page = Page(p);
-            if let Some(frame) = page_table.get_frame(page) {
-                if frame.state().load(Ordering::Acquire) == PageState::Sealed {
-                    if let Err(e) = self.flusher.flush_page_sync(
-                        page,
-                        page_table,
-                        self.device.as_ref(),
-                        self.allocator.page_size(),
-                    ) {
-                        log::error!(
-                            "FasterKv::drop: flush_page_sync failed for page {}: {}",
-                            p, e
-                        );
-                    }
-                }
-            }
+        let (_, flush_err) = self.flush_all_pages_sync(false);
+        if let Some(e) = flush_err {
+            log::error!("FasterKv::drop: flush_page_sync failed: {}", e);
         }
 
         // Step 2: Wait for in-flight async flushes (Flushing -> Flushed).
@@ -740,42 +726,17 @@ impl<F: Functions> FasterKv<F> {
         // Ensure all mutable pages become read-only so they can be flushed.
         self.allocator.shift_read_only_to_tail();
 
-        // Flush all in-memory pages to the device synchronously so that
-        // flushed_until_address advances to the tail before the orchestrator
-        // checks it.
-        let page_table = self.allocator.page_table();
-        let head_page = self.allocator.head_address().page().0;
-        let tail = self.allocator.tail_address();
-        let tail_page = tail.page().0;
-        let page_size = self.allocator.page_size();
-
-        for p in head_page..=tail_page {
-            let page = Page(p);
-            if let Some(frame) = page_table.get_frame(page) {
-                let state = frame.state().load(Ordering::Acquire);
-                // Seal Open pages so flush_page_sync can process them.
-                if state == PageState::Open {
-                    // intentionally discarded: best-effort seal; may already be sealed by concurrent operation
-                    let _ = frame
-                        .state()
-                        .try_transition(PageState::Open, PageState::Sealed);
-                }
-                // Now flush any Sealed pages.
-                if frame.state().load(Ordering::Acquire) == PageState::Sealed {
-                    self.flusher.flush_page_sync(
-                        page,
-                        page_table,
-                        self.device.as_ref(),
-                        page_size,
-                    ).map_err(|e| CheckpointError::IoError(
-                        std::io::Error::other(e.to_string()),
-                    ))?;
-                }
-            }
+        // Seal Open pages and flush all Sealed pages synchronously.
+        let (_, flush_err) = self.flush_all_pages_sync(true);
+        if let Some(e) = flush_err {
+            return Err(CheckpointError::IoError(
+                std::io::Error::other(e.to_string()),
+            ));
         }
 
         // Advance flushed_until to the tail so the orchestrator sees all
         // pages as flushed.
+        let tail = self.allocator.tail_address();
         self.allocator.try_advance_flushed_until(tail);
 
         let config = CheckpointConfig::new(checkpoint_dir.to_path_buf());
@@ -878,6 +839,25 @@ impl<F: Functions> FasterKv<F> {
 
     // ── CRUD Operations ─────────────────────────────────────────────
 
+    /// Convert an internal operation result into an [`OperationOutcome`],
+    /// dispatching pending I/O if the operation went async.
+    pub(crate) fn finalize_operation(
+        &self,
+        session: &mut FasterSession<F>,
+        status: OperationStatus,
+        recovered_ctx: Option<F::Context>,
+    ) -> OperationOutcome<F::Context> {
+        if status == OperationStatus::Pending {
+            self.dispatch_pending_io(session);
+            OperationOutcome::pending()
+        } else {
+            OperationOutcome::completed(
+                status,
+                recovered_ctx.expect("context must be returned on non-Pending path"),
+            )
+        }
+    }
+
     /// Read a key's value.
     ///
     /// Enters epoch protection, performs the read, and returns the outcome.
@@ -920,15 +900,7 @@ impl<F: Functions> FasterKv<F> {
         );
         drop(guard);
         metrics_inc!(self.metrics, total_operations);
-        if status == OperationStatus::Pending {
-            self.dispatch_pending_io(session);
-            OperationOutcome::pending()
-        } else {
-            OperationOutcome::completed(
-                status,
-                recovered_ctx.expect("context must be returned on non-Pending path"),
-            )
-        }
+        self.finalize_operation(session, status, recovered_ctx)
     }
 
     /// Insert or update a key-value pair.
@@ -975,15 +947,7 @@ impl<F: Functions> FasterKv<F> {
         sim_yield!("upsert::after_hash_cas");
         drop(guard);
         metrics_inc!(self.metrics, total_operations);
-        if status == OperationStatus::Pending {
-            self.dispatch_pending_io(session);
-            OperationOutcome::pending()
-        } else {
-            OperationOutcome::completed(
-                status,
-                recovered_ctx.expect("context must be returned on non-Pending path"),
-            )
-        }
+        self.finalize_operation(session, status, recovered_ctx)
     }
 
     /// Read-modify-write a key.
@@ -1032,15 +996,7 @@ impl<F: Functions> FasterKv<F> {
         sim_yield!("rmw::after_hash_cas");
         drop(guard);
         metrics_inc!(self.metrics, total_operations);
-        if status == OperationStatus::Pending {
-            self.dispatch_pending_io(session);
-            OperationOutcome::pending()
-        } else {
-            OperationOutcome::completed(
-                status,
-                recovered_ctx.expect("context must be returned on non-Pending path"),
-            )
-        }
+        self.finalize_operation(session, status, recovered_ctx)
     }
 
     /// Delete a key.
@@ -1076,15 +1032,7 @@ impl<F: Functions> FasterKv<F> {
             internal_delete(&ctx, guard.session_mut(), &self.functions, key, context);
         drop(guard);
         metrics_inc!(self.metrics, total_operations);
-        if status == OperationStatus::Pending {
-            self.dispatch_pending_io(session);
-            OperationOutcome::pending()
-        } else {
-            OperationOutcome::completed(
-                status,
-                recovered_ctx.expect("context must be returned on non-Pending path"),
-            )
-        }
+        self.finalize_operation(session, status, recovered_ctx)
     }
 
     // ── Pending I/O Completion ──────────────────────────────────────
@@ -1314,6 +1262,46 @@ impl<F: Functions> FasterKv<F> {
         }
     }
 
+    /// Allocate a record at the log tail, write it, and CAS-update the hash
+    /// index. This is the shared commit path for write-pending completion.
+    ///
+    /// Returns `true` on success, `false` if allocation failed or CAS was lost.
+    fn write_and_commit_at_tail(
+        &self,
+        key: &F::Key,
+        value: &F::Value,
+        previous_addr: LogicalAddress,
+        is_tombstone: bool,
+        entry: HashBucketEntry,
+        slot: &crate::hash::bucket::AtomicHashBucketEntry,
+        key_hash: crate::hash::KeyHash,
+        op_name: &str,
+    ) -> bool {
+        let layout = crate::record::RecordLayout::for_kv(key, value);
+        let (new_addr, mut accessor) = match self.allocate_with_retry(key, value) {
+            Some(pair) => pair,
+            None => return false,
+        };
+
+        let ri = RecordInfo::new(previous_addr, 0, false, is_tombstone, false);
+        accessor.write_full_record(&ri, key, value, &layout);
+
+        let committed = HashBucketEntry::new(entry.tag(), new_addr, false);
+        if !self.hash_index.update(slot, entry, committed) {
+            log::warn!(
+                "complete_write_pending: {} CAS failed (key_hash={:?}, \
+                 old_addr={:?}, new_addr={:?}) — record orphaned at tail",
+                op_name,
+                key_hash,
+                previous_addr,
+                new_addr,
+            );
+            metrics_inc!(self.metrics, write_completion_cas_failures);
+            return false;
+        }
+        true
+    }
+
     /// Complete a write-path pending operation (upsert/rmw/delete).
     ///
     /// Reads the old value from the I/O buffer, allocates a new record at the
@@ -1339,9 +1327,6 @@ impl<F: Functions> FasterKv<F> {
 
         match cio.operation.op_type {
             PendingOpType::Upsert => {
-                // Produce the new value via the upsert callback. The old
-                // value from the disk buffer is passed so merge-on-upsert
-                // semantics work correctly.
                 let old_value: F::Value = if ri.is_tombstone() || ri.is_invalid() {
                     F::Value::default()
                 } else {
@@ -1370,25 +1355,9 @@ impl<F: Functions> FasterKv<F> {
                     &UpsertInfo::new(0, old_addr, ri),
                 );
 
-                let (new_addr, mut accessor) = match self.allocate_with_retry(key, &new_val) {
-                    Some(pair) => pair,
-                    None => return,
-                };
-
-                let new_ri = RecordInfo::new(old_addr, 0, false, false, false);
-                accessor.write_full_record(&new_ri, key, &new_val, layout);
-
-                let committed = HashBucketEntry::new(entry.tag(), new_addr, false);
-                if !self.hash_index.update(slot, entry, committed) {
-                    log::warn!(
-                        "complete_write_pending: upsert CAS failed (key_hash={:?}, \
-                         old_addr={:?}, new_addr={:?}) — record orphaned at tail",
-                        key_hash,
-                        old_addr,
-                        new_addr,
-                    );
-                    metrics_inc!(self.metrics, write_completion_cas_failures);
-                }
+                self.write_and_commit_at_tail(
+                    key, &new_val, old_addr, false, entry, slot, key_hash, "upsert",
+                );
             }
             PendingOpType::Rmw => {
                 let input = cio
@@ -1398,7 +1367,6 @@ impl<F: Functions> FasterKv<F> {
                     .expect("rmw pending must have input");
 
                 if ri.is_tombstone() || ri.is_invalid() {
-                    // No existing value — create from initial.
                     let mut new_val = F::Value::default();
                     let mut output = F::Output::default();
                     self.functions.rmw_initial(
@@ -1409,25 +1377,9 @@ impl<F: Functions> FasterKv<F> {
                         &RmwInfo::new(0, old_addr, ri, false),
                     );
 
-                    let (new_addr, mut accessor) = match self.allocate_with_retry(key, &new_val) {
-                        Some(pair) => pair,
-                        None => return,
-                    };
-
-                    let new_ri = RecordInfo::new(old_addr, 0, false, false, false);
-                    accessor.write_full_record(&new_ri, key, &new_val, layout);
-
-                    let committed = HashBucketEntry::new(entry.tag(), new_addr, false);
-                    if !self.hash_index.update(slot, entry, committed) {
-                        log::warn!(
-                            "complete_write_pending: rmw-initial CAS failed (key_hash={:?}, \
-                             old_addr={:?}, new_addr={:?}) — record orphaned at tail",
-                            key_hash,
-                            old_addr,
-                            new_addr,
-                        );
-                        metrics_inc!(self.metrics, write_completion_cas_failures);
-                    }
+                    self.write_and_commit_at_tail(
+                        key, &new_val, old_addr, false, entry, slot, key_hash, "rmw-initial",
+                    );
                 } else {
                     let old_value: F::Value = cio.read_value(layout);
                     let mut new_value = old_value.clone();
@@ -1441,25 +1393,9 @@ impl<F: Functions> FasterKv<F> {
                         &RmwInfo::new(0, old_addr, ri, true),
                     );
 
-                    let (new_addr, mut accessor) = match self.allocate_with_retry(key, &new_value) {
-                        Some(pair) => pair,
-                        None => return,
-                    };
-
-                    let new_ri = RecordInfo::new(old_addr, 0, false, false, false);
-                    accessor.write_full_record(&new_ri, key, &new_value, layout);
-
-                    let committed = HashBucketEntry::new(entry.tag(), new_addr, false);
-                    if !self.hash_index.update(slot, entry, committed) {
-                        log::warn!(
-                            "complete_write_pending: rmw-copy CAS failed (key_hash={:?}, \
-                             old_addr={:?}, new_addr={:?}) — record orphaned at tail",
-                            key_hash,
-                            old_addr,
-                            new_addr,
-                        );
-                        metrics_inc!(self.metrics, write_completion_cas_failures);
-                    }
+                    self.write_and_commit_at_tail(
+                        key, &new_value, old_addr, false, entry, slot, key_hash, "rmw-copy",
+                    );
                 }
             }
             PendingOpType::Delete => {
@@ -1467,32 +1403,15 @@ impl<F: Functions> FasterKv<F> {
                     return; // Already deleted.
                 }
 
-                // Allocate a tombstone record at the tail.
                 let dummy_value: F::Value = if ri.is_invalid() {
                     F::Value::default()
                 } else {
                     cio.read_value(layout)
                 };
 
-                let (new_addr, mut accessor) = match self.allocate_with_retry(key, &dummy_value) {
-                    Some(pair) => pair,
-                    None => return,
-                };
-
-                let tombstone_ri = RecordInfo::new(old_addr, 0, false, true, false);
-                accessor.write_full_record(&tombstone_ri, key, &dummy_value, layout);
-
-                let committed = HashBucketEntry::new(entry.tag(), new_addr, false);
-                if !self.hash_index.update(slot, entry, committed) {
-                    log::warn!(
-                        "complete_write_pending: delete CAS failed (key_hash={:?}, \
-                         old_addr={:?}, new_addr={:?}) — tombstone orphaned at tail",
-                        key_hash,
-                        old_addr,
-                        new_addr,
-                    );
-                    metrics_inc!(self.metrics, write_completion_cas_failures);
-                }
+                self.write_and_commit_at_tail(
+                    key, &dummy_value, old_addr, true, entry, slot, key_hash, "delete",
+                );
             }
             PendingOpType::Read => unreachable!("read handled above"),
         }
@@ -1541,6 +1460,56 @@ impl<F: Functions> FasterKv<F> {
         self.evictor.evict_pages(&self.allocator)
     }
 
+    /// Iterate all in-memory pages from head to tail, optionally seal Open
+    /// pages, and synchronously flush every Sealed page.
+    ///
+    /// Returns `(flushed_count, first_error)`. Iteration always continues
+    /// through all pages — a flush error on one page does not abort the rest.
+    fn flush_all_pages_sync(
+        &self,
+        seal_open: bool,
+    ) -> (u32, Option<crate::hybrid_log::flush::FlushError>) {
+        let page_table = self.allocator.page_table();
+        let head_page = self.allocator.head_address().page().0;
+        let tail_page = self.allocator.tail_address().page().0;
+        let page_size = self.allocator.page_size();
+        let mut flushed = 0u32;
+        let mut first_error = None;
+
+        for p in head_page..=tail_page {
+            let page = Page(p);
+            if let Some(frame) = page_table.get_frame(page) {
+                if seal_open {
+                    let state = frame.state().load(Ordering::Acquire);
+                    if state == PageState::Open {
+                        // intentionally discarded: best-effort seal; may already be sealed
+                        let _ = frame
+                            .state()
+                            .try_transition(PageState::Open, PageState::Sealed);
+                    }
+                }
+                if frame.state().load(Ordering::Acquire) == PageState::Sealed {
+                    match self.flusher.flush_page_sync(
+                        page,
+                        page_table,
+                        self.device.as_ref(),
+                        page_size,
+                    ) {
+                        Ok(true) => flushed += 1,
+                        Ok(false) => {} // already flushing/flushed
+                        Err(e) => {
+                            if first_error.is_none() {
+                                first_error = Some(e);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        (flushed, first_error)
+    }
+
     /// Flush all log data to device and evict from memory.
     ///
     /// This is the Rust equivalent of C# FASTER's `store.Log.FlushAndEvict(true)`.
@@ -1560,39 +1529,14 @@ impl<F: Functions> FasterKv<F> {
         // 1. Shift read-only boundary to the tail.
         self.allocator.shift_read_only_to_tail();
 
-        // 2. Seal all Open pages and flush Sealed pages synchronously.
-        let page_table = self.allocator.page_table();
-        let head_page = self.allocator.head_address().page().0;
-        let tail = self.allocator.tail_address();
-        let tail_page = tail.page().0;
-        let page_size = self.allocator.page_size();
-        let mut flushed = 0u32;
-
-        for p in head_page..=tail_page {
-            let page = Page(p);
-            if let Some(frame) = page_table.get_frame(page) {
-                let state = frame.state().load(Ordering::Acquire);
-                if state == PageState::Open {
-                    // intentionally discarded: best-effort seal; may already be sealed by concurrent operation
-                    let _ = frame
-                        .state()
-                        .try_transition(PageState::Open, PageState::Sealed);
-                }
-                if frame.state().load(Ordering::Acquire) == PageState::Sealed
-                    && self
-                        .flusher
-                        .flush_page_sync(page, page_table, self.device.as_ref(), page_size)
-                        .is_ok()
-                {
-                    flushed += 1;
-                }
-            }
-        }
+        // 2–3. Seal Open pages and flush all Sealed pages synchronously.
+        let (flushed, _) = self.flush_all_pages_sync(true);
 
         // Advance flushed_until so the evictor sees all pages as flushed.
+        let tail = self.allocator.tail_address();
         self.allocator.try_advance_flushed_until(tail);
 
-        // 3. Evict all flushed pages.
+        // 4. Evict all flushed pages.
         let mut evicted = 0u32;
         loop {
             let n = self.evictor.evict_pages(&self.allocator);
