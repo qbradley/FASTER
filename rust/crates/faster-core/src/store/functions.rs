@@ -235,6 +235,12 @@ pub trait Functions: Send + Sync + 'static {
     ///
     /// `value_ptr` must be valid, aligned, and writable for `value_len` bytes.
     /// The caller must hold epoch protection.
+    ///
+    /// # Panics
+    ///
+    /// The default implementation panics unconditionally. Implementations
+    /// that set [`SUPPORTS_RAW_IN_PLACE`](Self::SUPPORTS_RAW_IN_PLACE) to
+    /// `true` **must** override this method.
     unsafe fn upsert_in_place_raw(
         &self,
         key: &Self::Key,
@@ -259,6 +265,12 @@ pub trait Functions: Send + Sync + 'static {
     /// # Safety
     ///
     /// Same requirements as [`upsert_in_place_raw`](Self::upsert_in_place_raw).
+    ///
+    /// # Panics
+    ///
+    /// The default implementation panics unconditionally. Implementations
+    /// that set [`SUPPORTS_RAW_IN_PLACE`](Self::SUPPORTS_RAW_IN_PLACE) to
+    /// `true` **must** override this method.
     unsafe fn rmw_in_place_raw(
         &self,
         key: &Self::Key,

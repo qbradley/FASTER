@@ -252,11 +252,13 @@ impl EpochTable {
     ///
     /// # Memory Ordering
     ///
-    /// Uses `SeqCst` for `fetch_add` because the epoch advance must be
-    /// totally ordered with respect to other threads' `local_current_epoch`
-    /// stores. Without `SeqCst`, a thread could read a stale
-    /// `current_epoch` and store it to its local slot *after* this bump,
-    /// creating a race where the safe epoch is computed too aggressively.
+    /// Uses `AcqRel` for `fetch_add`: `Release` publishes the new epoch
+    /// value so that subsequent `Acquire` loads (e.g. in `defer()` and
+    /// `compute_safe_epoch()`) observe it, while the `Acquire` half
+    /// ensures we see all prior stores from threads that bumped before us.
+    /// Full `SeqCst` is unnecessary because the actual memory-safety
+    /// guarantee comes from the `Release` store in `protect()` paired
+    /// with the `Acquire` load in `compute_safe_epoch()`.
     ///
     /// # Examples
     ///
@@ -278,8 +280,9 @@ impl EpochTable {
     /// ```
     pub fn bump_current_epoch<F: FnOnce() + Send + 'static>(&self, callback: F) {
         trace_span!("epoch_bump");
-        // SeqCst: total ordering required — see doc comment.
-        let prior_epoch = self.current_epoch.fetch_add(1, Ordering::SeqCst);
+        // Ordering: AcqRel — Release publishes the bumped epoch; Acquire
+        // sees prior bumps. SeqCst unnecessary (see doc comment above).
+        let prior_epoch = self.current_epoch.fetch_add(1, Ordering::AcqRel);
         self.drain_list.push(prior_epoch, Box::new(callback));
         self.try_drain();
         sim_yield!("epoch::after_bump_current");
@@ -290,8 +293,8 @@ impl EpochTable {
     /// Useful when you need to advance the epoch for safe-epoch progress
     /// without any deferred work.
     pub fn bump_current_epoch_no_callback(&self) {
-        // SeqCst: same reasoning as bump_current_epoch.
-        self.current_epoch.fetch_add(1, Ordering::SeqCst);
+        // Ordering: AcqRel — same reasoning as bump_current_epoch.
+        self.current_epoch.fetch_add(1, Ordering::AcqRel);
         self.try_drain();
     }
 
@@ -309,9 +312,11 @@ impl EpochTable {
     /// without paying the cost of an epoch bump per deferral. The epoch
     /// will be bumped by the normal FASTER operation cycle.
     pub fn defer<F: FnOnce() + Send + 'static>(&self, callback: F) {
-        // SeqCst: must read the latest epoch to ensure the callback is not
-        // tagged at an already-safe epoch (which would fire too early).
-        let current = self.current_epoch.load(Ordering::SeqCst);
+        // Ordering: Acquire — must see the latest epoch published by a
+        // prior AcqRel fetch_add so the callback is not tagged at an
+        // already-safe epoch (which would fire too early). A stale read
+        // is conservative (tags at an older epoch, delays firing).
+        let current = self.current_epoch.load(Ordering::Acquire);
         self.drain_list.push(current, Box::new(callback));
     }
 

@@ -547,6 +547,7 @@ impl HashTable {
 
     /// Scans a bucket chain (primary + overflow) for a committed entry
     /// matching `tag`.
+    #[inline]
     fn find_entry_in_bucket_chain<'a>(
         &'a self,
         bucket: &'a HashBucket,
@@ -583,6 +584,7 @@ impl HashTable {
     /// creates a new overflow bucket at the tail of the chain. Returns
     /// `Some((slot_ref, slot_index))` on CAS success, or `None` if we lost
     /// every CAS race (caller should retry).
+    #[inline]
     fn try_cas_empty_slot<'a>(
         &'a self,
         bucket: &'a HashBucket,
