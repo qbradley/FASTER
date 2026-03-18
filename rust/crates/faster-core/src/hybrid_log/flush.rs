@@ -360,6 +360,7 @@ impl PageFlusher {
                 frame
                     .flushed_until()
                     .fetch_max(bytes_written, Ordering::Release);
+                // intentionally discarded: another thread may have already transitioned Flushing→Flushed
                 let _ = frame
                     .state()
                     .try_transition(PageState::Flushing, PageState::Flushed);

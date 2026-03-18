@@ -173,6 +173,7 @@ impl CheckpointStateMachine {
     #[inline]
     pub fn phase(&self) -> CheckpointPhase {
         let sys = self.state.load(Ordering::Acquire);
+        // intentionally discarded: phases outside the checkpoint set are treated as Rest (no checkpoint active)
         CheckpointPhase::from_phase(sys.phase()).unwrap_or(CheckpointPhase::Rest)
     }
 

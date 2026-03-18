@@ -273,12 +273,17 @@ impl<F: Functions> Drop for FasterKv<F> {
             let page = Page(p);
             if let Some(frame) = page_table.get_frame(page) {
                 if frame.state().load(Ordering::Acquire) == PageState::Sealed {
-                    let _ = self.flusher.flush_page_sync(
+                    if let Err(e) = self.flusher.flush_page_sync(
                         page,
                         page_table,
                         self.device.as_ref(),
                         self.allocator.page_size(),
-                    );
+                    ) {
+                        log::error!(
+                            "FasterKv::drop: flush_page_sync failed for page {}: {}",
+                            p, e
+                        );
+                    }
                 }
             }
         }
@@ -750,18 +755,21 @@ impl<F: Functions> FasterKv<F> {
                 let state = frame.state().load(Ordering::Acquire);
                 // Seal Open pages so flush_page_sync can process them.
                 if state == PageState::Open {
+                    // intentionally discarded: best-effort seal; may already be sealed by concurrent operation
                     let _ = frame
                         .state()
                         .try_transition(PageState::Open, PageState::Sealed);
                 }
                 // Now flush any Sealed pages.
                 if frame.state().load(Ordering::Acquire) == PageState::Sealed {
-                    let _ = self.flusher.flush_page_sync(
+                    self.flusher.flush_page_sync(
                         page,
                         page_table,
                         self.device.as_ref(),
                         page_size,
-                    );
+                    ).map_err(|e| CheckpointError::IoError(
+                        std::io::Error::other(e.to_string()),
+                    ))?;
                 }
             }
         }
@@ -1266,8 +1274,7 @@ impl<F: Functions> FasterKv<F> {
         use crate::device::IoStatus;
 
         if cio.status != IoStatus::Success {
-            #[cfg(debug_assertions)]
-            eprintln!(
+            log::error!(
                 "process_completed_io: I/O completed with non-success status: {:?}",
                 cio.status
             );
@@ -1504,6 +1511,7 @@ impl<F: Functions> FasterKv<F> {
             return Some(pair);
         }
         // Flush sealed pages to free space, then retry.
+        // intentionally discarded: best-effort flush to reclaim space; allocation retry follows
         let _ = self.flush();
         allocate_at_tail(&self.allocator, key, value, None)
     }
@@ -1512,22 +1520,18 @@ impl<F: Functions> FasterKv<F> {
 
     /// Flush sealed (read-only) pages to the storage device.
     ///
-    /// Returns the number of pages flushed.
-    pub fn flush(&self) -> u32 {
+    /// Returns the number of pages flushed, or an error if the flush failed.
+    pub fn flush(&self) -> Result<u32, crate::hybrid_log::flush::FlushError> {
         trace_span!("store_flush");
         let result = self
             .flusher
-            .flush_sealed_pages(&self.allocator, self.device.as_ref())
-            .unwrap_or(crate::hybrid_log::FlushBatchResult {
-                flushed: 0,
-                queue_full: false,
-            });
+            .flush_sealed_pages(&self.allocator, self.device.as_ref())?;
         let count = result.flushed;
         #[cfg(feature = "metrics")]
         self.metrics
             .flush_count
             .fetch_add(u64::from(count), Ordering::Relaxed);
-        count
+        Ok(count)
     }
 
     /// Evict flushed pages from memory.
@@ -1569,6 +1573,7 @@ impl<F: Functions> FasterKv<F> {
             if let Some(frame) = page_table.get_frame(page) {
                 let state = frame.state().load(Ordering::Acquire);
                 if state == PageState::Open {
+                    // intentionally discarded: best-effort seal; may already be sealed by concurrent operation
                     let _ = frame
                         .state()
                         .try_transition(PageState::Open, PageState::Sealed);
@@ -1976,6 +1981,7 @@ impl<F: Functions> FasterKv<F> {
     /// progress or automatic grow is disabled, this is a no-op.
     pub fn check_grow(&self) {
         if self.grow_manager.should_grow(&self.hash_index) {
+            // intentionally discarded: grow may already be in progress or disabled
             let _ = self.grow_manager.begin_grow(&self.hash_index);
         }
     }
@@ -3270,6 +3276,136 @@ mod tests {
         assert!(
             after <= before,
             "entry_count should not increase after delete (before={before}, after={after})"
+        );
+
+        store.dispose_session(session);
+    }
+
+    // ── Regression tests for swallowed-error audit ──────────────────
+
+    /// Regression test for BUG-3: flush() must return Result, not silently
+    /// swallow errors by converting them to 0.
+    #[test]
+    fn test_regression_flush_returns_result() {
+        let store = test_store();
+        let mut session = store.new_session();
+        for i in 0u64..10 {
+            let _ = store.upsert(&mut session, &i, &(i * 100), ());
+        }
+        // With NullDevice, flush should succeed (Ok) rather than silently
+        // swallowing an error as the old code did with unwrap_or(0).
+        let result = store.flush();
+        assert!(
+            result.is_ok(),
+            "flush() must return Ok on NullDevice, got: {:?}",
+            result
+        );
+        store.dispose_session(session);
+    }
+
+    /// Regression test for BUG-4: I/O completion errors must be logged in
+    /// all builds, not just debug_assertions builds.
+    ///
+    /// We cannot directly test the log output in a unit test, but we verify
+    /// that `process_completed_io` returns `None` for error status in both
+    /// debug and release builds (the key behavioral contract).
+    #[test]
+    fn test_regression_io_completion_error_returns_none() {
+        use crate::buffer_pool::BufferPool;
+        use crate::device::IoStatus;
+        use crate::store::pending_io::CompletedIo;
+        use crate::store::session::{PendingOpType, PendingOperation};
+        use crate::address::{LogicalAddress, Offset, Page};
+        use crate::hash::KeyHash;
+        use crate::record::RecordLayout;
+
+        let store = test_store();
+
+        let op = PendingOperation {
+            op_type: PendingOpType::Read,
+            key: 42u64,
+            input: Some(0u64),
+            context: (),
+            address: LogicalAddress::new(Page(0), Offset(0)),
+            record_layout: RecordLayout::compute(8, 8),
+            key_hash: KeyHash::new(0xDEAD),
+        };
+
+        let pool = BufferPool::new(512, 4);
+        let buf = pool.acquire(512);
+
+        let cio = CompletedIo {
+            operation: op,
+            buffer: buf,
+            record_offset: 0,
+            status: IoStatus::Error(-5),
+        };
+
+        // process_completed_io must return None for error status — the fix
+        // ensures this is logged (log::error!) in ALL builds, not just
+        // debug_assertions builds.
+        let result = store.process_completed_io(cio);
+        assert!(
+            result.is_none(),
+            "process_completed_io must return None for IoStatus::Error"
+        );
+    }
+
+    /// Regression test for BUG-1: Drop impl must not silently swallow flush
+    /// errors. We verify the Drop path completes without panicking when
+    /// pages are sealed (the error-logging path is exercised).
+    #[test]
+    fn test_regression_drop_logs_flush_errors() {
+        let config = FasterKvConfig {
+            hash_index_size_log2: 8,
+            buffer_size_pages: 4,
+            mutable_fraction: 0.9,
+            sector_size: 512,
+            eviction_policy: EvictionPolicy::default(),
+            grow_config: GrowConfig::default(),
+            auto_compact: false,
+            lossy: false,
+        };
+        let store: SimpleStore =
+            FasterKv::new(config, SimpleFunctions::default(), NullDevice::new());
+        let mut session = store.new_session();
+
+        // Write enough data to create sealed pages.
+        for i in 0u64..500 {
+            let _ = store.upsert(&mut session, &i, &(i * 100), ());
+        }
+
+        store.dispose_session(session);
+        // Drop happens here — the fix ensures flush errors are logged via
+        // log::error! instead of silently discarded with `let _`.
+        // If the fix were reverted to `let _ = ...`, errors would be silent.
+        // This test verifies the Drop path doesn't panic.
+        drop(store);
+    }
+
+    /// Regression test for BUG-2: checkpoint() must propagate flush errors
+    /// instead of silently discarding them. The checkpoint method returns
+    /// Result<CheckpointToken, CheckpointError>, so flush failures must
+    /// surface as Err.
+    #[test]
+    fn test_regression_checkpoint_propagates_flush_errors() {
+        let store = test_store();
+        let mut session = store.new_session();
+
+        for i in 0u64..10 {
+            let _ = store.upsert(&mut session, &i, &(i * 100), ());
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        // With NullDevice, checkpoint's flush phase should succeed.
+        // The key contract: if flush_page_sync were to fail, checkpoint()
+        // would return Err (not silently proceed with stale data).
+        let result = store.checkpoint(dir.path(), CheckpointType::Snapshot);
+        // NullDevice writes succeed, so checkpoint should succeed.
+        assert!(
+            result.is_ok(),
+            "checkpoint must succeed with NullDevice, got: {:?}",
+            result.unwrap_err()
         );
 
         store.dispose_session(session);

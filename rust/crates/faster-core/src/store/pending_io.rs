@@ -379,7 +379,7 @@ impl<F: Functions> PendingIoContext<F> {
             .lock()
             .expect("io_status mutex poisoned")
             .take()
-            .unwrap_or(IoStatus::Success);
+            .unwrap_or(IoStatus::Error(-1));
 
         Ok(CompletedIo {
             operation: self.operation,
@@ -1084,5 +1084,74 @@ mod tests {
         assert!(ctx.id() > 0);
         assert_eq!(ctx.timeout(), Duration::from_secs(10));
         assert!(!ctx.is_expired());
+    }
+
+    // ── Regression tests for swallowed-error audit ──────────────────
+
+    /// Regression test for BUG-5: when the io_status mutex was never
+    /// populated (callback never fired), try_complete must NOT default
+    /// to IoStatus::Success. It must default to IoStatus::Error(-1) to
+    /// make missing completions visible.
+    #[test]
+    fn test_regression_missing_io_status_defaults_to_error() {
+        install_test_clock();
+
+        let completed = Arc::new(AtomicBool::new(true)); // mark as completed
+        let io_status: Arc<Mutex<Option<IoStatus>>> = Arc::new(Mutex::new(None)); // never populated
+        let bytes_transferred = Arc::new(AtomicU32::new(0));
+        let pool = BufferPool::new(512, 4);
+        let buf = pool.acquire(512);
+
+        let ctx = PendingIoContext::<TestFunctions>::new_for_test(
+            make_pending_op(0, 0),
+            buf,
+            0,
+            completed,
+            io_status,
+            bytes_transferred,
+        );
+
+        let cio = ctx.try_complete().expect("should complete since flag is set");
+        // Before fix: this was IoStatus::Success (masked the missing callback).
+        // After fix: this must be IoStatus::Error(-1).
+        assert_eq!(
+            cio.status,
+            IoStatus::Error(-1),
+            "missing io_status must default to Error(-1), not Success"
+        );
+
+        remove_test_clock();
+    }
+
+    /// Regression test for BUG-5 (positive case): when io_status IS populated
+    /// with Success, try_complete should return Success.
+    #[test]
+    fn test_regression_populated_io_status_returns_success() {
+        install_test_clock();
+
+        let completed = Arc::new(AtomicBool::new(true));
+        let io_status: Arc<Mutex<Option<IoStatus>>> =
+            Arc::new(Mutex::new(Some(IoStatus::Success)));
+        let bytes_transferred = Arc::new(AtomicU32::new(512));
+        let pool = BufferPool::new(512, 4);
+        let buf = pool.acquire(512);
+
+        let ctx = PendingIoContext::<TestFunctions>::new_for_test(
+            make_pending_op(0, 0),
+            buf,
+            0,
+            completed,
+            io_status,
+            bytes_transferred,
+        );
+
+        let cio = ctx.try_complete().expect("should complete");
+        assert_eq!(
+            cio.status,
+            IoStatus::Success,
+            "explicitly populated Success must be returned"
+        );
+
+        remove_test_clock();
     }
 }

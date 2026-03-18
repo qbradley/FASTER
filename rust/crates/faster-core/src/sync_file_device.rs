@@ -653,6 +653,7 @@ impl Device for SyncFileDevice {
             let mut threads = self.threads.lock().expect("threads lock poisoned");
             for slot in threads.iter_mut() {
                 if let Some(h) = slot.take() {
+                    // intentionally discarded: thread may have panicked; we're in shutdown cleanup
                     let _ = h.join();
                 }
             }

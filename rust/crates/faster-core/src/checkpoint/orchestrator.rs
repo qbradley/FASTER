@@ -253,9 +253,11 @@ impl CheckpointOrchestrator {
         // all subsequent phases.
         if let Some(pos) = ordered.iter().position(|&p| p == current) {
             for window in ordered[pos..].windows(2) {
+                // intentionally discarded: best-effort abort cleanup; errors are expected when forcing state transitions
                 let _ = self.state_machine.try_advance(window[0], window[1]);
             }
         }
+        // intentionally discarded: best-effort abort cleanup; reset may fail if already at Rest
         let _ = self.state_machine.reset();
     }
 

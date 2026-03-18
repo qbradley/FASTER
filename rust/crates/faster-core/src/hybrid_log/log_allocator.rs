@@ -166,6 +166,7 @@ impl HybridLogAllocator {
                     // Sealed) and ensure the new page frame is ready.
                     if new_offset == self.page_size {
                         if let Some(frame) = self.page_table.get_frame(current.page()) {
+                            // intentionally discarded: another thread may have already sealed this page
                             let _ = frame
                                 .state()
                                 .try_transition(PageState::Open, PageState::Sealed);
@@ -459,6 +460,7 @@ impl HybridLogAllocator {
                     if let Some(frame) = self.page_table.get_frame(current_page) {
                         // Best-effort seal: the page may already be in a
                         // later state if another component transitioned it.
+                        // intentionally discarded: race-tolerant seal; another thread may have already sealed
                         let _ = frame
                             .state()
                             .try_transition(PageState::Open, PageState::Sealed);

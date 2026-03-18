@@ -405,6 +405,7 @@ pub(crate) fn internal_upsert<F: Functions>(
                 Some(pair) => pair,
                 None => {
                     // Abort: CAS the tentative entry back to EMPTY.
+                    // intentionally discarded: best-effort cleanup; concurrent operation may have already claimed this slot
                     let _ =
                         ctx.hash_index
                             .update(result.slot, result.entry, HashBucketEntry::EMPTY);
@@ -720,6 +721,7 @@ pub(crate) fn internal_rmw<F: Functions>(
             &RmwInfo::new(0, LogicalAddress::INVALID, RecordInfo::default(), false),
         ) {
             // User declined to create a new record — abort.
+            // intentionally discarded: best-effort cleanup; concurrent operation may have already claimed this slot
             let _ = ctx
                 .hash_index
                 .update(result.slot, result.entry, HashBucketEntry::EMPTY);
@@ -740,6 +742,7 @@ pub(crate) fn internal_rmw<F: Functions>(
             match allocate_at_tail(ctx.allocator, key, &value, ctx.on_alloc_failure) {
                 Some(pair) => pair,
                 None => {
+                    // intentionally discarded: best-effort cleanup; concurrent operation may have already claimed this slot
                     let _ =
                         ctx.hash_index
                             .update(result.slot, result.entry, HashBucketEntry::EMPTY);

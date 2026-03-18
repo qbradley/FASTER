@@ -248,7 +248,8 @@ impl<'a, R: HashResolver> BucketSplitter<'a, R> {
         old_size_bits: u8,
         new_size_bits: u8,
     ) -> (u32, u32) {
-        let _ = new_size_bits; // Used only for debug assertions below.
+        // intentionally discarded: used only for debug assertions below
+        let _ = new_size_bits;
         debug_assert_eq!(
             new_size_bits,
             old_size_bits + 1,

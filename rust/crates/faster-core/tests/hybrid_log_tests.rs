@@ -124,7 +124,7 @@ fn address_boundaries_monotonic_after_operations() {
 #[test]
 fn flush_does_not_panic_on_empty_store() {
     let store = hl_store();
-    let flushed = store.flush();
+    let flushed = store.flush().unwrap();
     assert_eq!(flushed, 0, "nothing to flush on empty store");
 }
 
@@ -139,7 +139,7 @@ fn flush_does_not_panic_with_data() {
 
     // flush() only flushes sealed pages. With small data on one page,
     // the page may still be Open (not sealed), so flushed may be 0.
-    let flushed = store.flush();
+    let flushed = store.flush().unwrap();
     let _ = flushed; // Just verify no panic.
 }
 

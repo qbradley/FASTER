@@ -228,6 +228,7 @@ impl AtomicPageState {
 impl fmt::Debug for AtomicPageState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let raw = self.inner.load(Ordering::Relaxed);
+        // intentionally discarded: Debug formatting only; unknown bits default to Free for display
         let state = PageState::from_u8((raw & Self::STATE_MASK) as u8).unwrap_or(PageState::Free);
         let pins = raw >> Self::PIN_SHIFT;
         write!(f, "AtomicPageState({state:?}, pins={pins})")

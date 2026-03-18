@@ -184,7 +184,7 @@ impl AtomicSystemState {
         // Step 3: Publish new state. Guaranteed to succeed.
         // AcqRel: ensures hook side-effects visible before new state.
         let result = self.compare_exchange(intermediate, next, Ordering::AcqRel, Ordering::Acquire);
-        debug_assert!(result.is_ok(), "intermediate → next CAS must succeed");
+        assert!(result.is_ok(), "intermediate → next CAS must succeed");
 
         true
     }
@@ -479,5 +479,79 @@ mod tests {
                 prop_assert_eq!(SystemState::from_word(s.word()), s);
             }
         }
+    }
+
+    // ── Regression tests for swallowed-error audit ──────────────────
+
+    /// Regression test for BUG-6: the intermediate→next CAS in
+    /// try_transition must be enforced with assert! (not debug_assert!).
+    ///
+    /// We verify the positive path: after a successful try_transition,
+    /// the state must be the `next` state (not stuck in intermediate).
+    /// The assert! inside try_transition guarantees this in release builds.
+    #[test]
+    fn test_regression_intermediate_cas_assert_not_debug_assert() {
+        let state = AtomicSystemState::new(SystemState::INITIAL);
+        let next = SystemState::new(Phase::Prepare, 0);
+
+        let won = state.try_transition(SystemState::INITIAL, next, || {});
+        assert!(won, "should win the transition");
+
+        let current = state.load(Ordering::Acquire);
+        // The state must be `next`, NOT intermediate. The assert! in
+        // try_transition guarantees this — if it were debug_assert!,
+        // the state could be stuck in intermediate in release builds.
+        assert!(
+            !current.is_intermediate(),
+            "state must not be stuck in intermediate after try_transition"
+        );
+        assert_eq!(current, next, "state must be the target `next` state");
+    }
+
+    /// Regression test for BUG-6: concurrent transitions must not leave
+    /// intermediate state visible after try_transition returns.
+    #[test]
+    fn test_regression_intermediate_never_visible_after_transition() {
+        use std::sync::{Arc, Barrier};
+
+        let state = Arc::new(AtomicSystemState::new(SystemState::INITIAL));
+        let barrier = Arc::new(Barrier::new(4));
+
+        // First, do a transition to Prepare.
+        assert!(state.try_transition(
+            SystemState::INITIAL,
+            SystemState::new(Phase::Prepare, 0),
+            || {}
+        ));
+
+        // Now race 4 threads trying to advance Prepare→InProgress.
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let s = Arc::clone(&state);
+                let b = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    b.wait();
+                    s.try_transition(
+                        SystemState::new(Phase::Prepare, 0),
+                        SystemState::new(Phase::InProgress, 1),
+                        || {},
+                    )
+                })
+            })
+            .collect();
+
+        let wins: usize = handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|&w| w)
+            .count();
+
+        assert_eq!(wins, 1, "exactly one thread must win");
+
+        let final_state = state.load(Ordering::Acquire);
+        assert!(
+            !final_state.is_intermediate(),
+            "state must never be intermediate after all transitions complete"
+        );
     }
 }

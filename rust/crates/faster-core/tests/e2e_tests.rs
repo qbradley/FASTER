@@ -216,7 +216,7 @@ fn flush_and_eviction_cycle() {
     let head_before = store.head_address();
 
     // Flush sealed pages to device.
-    let flushed = store.flush();
+    let flushed = store.flush().unwrap();
     // We don't assert flushed > 0 because it depends on page sealing
     // timing, but the call must not panic.
     let _ = flushed;

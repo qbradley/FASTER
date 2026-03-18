@@ -409,6 +409,7 @@ impl HashTable {
                     //
                     // Ordering: AcqRel to ensure our invalidation is visible and
                     // we see any concurrent modifications.
+                    // intentionally discarded: race-tolerant cleanup; another thread may have already reclaimed the slot
                     let _ = slot.compare_exchange(
                         tentative_entry,
                         HashBucketEntry::EMPTY,
