@@ -630,7 +630,7 @@ mod tests {
     ) -> Option<LogicalAddress> {
         let writer = LogRecordWriter::new(alloc);
         let info = RecordInfo::new(LogicalAddress::ZERO, 1, false, false, false);
-        writer.write_record(&info, &key, &value)
+        writer.write_record(&info, &key, &value).ok()
     }
 
     // ── 9. In-memory-only mode clamps start ─────────────────────────

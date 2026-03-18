@@ -214,7 +214,7 @@ impl<'a> RecordCopier<'a> {
         record_size: usize,
     ) -> Result<(LogicalAddress, MutableRecordAccessor<'w>), CopyError> {
         // First attempt.
-        if let Some(result) = writer.allocate_raw(size) {
+        if let Ok(result) = writer.allocate_raw(size) {
             return Ok(result);
         }
 
@@ -225,7 +225,7 @@ impl<'a> RecordCopier<'a> {
 
         writer
             .allocate_raw(size)
-            .ok_or(CopyError::AllocationFailed { record_size })
+            .map_err(|_| CopyError::AllocationFailed { record_size })
     }
 }
 

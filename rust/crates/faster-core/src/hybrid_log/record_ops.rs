@@ -22,7 +22,7 @@ use crate::record::{
     read_record_info as layout_read_record_info, write_record as layout_write_record,
 };
 
-use super::log_allocator::HybridLogAllocator;
+use super::log_allocator::{AllocError, HybridLogAllocator};
 
 // ── Helper ──────────────────────────────────────────────────────────
 
@@ -438,20 +438,22 @@ impl<'a> LogRecordWriter<'a> {
     /// The returned accessor's lifetime is tied to the allocator, preventing
     /// the raw pointer from outliving its backing page frame.
     ///
-    /// Returns `None` if the allocator is sealed or if the record would
-    /// cross a page boundary. The caller handles page advance and retries.
+    /// Returns an [`AllocError`] describing why allocation failed. The caller
+    /// handles page advance and retries based on the error variant.
     pub fn allocate_record<K: Key, V: Value>(
         &self,
         key: &K,
         value: &V,
-    ) -> Option<(LogicalAddress, MutableRecordAccessor<'a>)> {
+    ) -> Result<(LogicalAddress, MutableRecordAccessor<'a>), AllocError> {
         let layout = RecordLayout::for_kv(key, value);
         let size = layout.total_size() as u32;
 
         let addr = self.allocator.try_allocate(size)?;
-        self.allocator
+        let acc = self
+            .allocator
             .mutable_record_at(addr, size)
-            .map(|acc| (addr, acc))
+            .expect("page frame must exist after successful allocation");
+        Ok((addr, acc))
     }
 
     /// Allocate space for a record of the given byte size.
@@ -461,29 +463,33 @@ impl<'a> LogRecordWriter<'a> {
     /// size in bytes. This is used by the compaction copier, which copies
     /// raw record bytes without deserializing.
     ///
-    /// Returns `None` if the allocator is sealed or if the record would
-    /// cross a page boundary.
-    pub fn allocate_raw(&self, size: u32) -> Option<(LogicalAddress, MutableRecordAccessor<'a>)> {
+    /// Returns an [`AllocError`] describing why allocation failed.
+    pub fn allocate_raw(
+        &self,
+        size: u32,
+    ) -> Result<(LogicalAddress, MutableRecordAccessor<'a>), AllocError> {
         let addr = self.allocator.try_allocate(size)?;
-        self.allocator
+        let acc = self
+            .allocator
             .mutable_record_at(addr, size)
-            .map(|acc| (addr, acc))
+            .expect("page frame must exist after successful allocation");
+        Ok((addr, acc))
     }
 
     /// Allocate and write a complete record in one step.
     ///
-    /// Returns the [`LogicalAddress`] of the newly written record, or `None`
-    /// if allocation failed (sealed or page boundary).
+    /// Returns the [`LogicalAddress`] of the newly written record, or an
+    /// [`AllocError`] describing why allocation failed.
     pub fn write_record<K: Key, V: Value>(
         &self,
         info: &RecordInfo,
         key: &K,
         value: &V,
-    ) -> Option<LogicalAddress> {
+    ) -> Result<LogicalAddress, AllocError> {
         let layout = RecordLayout::for_kv(key, value);
         let (addr, mut accessor) = self.allocate_record(key, value)?;
         accessor.write_full_record(info, key, value, &layout);
-        Some(addr)
+        Ok(addr)
     }
 }
 
@@ -913,7 +919,7 @@ mod tests {
         let key: u64 = 1;
         let value: u64 = 2;
         let result = writer.allocate_record(&key, &value);
-        assert!(result.is_some(), "should fit in remaining space");
+        assert!(result.is_ok(), "should fit in remaining space");
 
         // The next allocation on the same page should fail (page is full,
         // tail has wrapped to the next page or there is zero space left).
@@ -926,7 +932,7 @@ mod tests {
         alloc2.try_allocate(fill2).expect("fill page2");
         let writer2 = LogRecordWriter::new(&alloc2);
         assert!(
-            writer2.allocate_record(&1u64, &2u64).is_none(),
+            writer2.allocate_record(&1u64, &2u64).is_err(),
             "24-byte record should not fit in 16-byte remainder"
         );
     }

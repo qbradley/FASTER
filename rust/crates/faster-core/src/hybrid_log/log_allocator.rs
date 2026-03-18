@@ -30,6 +30,46 @@ use super::page::{PageState, PageTable};
 use super::record_ops::MutableRecordAccessor;
 
 // ---------------------------------------------------------------------------
+// AllocError
+// ---------------------------------------------------------------------------
+
+/// Failure modes for [`HybridLogAllocator::try_allocate`].
+///
+/// Callers can use these variants to take targeted recovery action instead
+/// of a generic retry loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AllocError {
+    /// The allocator has been sealed — no further allocations are accepted.
+    AllocatorClosed,
+    /// The record does not fit in the remaining space on the current page.
+    /// Caller should advance to the next page via
+    /// [`advance_to_next_page()`](HybridLogAllocator::advance_to_next_page).
+    PageFull,
+    /// The record exceeds the maximum page size and can never be allocated.
+    RecordTooLarge,
+    /// The circular buffer is full (tail would lap head). Caller should run
+    /// maintenance (flush + evict) to free pages.
+    BufferFull,
+    /// Page number would exceed `MAX_PAGE` — the log address space is
+    /// exhausted. This is a permanent failure.
+    PageOverflow,
+}
+
+impl core::fmt::Display for AllocError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            AllocError::AllocatorClosed => write!(f, "allocator is sealed"),
+            AllocError::PageFull => write!(f, "current page is full"),
+            AllocError::RecordTooLarge => write!(f, "record exceeds maximum page size"),
+            AllocError::BufferFull => write!(f, "circular buffer is full"),
+            AllocError::PageOverflow => write!(f, "page number would exceed MAX_PAGE"),
+        }
+    }
+}
+
+impl std::error::Error for AllocError {}
+
+// ---------------------------------------------------------------------------
 // HybridLogAllocator
 // ---------------------------------------------------------------------------
 
@@ -107,19 +147,28 @@ impl HybridLogAllocator {
 
     /// Try to allocate `size` bytes in the log.
     ///
-    /// Returns the [`LogicalAddress`] where the record should be written.
-    /// Returns `None` if the allocator is sealed or if the allocation would
-    /// cross a page boundary (the caller must handle page overflow via
-    /// [`advance_to_next_page`](Self::advance_to_next_page)).
+    /// Returns the [`LogicalAddress`] where the record should be written, or
+    /// an [`AllocError`] describing why allocation failed. The caller can use
+    /// the error variant to take targeted recovery action:
+    ///
+    /// - [`AllocError::PageFull`] — advance to next page
+    /// - [`AllocError::BufferFull`] — run maintenance (flush + evict)
+    /// - [`AllocError::RecordTooLarge`] / [`AllocError::PageOverflow`] /
+    ///   [`AllocError::AllocatorClosed`] — permanent failure
     ///
     /// This is a lock-free CAS loop on `tail_address`.
-    pub fn try_allocate(&self, size: u32) -> Option<LogicalAddress> {
+    pub fn try_allocate(&self, size: u32) -> Result<LogicalAddress, AllocError> {
         // C-9: Reject zero-size allocations — they would create overlapping
         // addresses where new_tail == current.
         debug_assert!(size > 0, "try_allocate: size must be > 0");
 
         if self.sealed.load(Ordering::Acquire) {
-            return None;
+            return Err(AllocError::AllocatorClosed);
+        }
+
+        // Permanent failure: the record exceeds a single page.
+        if size > self.page_size {
+            return Err(AllocError::RecordTooLarge);
         }
 
         loop {
@@ -129,7 +178,7 @@ impl HybridLogAllocator {
 
             // Would the allocation cross the page boundary?
             if new_offset > self.page_size {
-                return None;
+                return Err(AllocError::PageFull);
             }
 
             // Compute the new tail address. If the allocation fills the page
@@ -138,13 +187,13 @@ impl HybridLogAllocator {
             let new_tail = if new_offset == self.page_size {
                 // SF-7: Guard against page number overflow at MAX_PAGE.
                 if current.page().0 >= MAX_PAGE {
-                    return None;
+                    return Err(AllocError::PageOverflow);
                 }
                 // SF-10: Prevent tail from lapping head by buffer_size.
                 let next_page = current.page().0 + 1;
                 let head_page = self.head_address().page().0;
                 if (next_page.wrapping_sub(head_page) as usize) >= self.page_table.buffer_size() {
-                    return None;
+                    return Err(AllocError::BufferFull);
                 }
                 LogicalAddress::new(Page(next_page), Offset(0))
             } else {
@@ -175,7 +224,7 @@ impl HybridLogAllocator {
                             .get_or_allocate_frame(Page(current.page().0 + 1));
                     }
 
-                    return Some(current);
+                    return Ok(current);
                 }
                 Err(_) => {
                     // Another thread won the race — retry.
@@ -742,7 +791,7 @@ mod tests {
         let alloc2 = make_allocator();
         alloc2.try_allocate(page_size - 32).expect("almost fill");
         // 33 bytes won't fit in the remaining 32
-        assert!(alloc2.try_allocate(33).is_none());
+        assert!(alloc2.try_allocate(33).is_err());
     }
 
     // 4. Trigger page advance, verify tail is on next page
@@ -754,7 +803,7 @@ mod tests {
         // Partially fill the page so tail stays on page 0
         alloc.try_allocate(page_size - 128).expect("partial fill");
         // This allocation won't fit — crosses boundary
-        assert!(alloc.try_allocate(256).is_none());
+        assert!(alloc.try_allocate(256).is_err());
 
         // Advance
         let new_addr = alloc.advance_to_next_page().expect("advance");
@@ -836,7 +885,7 @@ mod tests {
         assert!(alloc.is_in_memory(a0));
     }
 
-    // 9. Seal allocator, verify try_allocate returns None
+    // 9. Seal allocator, verify try_allocate returns AllocatorClosed
     #[test]
     fn seal_prevents_allocation() {
         let alloc = make_allocator();
@@ -844,7 +893,7 @@ mod tests {
 
         alloc.seal();
 
-        assert!(alloc.try_allocate(64).is_none());
+        assert_eq!(alloc.try_allocate(64), Err(AllocError::AllocatorClosed));
         assert!(alloc.advance_to_next_page().is_none());
     }
 
@@ -867,11 +916,11 @@ mod tests {
                     for _ in 0..records_per_thread {
                         loop {
                             match alloc.try_allocate(record_size) {
-                                Some(addr) => {
+                                Ok(addr) => {
                                     addrs.push(addr);
                                     break;
                                 }
-                                None => {
+                                Err(_) => {
                                     // Page boundary — advance and retry
                                     alloc.advance_to_next_page();
                                 }

@@ -43,7 +43,7 @@ use crate::hash::Hashable;
 use crate::hash::bucket::HashBucketEntry;
 use crate::hash::index::HashIndex;
 use crate::hash::prefetch;
-use crate::hybrid_log::log_allocator::HybridLogAllocator;
+use crate::hybrid_log::log_allocator::{AllocError, HybridLogAllocator};
 use crate::hybrid_log::record_ops::{LogRecordReader, LogRecordWriter, MutableRecordAccessor};
 use crate::hybrid_log::regions::{AddressInfo, AddressRegion};
 use crate::record::{Key, RecordInfo, RecordLayout, Value};
@@ -215,10 +215,11 @@ const MAX_ALLOC_RETRIES: u32 = 32;
 /// The accessor's lifetime is tied to the allocator reference, preventing
 /// dangling pointers to evicted page memory.
 ///
-/// When the buffer is full (SF-10), the function calls `on_alloc_failure`
-/// (typically [`FasterKv::maintenance`]) in a bounded retry loop with
-/// [`thread::yield_now`] between attempts, giving I/O worker threads
-/// CPU time to complete flushes and free pages.
+/// Uses [`AllocError`] variants for targeted retry decisions:
+/// - [`AllocError::PageFull`] → advance to next page
+/// - [`AllocError::BufferFull`] → run maintenance (flush + evict)
+/// - [`AllocError::AllocatorClosed`] / [`AllocError::RecordTooLarge`] /
+///   [`AllocError::PageOverflow`] → permanent failure, stop immediately
 pub(crate) fn allocate_at_tail<'a, K: Key, V: Value>(
     allocator: &'a HybridLogAllocator,
     key: &K,
@@ -228,14 +229,22 @@ pub(crate) fn allocate_at_tail<'a, K: Key, V: Value>(
     let writer = LogRecordWriter::new(allocator);
 
     // First attempt — may fail if the record would cross a page boundary.
-    if let Some(result) = writer.allocate_record(key, value) {
-        return Some(result);
+    match writer.allocate_record(key, value) {
+        Ok(result) => return Some(result),
+        Err(AllocError::AllocatorClosed | AllocError::RecordTooLarge | AllocError::PageOverflow) => {
+            return None;
+        }
+        Err(AllocError::PageFull | AllocError::BufferFull) => {}
     }
 
     // Page-boundary crossing: advance to the next page and retry once.
     if allocator.advance_to_next_page().is_some() {
-        if let Some(result) = writer.allocate_record(key, value) {
-            return Some(result);
+        match writer.allocate_record(key, value) {
+            Ok(result) => return Some(result),
+            Err(AllocError::AllocatorClosed | AllocError::RecordTooLarge | AllocError::PageOverflow) => {
+                return None;
+            }
+            Err(AllocError::PageFull | AllocError::BufferFull) => {}
         }
     }
 
@@ -246,12 +255,20 @@ pub(crate) fn allocate_at_tail<'a, K: Key, V: Value>(
         maint_fn();
         thread::yield_now();
 
-        if let Some(result) = writer.allocate_record(key, value) {
-            return Some(result);
+        match writer.allocate_record(key, value) {
+            Ok(result) => return Some(result),
+            Err(AllocError::AllocatorClosed | AllocError::RecordTooLarge | AllocError::PageOverflow) => {
+                return None;
+            }
+            Err(AllocError::PageFull | AllocError::BufferFull) => {}
         }
         if allocator.advance_to_next_page().is_some() {
-            if let Some(result) = writer.allocate_record(key, value) {
-                return Some(result);
+            match writer.allocate_record(key, value) {
+                Ok(result) => return Some(result),
+                Err(AllocError::AllocatorClosed | AllocError::RecordTooLarge | AllocError::PageOverflow) => {
+                    return None;
+                }
+                Err(AllocError::PageFull | AllocError::BufferFull) => {}
             }
         }
     }
