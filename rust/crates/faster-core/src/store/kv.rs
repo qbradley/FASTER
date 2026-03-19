@@ -729,9 +729,9 @@ impl<F: Functions> FasterKv<F> {
         // Seal Open pages and flush all Sealed pages synchronously.
         let (_, flush_err) = self.flush_all_pages_sync(true);
         if let Some(e) = flush_err {
-            return Err(CheckpointError::IoError(
-                std::io::Error::other(e.to_string()),
-            ));
+            return Err(CheckpointError::IoError(std::io::Error::other(
+                e.to_string(),
+            )));
         }
 
         // Advance flushed_until to the tail so the orchestrator sees all
@@ -1378,7 +1378,14 @@ impl<F: Functions> FasterKv<F> {
                     );
 
                     self.write_and_commit_at_tail(
-                        key, &new_val, old_addr, false, entry, slot, key_hash, "rmw-initial",
+                        key,
+                        &new_val,
+                        old_addr,
+                        false,
+                        entry,
+                        slot,
+                        key_hash,
+                        "rmw-initial",
                     );
                 } else {
                     let old_value: F::Value = cio.read_value(layout);
@@ -1410,7 +1417,14 @@ impl<F: Functions> FasterKv<F> {
                 };
 
                 self.write_and_commit_at_tail(
-                    key, &dummy_value, old_addr, true, entry, slot, key_hash, "delete",
+                    key,
+                    &dummy_value,
+                    old_addr,
+                    true,
+                    entry,
+                    slot,
+                    key_hash,
+                    "delete",
                 );
             }
             PendingOpType::Read => unreachable!("read handled above"),
@@ -3255,13 +3269,13 @@ mod tests {
     /// debug and release builds (the key behavioral contract).
     #[test]
     fn test_regression_io_completion_error_returns_none() {
+        use crate::address::{LogicalAddress, Offset, Page};
         use crate::buffer_pool::BufferPool;
         use crate::device::IoStatus;
-        use crate::store::pending_io::CompletedIo;
-        use crate::store::session::{PendingOpType, PendingOperation};
-        use crate::address::{LogicalAddress, Offset, Page};
         use crate::hash::KeyHash;
         use crate::record::RecordLayout;
+        use crate::store::pending_io::CompletedIo;
+        use crate::store::session::{PendingOpType, PendingOperation};
 
         let store = test_store();
 

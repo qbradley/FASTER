@@ -1737,7 +1737,7 @@ mod miri_compaction_scanner {
                     &i,
                     &(i * 10),
                 )
-                .is_some()
+                .is_ok()
             {
                 count += 1;
             } else {
