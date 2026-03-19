@@ -231,7 +231,9 @@ pub(crate) fn allocate_at_tail<'a, K: Key, V: Value>(
     // First attempt — may fail if the record would cross a page boundary.
     match writer.allocate_record(key, value) {
         Ok(result) => return Some(result),
-        Err(AllocError::AllocatorClosed | AllocError::RecordTooLarge | AllocError::PageOverflow) => {
+        Err(
+            AllocError::AllocatorClosed | AllocError::RecordTooLarge | AllocError::PageOverflow,
+        ) => {
             return None;
         }
         Err(AllocError::PageFull | AllocError::BufferFull) => {}
@@ -241,7 +243,9 @@ pub(crate) fn allocate_at_tail<'a, K: Key, V: Value>(
     if allocator.advance_to_next_page().is_some() {
         match writer.allocate_record(key, value) {
             Ok(result) => return Some(result),
-            Err(AllocError::AllocatorClosed | AllocError::RecordTooLarge | AllocError::PageOverflow) => {
+            Err(
+                AllocError::AllocatorClosed | AllocError::RecordTooLarge | AllocError::PageOverflow,
+            ) => {
                 return None;
             }
             Err(AllocError::PageFull | AllocError::BufferFull) => {}
@@ -257,7 +261,9 @@ pub(crate) fn allocate_at_tail<'a, K: Key, V: Value>(
 
         match writer.allocate_record(key, value) {
             Ok(result) => return Some(result),
-            Err(AllocError::AllocatorClosed | AllocError::RecordTooLarge | AllocError::PageOverflow) => {
+            Err(
+                AllocError::AllocatorClosed | AllocError::RecordTooLarge | AllocError::PageOverflow,
+            ) => {
                 return None;
             }
             Err(AllocError::PageFull | AllocError::BufferFull) => {}
@@ -265,7 +271,11 @@ pub(crate) fn allocate_at_tail<'a, K: Key, V: Value>(
         if allocator.advance_to_next_page().is_some() {
             match writer.allocate_record(key, value) {
                 Ok(result) => return Some(result),
-                Err(AllocError::AllocatorClosed | AllocError::RecordTooLarge | AllocError::PageOverflow) => {
+                Err(
+                    AllocError::AllocatorClosed
+                    | AllocError::RecordTooLarge
+                    | AllocError::PageOverflow,
+                ) => {
                     return None;
                 }
                 Err(AllocError::PageFull | AllocError::BufferFull) => {}

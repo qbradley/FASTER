@@ -1555,10 +1555,7 @@ fn test_regression_silent_cas_failure_metrics_exist() {
             snap.io_dispatch_failures, 0,
             "io_dispatch_failures should start at 0"
         );
-        assert_eq!(
-            snap.flush_io_errors, 0,
-            "flush_io_errors should start at 0"
-        );
+        assert_eq!(snap.flush_io_errors, 0, "flush_io_errors should start at 0");
 
         // After normal operations, counters should remain 0 (no faults injected).
         let mut session = store.new_session();
@@ -1633,7 +1630,7 @@ fn test_regression_compact_clamps_begin_to_head() {
     // it would try to scan evicted pages → potential crash.
     let result = store.compact();
     match result {
-        Ok(_) => {} // Compaction succeeded — great.
+        Ok(_) => {}                                    // Compaction succeeded — great.
         Err(CompactionError::EmptyRegion { .. }) => {} // No compactable region — fine.
         Err(e) => panic!("unexpected compaction error: {e}"),
     }

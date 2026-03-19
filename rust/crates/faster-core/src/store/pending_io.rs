@@ -1111,7 +1111,9 @@ mod tests {
             bytes_transferred,
         );
 
-        let cio = ctx.try_complete().expect("should complete since flag is set");
+        let cio = ctx
+            .try_complete()
+            .expect("should complete since flag is set");
         // Before fix: this was IoStatus::Success (masked the missing callback).
         // After fix: this must be IoStatus::Error(-1).
         assert_eq!(
@@ -1130,8 +1132,7 @@ mod tests {
         install_test_clock();
 
         let completed = Arc::new(AtomicBool::new(true));
-        let io_status: Arc<Mutex<Option<IoStatus>>> =
-            Arc::new(Mutex::new(Some(IoStatus::Success)));
+        let io_status: Arc<Mutex<Option<IoStatus>>> = Arc::new(Mutex::new(Some(IoStatus::Success)));
         let bytes_transferred = Arc::new(AtomicU32::new(512));
         let pool = BufferPool::new(512, 4);
         let buf = pool.acquire(512);
